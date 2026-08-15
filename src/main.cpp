@@ -92,6 +92,7 @@ static void OpenWallpaperDialog() {
             } else {
                 cfg.wallpapers[0].video_path = utf8_path;
             }
+            cfg.AddToGallery(utf8_path);
             g_config.Save();
 
             // Thread-safe decoder reload
@@ -249,7 +250,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
             std::lock_guard<std::mutex> lock(g_decoder_mutex);
             if (g_decoder.DecodeNextFrame(g_current_frame)) {
                 if (g_current_frame.texture) {
-                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index);
+                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode);
                     g_presenter.Present(0); // Zero-sync presentation driven by PlaybackClock pacing
                 }
 
@@ -393,6 +394,7 @@ std::string OnIpcRequest(const std::string& request_json) {
             } else {
                 cfg.wallpapers[0].video_path = path;
             }
+            cfg.AddToGallery(path);
             g_config.Save();
 
             std::lock_guard<std::mutex> lock(g_decoder_mutex);
@@ -402,6 +404,11 @@ std::string OnIpcRequest(const std::string& request_json) {
             TrimWorkingSetMemory();
             return nlohmann::json{{"ok", ok}}.dump();
         }
+    } else if (cmd == "set_scaling") {
+        int mode = req.value("mode", 0);
+        g_config.Get().scaling_mode = mode;
+        g_config.Save();
+        return "{\"ok\":true}";
     } else if (cmd == "get_status") {
         size_t ram = GetProcessMemoryUsageMB();
         std::lock_guard<std::mutex> lock(g_decoder_mutex);

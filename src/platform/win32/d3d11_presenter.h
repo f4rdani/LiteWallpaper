@@ -15,8 +15,8 @@ public:
     // Initialize D3D11 device and swap chain on target HWND
     bool Init(HWND hwnd, int width, int height);
     
-    // Render NV12 texture to swap chain
-    void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index);
+    // Render NV12 texture to swap chain with scaling mode (0=Fill/Cover, 1=Fit/Letterbox, 2=Stretch)
+    void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0);
     
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     void Present(UINT syncInterval = 0);
@@ -40,6 +40,7 @@ private:
     ComPtr<ID3D11PixelShader>        m_nv12_ps;
     ComPtr<ID3D11VertexShader>       m_fullscreen_vs;
     ComPtr<ID3D11SamplerState>       m_sampler;
+    ComPtr<ID3D11Buffer>             m_scaling_cb;
     
     HWND m_hwnd = nullptr;
     int m_width = 0;

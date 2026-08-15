@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <nlohmann/json.hpp>
 
 namespace litewp {
@@ -14,6 +15,8 @@ struct MonitorWallpaper {
 
 struct AppConfig {
     std::vector<MonitorWallpaper> wallpapers;
+    std::vector<std::string> gallery_history; // Persistent gallery of used video files
+    int scaling_mode = 0;        // 0 = Auto / Aspect Fill (Cover), 1 = Aspect Fit (Letterbox), 2 = Stretch
     int target_fps = 30;         // Default 30 FPS to save power
     int idle_fps = 15;           // FPS when no interaction
     bool pause_on_fullscreen = true;
@@ -23,6 +26,25 @@ struct AppConfig {
     bool update_lockscreen = true; // Capture frame for lock screen
     bool run_on_startup = false;
     std::string config_path;     // Path to this config file
+
+    void AddToGallery(const std::string& path) {
+        if (path.empty()) return;
+        auto it = std::find(gallery_history.begin(), gallery_history.end(), path);
+        if (it != gallery_history.end()) {
+            gallery_history.erase(it);
+        }
+        gallery_history.insert(gallery_history.begin(), path);
+        if (gallery_history.size() > 50) {
+            gallery_history.resize(50);
+        }
+    }
+
+    void RemoveFromGallery(const std::string& path) {
+        auto it = std::find(gallery_history.begin(), gallery_history.end(), path);
+        if (it != gallery_history.end()) {
+            gallery_history.erase(it);
+        }
+    }
 };
 
 class Config {
@@ -66,6 +88,8 @@ inline void from_json(const nlohmann::json& j, MonitorWallpaper& m) {
 inline void to_json(nlohmann::json& j, const AppConfig& c) {
     j = nlohmann::json{
         {"wallpapers", c.wallpapers},
+        {"gallery_history", c.gallery_history},
+        {"scaling_mode", c.scaling_mode},
         {"target_fps", c.target_fps},
         {"idle_fps", c.idle_fps},
         {"pause_on_fullscreen", c.pause_on_fullscreen},
@@ -79,6 +103,8 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
 
 inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("wallpapers")) j.at("wallpapers").get_to(c.wallpapers);
+    if (j.contains("gallery_history")) j.at("gallery_history").get_to(c.gallery_history);
+    if (j.contains("scaling_mode")) j.at("scaling_mode").get_to(c.scaling_mode);
     if (j.contains("target_fps")) j.at("target_fps").get_to(c.target_fps);
     if (j.contains("idle_fps")) j.at("idle_fps").get_to(c.idle_fps);
     if (j.contains("pause_on_fullscreen")) j.at("pause_on_fullscreen").get_to(c.pause_on_fullscreen);

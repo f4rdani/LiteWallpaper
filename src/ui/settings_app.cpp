@@ -4,6 +4,7 @@
 
 #include "settings_app.h"
 #include <windows.h>
+#include <shellapi.h>
 #include <commdlg.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -115,6 +116,15 @@ static void CleanupDeviceD3D() {
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
 }
 
+static void ApplyWallpaper(const std::string& utf8_path) {
+    if (utf8_path.empty()) return;
+    g_settingsConfig.Get().AddToGallery(utf8_path);
+    g_settingsConfig.Save();
+
+    nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
+    g_ipcClient.SendRequest(req.dump());
+}
+
 static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
         return true;
@@ -128,9 +138,34 @@ static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
                 CreateRenderTarget();
             }
             return 0;
+
+        case WM_DROPFILES: {
+            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+            UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < fileCount; i++) {
+                wchar_t filePath[MAX_PATH] = {};
+                if (DragQueryFileW(hDrop, i, filePath, MAX_PATH)) {
+                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, NULL, 0, NULL, NULL);
+                    std::string utf8_path(size_needed - 1, 0);
+                    WideCharToMultiByte(CP_UTF8, 0, filePath, -1, &utf8_path[0], size_needed, NULL, NULL);
+
+                    std::error_code ec;
+                    auto ext = fs::path(filePath).extension().string();
+                    for (auto& c : ext) c = (char)::tolower(c);
+                    if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov") {
+                        ApplyWallpaper(utf8_path);
+                        break;
+                    }
+                }
+            }
+            DragFinish(hDrop);
+            return 0;
+        }
+
         case WM_SYSCOMMAND:
             if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
             break;
+
         case WM_CLOSE:
             SettingsUI::Close();
             return 0;
@@ -161,35 +196,30 @@ static void FetchDaemonStatus() {
 }
 
 static void RenderGalleryPanel() {
+    auto& cfg = g_settingsConfig.Get();
+
+    // Drag and Drop Area Banner
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.6f, 1.0f, 0.8f));
+    ImGui::BeginChild("DropZoneBanner", ImVec2(0, 50), true);
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - 140.0f);
+    ImGui::SetCursorPosY(15.0f);
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "📥 Drag & Drop Video Files Anywhere Here!");
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+
+    // File Browse / Folder Scanner
     static char folderPath[MAX_PATH] = "C:\\";
-    static std::vector<std::string> videoFiles;
+    static std::vector<std::string> scannedFiles;
 
-    ImGui::Text("Browse Wallpaper Directory:");
-    ImGui::InputText("##FolderPath", folderPath, MAX_PATH);
-    ImGui::SameLine();
-    if (ImGui::Button("Scan Folder")) {
-        videoFiles.clear();
-        std::error_code ec;
-        if (fs::exists(folderPath, ec) && fs::is_directory(folderPath, ec)) {
-            for (const auto& entry : fs::directory_iterator(folderPath, ec)) {
-                if (entry.is_regular_file(ec)) {
-                    auto ext = entry.path().extension().string();
-                    for (auto& c : ext) c = (char)::tolower(c);
-                    if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi") {
-                        videoFiles.push_back(entry.path().string());
-                    }
-                }
-            }
-        }
-    }
-
-    ImGui::SameLine();
-    if (ImGui::Button("Browse File...")) {
+    ImGui::Text("Add New Video Wallpaper:");
+    if (ImGui::Button("📂 Browse Video File...", ImVec2(200, 30))) {
         wchar_t filename[MAX_PATH] = L"";
         OPENFILENAMEW ofn = {};
         ofn.lStructSize = sizeof(ofn);
         ofn.hwndOwner = g_hWnd;
-        ofn.lpstrFilter = L"Video Files (*.mp4;*.webm;*.mkv;*.avi)\0*.mp4;*.webm;*.mkv;*.avi\0All Files (*.*)\0*.*\0";
+        ofn.lpstrFilter = L"Video Files (*.mp4;*.webm;*.mkv;*.avi;*.mov)\0*.mp4;*.webm;*.mkv;*.avi;*.mov\0All Files (*.*)\0*.*\0";
         ofn.lpstrFile = filename;
         ofn.nMaxFile = MAX_PATH;
         ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -198,29 +228,105 @@ static void RenderGalleryPanel() {
             int size_needed = WideCharToMultiByte(CP_UTF8, 0, filename, -1, NULL, 0, NULL, NULL);
             std::string utf8_path(size_needed - 1, 0);
             WideCharToMultiByte(CP_UTF8, 0, filename, -1, &utf8_path[0], size_needed, NULL, NULL);
-            
-            nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
-            g_ipcClient.SendRequest(req.dump());
+            ApplyWallpaper(utf8_path);
         }
     }
 
-    ImGui::Separator();
-    ImGui::Text("Found Video Files (%d):", (int)videoFiles.size());
+    ImGui::SameLine();
+    ImGui::InputText("##FolderPath", folderPath, MAX_PATH);
+    ImGui::SameLine();
+    if (ImGui::Button("Scan Folder")) {
+        scannedFiles.clear();
+        std::error_code ec;
+        if (fs::exists(folderPath, ec) && fs::is_directory(folderPath, ec)) {
+            for (const auto& entry : fs::directory_iterator(folderPath, ec)) {
+                if (entry.is_regular_file(ec)) {
+                    auto ext = entry.path().extension().string();
+                    for (auto& c : ext) c = (char)::tolower(c);
+                    if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov") {
+                        scannedFiles.push_back(entry.path().string());
+                    }
+                }
+            }
+        }
+    }
 
-    ImGui::BeginChild("VideoList", ImVec2(0, 260), true);
-    for (const auto& file : videoFiles) {
-        if (ImGui::Button(file.c_str(), ImVec2(-1, 30))) {
-            nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", file}};
-            g_ipcClient.SendRequest(req.dump());
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // Persistent Gallery History List
+    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "★ Wallpaper Gallery & History (%d items):", (int)cfg.gallery_history.size());
+
+    ImGui::BeginChild("GalleryHistoryList", ImVec2(0, 180), true);
+    if (cfg.gallery_history.empty()) {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No wallpapers in gallery yet. Drag & drop a video file or click Browse!");
+    } else {
+        std::string toRemove = "";
+        for (size_t i = 0; i < cfg.gallery_history.size(); i++) {
+            const auto& file = cfg.gallery_history[i];
+            std::string filenameOnly = fs::path(file).filename().string();
+
+            ImGui::PushID((int)i);
+            if (ImGui::Button("▶ Apply", ImVec2(70, 24))) {
+                ApplyWallpaper(file);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("✖", ImVec2(24, 24))) {
+                toRemove = file;
+            }
+            ImGui::SameLine();
+            ImGui::Text("%s", filenameOnly.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", file.c_str());
+            }
+            ImGui::PopID();
+        }
+        if (!toRemove.empty()) {
+            cfg.RemoveFromGallery(toRemove);
+            g_settingsConfig.Save();
         }
     }
     ImGui::EndChild();
+
+    if (!scannedFiles.empty()) {
+        ImGui::Spacing();
+        ImGui::Text("Scanned Folder Results (%d):", (int)scannedFiles.size());
+        ImGui::BeginChild("ScannedFolderList", ImVec2(0, 100), true);
+        for (const auto& file : scannedFiles) {
+            std::string filenameOnly = fs::path(file).filename().string();
+            if (ImGui::Button(filenameOnly.c_str(), ImVec2(-1, 24))) {
+                ApplyWallpaper(file);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", file.c_str());
+            }
+        }
+        ImGui::EndChild();
+    }
 }
 
 static void RenderSettingsPanel() {
     auto& cfg = g_settingsConfig.Get();
 
-    ImGui::Text("Playback & Power Settings");
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Display & Aspect Ratio Scaling");
+    ImGui::Separator();
+
+    const char* scalingModes[] = {
+        "Auto Fill / Cover (No Black Bars - Best for Vertical & Ultrawide)",
+        "Aspect Fit (Letterbox - Keep Full Video with Margins)",
+        "Stretch (Fill Display Area)"
+    };
+    int currentMode = cfg.scaling_mode;
+    if (ImGui::Combo("Scaling Mode", &currentMode, scalingModes, IM_ARRAYSIZE(scalingModes))) {
+        cfg.scaling_mode = currentMode;
+        g_settingsConfig.Save();
+        nlohmann::json req{{"cmd", "set_scaling"}, {"mode", currentMode}};
+        g_ipcClient.SendRequest(req.dump());
+    }
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "*Auto Fill proportionally scales and centers videos across vertical/horizontal monitors.");
+
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Playback & Power Governance");
     ImGui::Separator();
 
     if (ImGui::SliderInt("Target FPS", &cfg.target_fps, 15, 60)) {
@@ -235,7 +341,7 @@ static void RenderSettingsPanel() {
     ImGui::Checkbox("Launch on Windows Startup", &cfg.run_on_startup);
 
     ImGui::Spacing();
-    ImGui::Text("Audio Output Settings");
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Audio Output");
     ImGui::Separator();
 
     static float volume = 0.5f;
@@ -254,6 +360,7 @@ static void RenderSettingsPanel() {
     }
 
     ImGui::Spacing();
+    ImGui::Separator();
     if (ImGui::Button("Save Configuration", ImVec2(180, 32))) {
         g_settingsConfig.Save();
         g_ipcClient.SendRequest("{\"cmd\":\"reload_config\"}");
@@ -266,7 +373,7 @@ static void RenderSettingsPanel() {
 }
 
 static void RenderPerformancePanel() {
-    ImGui::Text("Real-Time Engine Monitor");
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Real-Time Engine Monitor");
     ImGui::Separator();
 
     if (!g_daemonConnected) {
@@ -316,7 +423,7 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         wc.lpszClassName,
         L"LiteWallpaper Control Panel",
         WS_OVERLAPPEDWINDOW,
-        150, 150, 720, 560,
+        150, 150, 760, 600,
         nullptr, nullptr, wc.hInstance, nullptr
     );
 
@@ -327,6 +434,9 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         g_hWnd = nullptr;
         return false;
     }
+
+    // Enable Drag and Drop
+    DragAcceptFiles(g_hWnd, TRUE);
 
     ShowWindow(g_hWnd, SW_SHOW);
     UpdateWindow(g_hWnd);
@@ -349,14 +459,6 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
 }
 
 void SettingsUI::RenderFrame() {
-    if (!g_isOpen || !g_hWnd) return;
-
-    MSG msg;
-    while (PeekMessageW(&msg, g_hWnd, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-
     if (!g_isOpen || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
 
     if (++g_fetchCounter >= 30) {
