@@ -19,6 +19,7 @@
 #include "core/playback_clock.h"
 #include "core/ipc_server.h"
 #include "core/logger.h"
+#include "core/engine_state.h"
 #include "decoder/ffmpeg_hw_decoder.h"
 #include "decoder/audio_player.h"
 #include "platform/win32/desktop_injector.h"
@@ -58,21 +59,13 @@ static std::string g_last_error;
 static uint64_t g_frames_rendered = 0;
 static int64_t g_flash_until_us = 0; // Diagnostic green-flash window (microseconds)
 
-// Playback pacing state.
-// g_video_fps is the native frame rate of the loaded video; the render clock is
-// always paced at this rate so playback speed stays 1x regardless of target_fps.
-// g_frame_skip is the display skip factor: when target_fps < video_fps we only
-// present every N-th decoded frame (power saving) WITHOUT slowing the video.
+// Playback pacing state
 static double g_video_fps = 0.0;
 static int    g_frame_skip = 1;
 static uint64_t g_frames_decoded = 0;
 
-// True while the wallpaper is fully suspended because a fullscreen app/game is
-// covering the desktop (decoder + audio released to save RAM/GPU resources).
 static bool g_fullscreen_paused = false;
 
-// Compute the display skip factor for the current effective display FPS cap.
-// Returns >= 1. 1 means "present every decoded frame".
 static int ComputeFrameSkip(double video_fps, int display_fps) {
     if (video_fps <= 0.0) return 1;
     if (display_fps <= 0) return 1;
@@ -103,6 +96,56 @@ static size_t GetProcessMemoryUsageMB() {
         return pmc.WorkingSetSize / (1024 * 1024);
     }
     return 0;
+}
+
+static double GetProcessCpuUsagePercent() {
+    static ULARGE_INTEGER lastCPU = {0}, lastSysCPU = {0}, lastUserCPU = {0};
+    static int numProcessors = -1;
+    static bool first = true;
+    static double last_percent = 0.0;
+
+    if (first) {
+        SYSTEM_INFO sysInfo;
+        FILETIME ftime, fsys, fuser;
+        GetSystemInfo(&sysInfo);
+        numProcessors = (sysInfo.dwNumberOfProcessors > 0) ? sysInfo.dwNumberOfProcessors : 1;
+        GetSystemTimeAsFileTime(&ftime);
+        memcpy(&lastCPU, &ftime, sizeof(FILETIME));
+        GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
+        memcpy(&lastSysCPU, &fsys, sizeof(FILETIME));
+        memcpy(&lastUserCPU, &fuser, sizeof(FILETIME));
+        first = false;
+        return 0.0;
+    }
+
+    FILETIME ftime, fsys, fuser;
+    ULARGE_INTEGER now, sys, user;
+    GetSystemTimeAsFileTime(&ftime);
+    memcpy(&now, &ftime, sizeof(FILETIME));
+    GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
+    memcpy(&sys, &fsys, sizeof(FILETIME));
+    memcpy(&user, &fuser, sizeof(FILETIME));
+
+    if (now.QuadPart > lastCPU.QuadPart) {
+        double percent = (double)((sys.QuadPart - lastSysCPU.QuadPart) + (user.QuadPart - lastUserCPU.QuadPart));
+        percent /= (now.QuadPart - lastCPU.QuadPart);
+        percent /= numProcessors;
+        last_percent = percent * 100.0;
+        if (last_percent < 0.0) last_percent = 0.0;
+        if (last_percent > 100.0) last_percent = 100.0;
+        lastCPU = now;
+        lastUserCPU = user;
+        lastSysCPU = sys;
+    }
+    return last_percent;
+}
+
+static size_t GetProcessVramUsageMB(int vid_w, int vid_h, int screen_w, int screen_h, bool hw_decode) {
+    if (!hw_decode || vid_w <= 0 || vid_h <= 0) return 12;
+    size_t frame_bytes = (size_t)vid_w * vid_h * 3 / 2;
+    size_t pool_bytes = 4 * frame_bytes; // 4 surfaces in minimal hardware pool
+    size_t swapchain_bytes = 2 * (size_t)screen_w * screen_h * 4; // 2 backbuffers
+    return (pool_bytes + swapchain_bytes) / (1024 * 1024) + 6; // +6MB driver/shader overhead
 }
 
 static void TrimWorkingSetMemory() {
@@ -186,9 +229,6 @@ static bool OpenWallpaperVideo(const std::string& path) {
     return true;
 }
 
-// Release ALL wallpaper resources (decoder GPU textures, audio, render window)
-// when a fullscreen app covers the desktop, freeing RAM/VRAM and CPU/GPU resources.
-// Call on the main thread.
 static void SuspendWallpaperForFullscreen() {
     if (g_fullscreen_paused) return;
     g_fullscreen_paused = true;
@@ -204,7 +244,6 @@ static void SuspendWallpaperForFullscreen() {
     g_frames_rendered = 0;
     SetVideoPacing(0.0);
 
-    // Remove the render window from the desktop so DWM stops compositing it
     if (g_main_hwnd) {
         PostMessageW(g_main_hwnd, WM_APP_DEATTACH, 0, 0);
     }
@@ -212,8 +251,6 @@ static void SuspendWallpaperForFullscreen() {
     Logger::Info("Fullscreen detected: wallpaper resources released (RAM freed)");
 }
 
-// Restore the wallpaper after the fullscreen app closes. Re-opens the current
-// video, restarts audio and re-attaches the render window. Call on main thread.
 static void ResumeWallpaperFromFullscreen() {
     if (!g_fullscreen_paused) return;
     g_fullscreen_paused = false;
@@ -235,17 +272,15 @@ static void ResumeWallpaperFromFullscreen() {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
-    // 0. Single-Instance Check
+    // Single-Instance Check
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LiteWallpaper_SingleInstance_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Another instance is already running! Notify it via IPC to open Settings UI
         IpcClient client;
         client.SendRequest("{\"cmd\":\"open_settings\"}");
         if (hMutex) CloseHandle(hMutex);
         return 0;
     }
 
-    // High precision multimedia timer for frame pacing
     timeBeginPeriod(1);
 
     // 1. Load Configuration
@@ -260,7 +295,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     wc.lpszClassName = L"LiteWallpaper_Daemon";
     RegisterClassExW(&wc);
 
-    // Virtual screen dimensions (covering all monitors)
     int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -292,7 +326,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
         Logger::Info(g_last_error);
     }
 
-    // 4. Initialize Direct3D 11 Presenter on the attached child window
+    // 4. Initialize Direct3D 11 Presenter
     if (!g_presenter.Init(g_main_hwnd, vw, vh)) {
         g_last_error = "D3D11 presenter init failed";
         Logger::Info(g_last_error);
@@ -302,7 +336,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     }
     Logger::Info("Presenter init OK, swapchain size=", vw, "x", vh);
 
-    // Smoke test: flash a solid green frame for ~1.5 s.
     g_flash_until_us = g_clock.GetCurrentTimeMicros() + 1500000;
     Logger::Info("Smoke test: flashing solid green for 1.5s");
 
@@ -326,20 +359,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     // 8. Setup System Tray Icon
     g_tray.Create(g_main_hwnd, OnTrayAction);
 
-    // 9. Setup Playback Clock
-    // 10. Start IPC Server
+    // 9. Start IPC Server
     g_ipc.Start(OnIpcRequest);
 
-    // 11. Open Settings UI on first startup
+    // 10. Open Settings UI on first startup
     SettingsUI::Open(hInstance);
 
-    // Initial RAM cleanup
     TrimWorkingSetMemory();
 
-    // 12. Main Event & Render Loop
+    // 11. Main Event & Render Loop
     MSG msg = {};
     float audio_buffer[4096 * 2];
     uint64_t last_trim_us = 0;
+    uint64_t last_state_update_us = 0;
 
     while (g_running) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -359,11 +391,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
         }
 
         PowerState power = g_governor.GetCurrentState();
-
         bool fullscreen_active = (power == PowerState::Paused && cfg.pause_on_fullscreen);
 
-        // Hard-pause on fullscreen: release decoder + audio + render window to
-        // free RAM/VRAM and CPU/GPU. Restore everything when the app closes.
         if (fullscreen_active) {
             if (!g_fullscreen_paused) {
                 SuspendWallpaperForFullscreen();
@@ -374,7 +403,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             ResumeWallpaperFromFullscreen();
         }
 
-        // Re-attach if "Show Desktop" (Win+D / 3-finger swipe) rebuilt the desktop hierarchy
+        // Re-attach if desktop was rebuilt
         static uint64_t last_inject_check_us = 0;
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
         if (!g_fullscreen_paused && g_inject_ok && g_main_hwnd &&
@@ -389,6 +418,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             }
         } else {
             last_inject_check_us = now_us;
+        }
+
+        // Update Shared Engine State for instant zero-latency UI reads
+        if (now_us - last_state_update_us >= 250000) { // Every 250ms
+            last_state_update_us = now_us;
+            std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+            auto info = g_decoder.GetInfo();
+            size_t ram = GetProcessMemoryUsageMB();
+            double cpu = GetProcessCpuUsagePercent();
+            size_t vram = GetProcessVramUsageMB(info.width, info.height, vw, vh, g_decoder_hw);
+
+            g_shared_engine_state.connected.store(true);
+            g_shared_engine_state.playing.store(!g_paused && !cur_vid.empty() && !g_fullscreen_paused);
+            g_shared_engine_state.paused.store(g_paused);
+            g_shared_engine_state.injected.store(g_inject_ok);
+            g_shared_engine_state.hw_decode.store(g_decoder_hw);
+            g_shared_engine_state.fps.store(g_clock.GetTargetFPS());
+            g_shared_engine_state.video_fps.store(info.fps);
+            g_shared_engine_state.width.store(info.width);
+            g_shared_engine_state.height.store(info.height);
+            g_shared_engine_state.duration.store(info.duration_seconds);
+            g_shared_engine_state.ram_mb.store(ram);
+            g_shared_engine_state.vram_mb.store(vram);
+            g_shared_engine_state.cpu_percent.store(cpu);
+            g_shared_engine_state.frames_rendered.store(g_frames_rendered);
+            g_shared_engine_state.frames_decoded.store(g_frames_decoded);
+            g_shared_engine_state.frame_skip.store(g_frame_skip);
+            g_shared_engine_state.SetCurrentVideo(cur_vid);
+            g_shared_engine_state.SetCodec(info.codec_name);
+            g_shared_engine_state.SetLastError(g_last_error);
         }
 
         // Periodic process working set memory trimming every 5 seconds
@@ -406,12 +465,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             continue;
         }
 
-        // Playback always advances at the video's native fps (SetVideoPacing)
         int display_fps_cap = (power == PowerState::Reduced) ? cfg.battery_fps : cfg.target_fps;
         g_frame_skip = ComputeFrameSkip(g_video_fps, display_fps_cap);
 
         if (g_clock.ShouldRenderFrame()) {
-            // Diagnostic flash window active: paint solid green instead of video
             if (g_clock.GetCurrentTimeMicros() < g_flash_until_us) {
                 g_presenter.ClearAndPresent(0.05f, 0.80f, 0.10f);
                 g_frames_rendered++;
@@ -442,7 +499,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
                     Logger::Info(g_last_error);
                 }
 
-                // Decode and feed all available audio frames if enabled
                 if (!g_audio.IsMuted() && g_decoder.HasAudio()) {
                     int samples = 0;
                     while ((samples = g_decoder.DecodeAudioSamples(audio_buffer, 4096)) > 0) {
@@ -491,7 +547,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
 
-    // Attach / detach render window on the main thread (window owner)
     if (msg == WM_APP_ATTACH) {
         if (g_main_hwnd && !g_injector.IsAttached()) {
             g_inject_ok = g_injector.Attach(g_main_hwnd);
@@ -524,7 +579,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
-        case WM_USER + 1: // Tray icon callback
+        case WM_USER + 1:
             g_tray.HandleMessage(wParam, lParam);
             return 0;
 
@@ -706,7 +761,6 @@ std::string OnIpcRequest(const std::string& request_json) {
             cfg.wallpapers[0].video_path = "";
             g_config.Save();
         }
-        // Detach render window so the original wallpaper is restored
         if (g_main_hwnd) {
             PostMessageW(g_main_hwnd, WM_APP_DEATTACH, 0, 0);
         }

@@ -8,7 +8,10 @@
 #define ICON_FA_PAUSE              "\xef\x81\x8c" // U+f04c
 #define ICON_FA_STOP               "\xef\x81\x8d" // U+f04d
 #define ICON_FA_TRASH              "\xef\x87\xb8" // U+f1f8
+#define ICON_FA_TRASH_CAN          "\xef\x87\xb8" // U+f1f8
 #define ICON_FA_XMARK              "\xef\x80\x8d" // U+f00d
+#define ICON_FA_PLUS               "\xef\x81\xa7" // U+f067
+#define ICON_FA_ROTATE             "\xef\x80\xa1" // U+f021
 #define ICON_FA_FOLDER_OPEN        "\xef\x81\xbc" // U+f07c
 #define ICON_FA_FOLDER             "\xef\x81\xbb" // U+f07b
 #define ICON_FA_MAGNIFYING_GLASS   "\xef\x80\x82" // U+f002
@@ -33,3 +36,8 @@
 #define ICON_FA_COMPACT_DISC       "\xef\x94\x9f" // U+f51f
 #define ICON_FA_FILM               "\xef\x80\x88" // U+f008
 #define ICON_FA_HARD_DRIVE         "\xef\x82\xa0" // U+f0a0
+#define ICON_FA_CIRCLE_PLAY        "\xef\x85\x84" // U+f144
+#define ICON_FA_LOCK               "\xef\x80\xa3" // U+f023
+#define ICON_FA_LAYER_GROUP        "\xef\x97\xbe" // U+f5fe
+#define ICON_FA_SLIDERS            "\xef\x87\x9e" // U+f1de
+#define ICON_FA_CHART_LINE         "\xef\x88\x81" // U+f201

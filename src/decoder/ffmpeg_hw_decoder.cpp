@@ -11,7 +11,7 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
     for (const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
         if (*p == AV_PIX_FMT_D3D11) {
             // Allocate an explicit AVHWFramesContext with D3D11_BIND_SHADER_RESOURCE
-            // and a minimal surface pool (4 frames) to drastically reduce VRAM (from 500MB -> <60MB)
+            // and a minimal surface pool (4 frames) to drastically reduce VRAM (from 500MB -> <50MB)
             // and enable 100% zero-copy direct texture rendering!
             if (ctx->hw_device_ctx) {
                 AVBufferRef* frames_ref = av_hwframe_ctx_alloc(ctx->hw_device_ctx);
@@ -19,9 +19,12 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
                     AVHWFramesContext* frames_ctx = reinterpret_cast<AVHWFramesContext*>(frames_ref->data);
                     frames_ctx->format = AV_PIX_FMT_D3D11;
                     frames_ctx->sw_format = AV_PIX_FMT_NV12;
-                    frames_ctx->width = ctx->width > 0 ? ctx->width : 1920;
-                    frames_ctx->height = ctx->height > 0 ? ctx->height : 1080;
-                    frames_ctx->initial_pool_size = 4; // Minimal VRAM allocation!
+                    
+                    int w = ctx->coded_width > 0 ? ctx->coded_width : (ctx->width > 0 ? ctx->width : 1920);
+                    int h = ctx->coded_height > 0 ? ctx->coded_height : (ctx->height > 0 ? ctx->height : 1080);
+                    frames_ctx->width = FFALIGN(w, 16);
+                    frames_ctx->height = FFALIGN(h, 16);
+                    frames_ctx->initial_pool_size = 4; // Minimal surface pool in VRAM!
 
                     auto* d3d11_frames = reinterpret_cast<AVD3D11VAFramesContext*>(frames_ctx->hwctx);
                     d3d11_frames->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
@@ -121,6 +124,12 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device, int max_w
         Close();
         return false;
     }
+
+    // Explicitly set width & coded_width to stream dimensions before opening
+    m_video_codec_ctx->width = video_stream->codecpar->width;
+    m_video_codec_ctx->height = video_stream->codecpar->height;
+    m_video_codec_ctx->coded_width = FFALIGN(video_stream->codecpar->width, 16);
+    m_video_codec_ctx->coded_height = FFALIGN(video_stream->codecpar->height, 16);
 
     // Limit thread count and buffer footprint
     m_video_codec_ctx->thread_count = 1; // HW decoding is done on GPU; 1 CPU thread minimizes thread pool RAM!
