@@ -29,7 +29,8 @@ public:
     virtual ~IVideoDecoder() = default;
     
     // Open video file. d3d_device is used for hardware decoding.
-    virtual bool Open(const char* path, ID3D11Device* d3d_device) = 0;
+    // max_width and max_height allow automatic downscaling of 4K/8K videos to match the monitor resolution.
+    virtual bool Open(const char* path, ID3D11Device* d3d_device, int max_width = 0, int max_height = 0) = 0;
     
     // Decode next frame. Returns true if a new frame is available.
     // frame.texture contains the decoded NV12 texture in GPU VRAM.

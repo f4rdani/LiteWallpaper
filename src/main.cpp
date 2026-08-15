@@ -143,7 +143,9 @@ static void OpenWallpaperDialog() {
             g_decoder.Close();
             bool audio_on = !cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && (cfg.wallpapers[0].volume > 0.0f);
             g_decoder.SetAudioEnabled(audio_on);
-            if (g_decoder.Open(utf8_path.c_str(), g_presenter.GetDevice())) {
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (g_decoder.Open(utf8_path.c_str(), g_presenter.GetDevice(), vw, vh)) {
                 SetVideoPacing(g_decoder.GetInfo().fps);
             }
             g_paused = false;
@@ -162,7 +164,9 @@ static bool OpenWallpaperVideo(const std::string& path) {
     g_current_frame = VideoFrame{};
     g_decoder.Close();
     g_decoder.SetAudioEnabled(audio_on);
-    bool ok = g_decoder.Open(path.c_str(), g_presenter.GetDevice());
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    bool ok = g_decoder.Open(path.c_str(), g_presenter.GetDevice(), vw, vh);
     g_decoder_hw = g_decoder.IsHWAccelerated();
     g_paused = false;
     g_clock.Reset();
@@ -606,7 +610,9 @@ std::string OnIpcRequest(const std::string& request_json) {
 
             std::lock_guard<std::mutex> lock(g_decoder_mutex);
             FFmpegHWDecoder tempDecoder;
-            if (tempDecoder.Open(path.c_str(), g_presenter.GetDevice())) {
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (tempDecoder.Open(path.c_str(), g_presenter.GetDevice(), vw, vh)) {
                 VideoFrame f;
                 if (tempDecoder.DecodeNextFrame(f) && f.texture) {
                     g_lockscreen.CaptureAndSetLockScreen(g_presenter.GetDevice(), g_presenter.GetContext(), f.texture, f.texture_index);

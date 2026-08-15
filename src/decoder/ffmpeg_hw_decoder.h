@@ -24,7 +24,7 @@ public:
     FFmpegHWDecoder();
     ~FFmpegHWDecoder() override;
 
-    bool Open(const char* path, ID3D11Device* d3d_device) override;
+    bool Open(const char* path, ID3D11Device* d3d_device, int max_width = 0, int max_height = 0) override;
     bool DecodeNextFrame(VideoFrame& frame) override;
     void SeekToStart() override;
     VideoInfo GetInfo() const override;
@@ -53,6 +53,8 @@ private:
     ID3D11Device* m_d3d_device = nullptr;
     bool m_is_hw_accelerated = false;
     bool m_audio_enabled = false;
+    int  m_max_width = 0;
+    int  m_max_height = 0;
 
     VideoInfo m_info;
 

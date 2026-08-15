@@ -1,5 +1,9 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "ffmpeg_hw_decoder.h"
 #include <iostream>
+#include <algorithm>
 
 namespace litewp {
 
@@ -63,11 +67,13 @@ bool FFmpegHWDecoder::InitHWDecoder(ID3D11Device* device) {
     return true;
 }
 
-bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device) {
+bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device, int max_width, int max_height) {
     Close();
 
     if (!path || !d3d_device) return false;
     m_d3d_device = d3d_device;
+    m_max_width = max_width;
+    m_max_height = max_height;
 
     if (avformat_open_input(&m_fmt_ctx, path, nullptr, nullptr) < 0) {
         return false;
@@ -241,19 +247,30 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
         return false;
     }
 
-    int w = src->width;
-    int h = src->height;
+    int src_w = src->width;
+    int src_h = src->height;
     AVPixelFormat srcFmt = static_cast<AVPixelFormat>(src->format);
 
-    // (Re)create swscale context when the source format/size changes
-    if (!m_sws_ctx || m_sw_width != w || m_sw_height != h || m_sw_src_format != srcFmt) {
+    // Auto-downscale to monitor bounds if specified (e.g. 4K -> 1080p saves 75% memory!)
+    int target_w = src_w;
+    int target_h = src_h;
+    if (m_max_width > 0 && m_max_height > 0 && (src_w > m_max_width || src_h > m_max_height)) {
+        double scale = (std::min)(static_cast<double>(m_max_width) / src_w, static_cast<double>(m_max_height) / src_h);
+        target_w = (static_cast<int>(src_w * scale) / 2) * 2; // Even dimensions for NV12
+        target_h = (static_cast<int>(src_h * scale) / 2) * 2;
+        if (target_w < 128) target_w = 128;
+        if (target_h < 128) target_h = 128;
+    }
+
+    // (Re)create swscale context when the source format/size or target size changes
+    if (!m_sws_ctx || m_sw_width != target_w || m_sw_height != target_h || m_sw_src_format != srcFmt) {
         if (m_sws_ctx) {
             sws_freeContext(m_sws_ctx);
             m_sws_ctx = nullptr;
         }
-        m_sws_ctx = sws_getContext(w, h, srcFmt, w, h, AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
-        m_sw_width = w;
-        m_sw_height = h;
+        m_sws_ctx = sws_getContext(src_w, src_h, srcFmt, target_w, target_h, AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        m_sw_width = target_w;
+        m_sw_height = target_h;
         m_sw_src_format = srcFmt;
         if (!m_sws_ctx) {
             return false;
@@ -262,26 +279,26 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
 
     // CPU NV12 staging buffers
     if (!m_sw_y || !m_sw_uv) {
-        m_sw_y = static_cast<uint8_t*>(av_malloc((size_t)w * h));
-        m_sw_uv = static_cast<uint8_t*>(av_malloc((size_t)w * h / 2));
+        m_sw_y = static_cast<uint8_t*>(av_malloc((size_t)target_w * target_h));
+        m_sw_uv = static_cast<uint8_t*>(av_malloc((size_t)target_w * target_h / 2));
         if (!m_sw_y || !m_sw_uv) {
             return false;
         }
     }
 
-    // Convert to NV12 (Y plane + interleaved UV plane)
+    // Convert and downscale to NV12 (Y plane + interleaved UV plane)
     uint8_t* dst[4] = { m_sw_y, m_sw_uv, nullptr, nullptr };
-    int dstStride[4] = { w, w, 0, 0 };
-    if (sws_scale(m_sws_ctx, src->data, src->linesize, 0, h, dst, dstStride) < 0) {
+    int dstStride[4] = { target_w, target_w, 0, 0 };
+    if (sws_scale(m_sws_ctx, src->data, src->linesize, 0, src_h, dst, dstStride) < 0) {
         return false;
     }
 
     // (Re)create the GPU texture when dimensions change
-    if (!m_sw_texture || m_sw_width != w || m_sw_height != h) {
+    if (!m_sw_texture || m_sw_width != target_w || m_sw_height != target_h) {
         m_sw_texture.Reset();
         D3D11_TEXTURE2D_DESC td = {};
-        td.Width = (UINT)w;
-        td.Height = (UINT)h;
+        td.Width = (UINT)target_w;
+        td.Height = (UINT)target_h;
         td.MipLevels = 1;
         td.ArraySize = 1;
         td.Format = DXGI_FORMAT_NV12;
@@ -292,8 +309,6 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
         if (FAILED(m_d3d_device->CreateTexture2D(&td, nullptr, &m_sw_texture))) {
             return false;
         }
-        m_sw_width = w;
-        m_sw_height = h;
     }
 
     // Upload Y and UV planes into the mapped NV12 texture
@@ -307,19 +322,19 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
 
     BYTE* base = static_cast<BYTE*>(mapped.pData);
     const UINT pitch = mapped.RowPitch;
-    for (int y = 0; y < h; y++) {
-        memcpy(base + (size_t)y * pitch, m_sw_y + (size_t)y * w, (size_t)w);
+    for (int y = 0; y < target_h; y++) {
+        memcpy(base + (size_t)y * pitch, m_sw_y + (size_t)y * target_w, (size_t)target_w);
     }
-    for (int y = 0; y < h / 2; y++) {
-        memcpy(base + (size_t)pitch * h + (size_t)y * pitch, m_sw_uv + (size_t)y * w, (size_t)w);
+    for (int y = 0; y < target_h / 2; y++) {
+        memcpy(base + (size_t)pitch * target_h + (size_t)y * pitch, m_sw_uv + (size_t)y * target_w, (size_t)target_w);
     }
     ctx->Unmap(m_sw_texture.Get(), 0);
     ctx->Release();
 
     frame.texture = m_sw_texture.Get();
     frame.texture_index = 0;
-    frame.width = w;
-    frame.height = h;
+    frame.width = target_w;
+    frame.height = target_h;
     frame.pts = src->pts;
     return true;
 }
@@ -431,6 +446,8 @@ void FFmpegHWDecoder::Close() {
     m_d3d_device = nullptr;
     m_is_hw_accelerated = false;
     m_audio_enabled = false;
+    m_max_width = 0;
+    m_max_height = 0;
     m_info = VideoInfo{};
 }
 
