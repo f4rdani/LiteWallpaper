@@ -1,4 +1,8 @@
-// LiteWallpaper Daemon — Ultra-lightweight background wallpaper engine
+// LiteWallpaper — Ultra-lightweight animated video wallpaper engine
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <windows.h>
 #include <mmsystem.h>
 #include <commdlg.h>
@@ -7,6 +11,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
+#include <mimalloc.h>
 #include <nlohmann/json.hpp>
 
 #include "core/config.h"
@@ -19,10 +24,13 @@
 #include "platform/win32/power_governor.h"
 #include "platform/win32/lockscreen_manager.h"
 #include "platform/win32/tray_icon.h"
+#include "ui/settings_app.h"
+
+#define WM_APP_OPEN_SETTINGS (WM_APP + 10)
 
 using namespace litewp;
 
-// Global state
+// Global engine state
 static Config            g_config;
 static PlaybackClock     g_clock;
 static DesktopInjector   g_injector;
@@ -55,7 +63,8 @@ static size_t GetProcessMemoryUsageMB() {
 }
 
 static void TrimWorkingSetMemory() {
-    EmptyWorkingSet(GetCurrentProcess());
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    mi_collect(true);
 }
 
 static void OpenWallpaperDialog() {
@@ -99,6 +108,16 @@ static void OpenWallpaperDialog() {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    // 0. Single Instance Mutex Check
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LiteWallpaper_SingleInstance_Mutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Another instance is already running! Tell it to open the Settings UI and exit this process
+        IpcClient client;
+        client.SendRequest("{\"cmd\":\"open_settings\"}");
+        if (hMutex) CloseHandle(hMutex);
+        return 0;
+    }
+
     // Enable 1ms multimedia timer resolution for high precision frame pacing without CPU spin
     timeBeginPeriod(1);
 
@@ -106,7 +125,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_config.Load();
     auto& cfg = g_config.Get();
 
-    // 2. Register window class
+    // 2. Register window class for the background wallpaper canvas
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
@@ -131,12 +150,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     if (!g_main_hwnd) {
         timeEndPeriod(1);
+        if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
         return 1;
     }
 
     // 3. Initialize Direct3D 11 Presenter
     if (!g_presenter.Init(g_main_hwnd, vw, vh)) {
         timeEndPeriod(1);
+        if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
         return 1;
     }
 
@@ -171,6 +192,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     // 10. Start IPC Server
     g_ipc.Start(OnIpcRequest);
 
+    // Initial launch: Open Settings UI on-demand
+    SettingsUI::Open(hInstance);
+
     // Initial memory working set cleanup (drops startup overhead down to ~15-25 MB)
     TrimWorkingSetMemory();
 
@@ -189,6 +213,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         }
 
         if (!g_running) break;
+
+        // Render Settings UI if open
+        if (SettingsUI::IsOpen()) {
+            SettingsUI::RenderFrame();
+        }
 
         PowerState power = g_governor.GetCurrentState();
 
@@ -241,6 +270,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     // Cleanup
+    SettingsUI::Close();
     g_ipc.Stop();
     g_tray.Destroy();
     g_governor.Shutdown();
@@ -255,12 +285,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_presenter.Cleanup();
     g_injector.Detach();
 
+    if (hMutex) {
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
+    }
+
     timeEndPeriod(1);
     return 0;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_APP_OPEN_SETTINGS:
+            SettingsUI::Open(GetModuleHandleW(nullptr));
+            return 0;
+
         case WM_WTSSESSION_CHANGE:
             g_governor.HandleSessionChange(wParam);
             if (wParam == WTS_SESSION_LOCK && g_config.Get().update_lockscreen) {
@@ -318,7 +357,7 @@ void OnTrayAction(TrayAction action) {
             }
             break;
         case TrayAction::OpenSettings:
-            ShellExecuteW(nullptr, L"open", L"litewp_settings.exe", nullptr, nullptr, SW_SHOW);
+            SettingsUI::Open(GetModuleHandleW(nullptr));
             break;
         case TrayAction::ChangeWallpaper:
             OpenWallpaperDialog();
@@ -338,7 +377,12 @@ std::string OnIpcRequest(const std::string& request_json) {
 
     std::string cmd = req.value("cmd", "");
 
-    if (cmd == "set_wallpaper") {
+    if (cmd == "open_settings") {
+        if (g_main_hwnd) {
+            PostMessageW(g_main_hwnd, WM_APP_OPEN_SETTINGS, 0, 0);
+        }
+        return "{\"ok\":true}";
+    } else if (cmd == "set_wallpaper") {
         std::string path = req.value("path", "");
         if (!path.empty()) {
             auto& cfg = g_config.Get();

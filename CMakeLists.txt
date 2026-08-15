@@ -23,8 +23,8 @@ set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/third_party/ffmpeg" CACHE PATH "FFmpeg root 
 set(FFMPEG_INCLUDE_DIR "${FFMPEG_DIR}/include")
 set(FFMPEG_LIB_DIR "${FFMPEG_DIR}/lib")
 
-# === Daemon executable ===
-add_executable(litewp_daemon WIN32
+# === Unified Single Executable ===
+add_executable(LiteWallpaper WIN32
     src/main.cpp
     src/core/config.cpp
     src/core/playback_clock.cpp
@@ -36,42 +36,24 @@ add_executable(litewp_daemon WIN32
     src/platform/win32/power_governor.cpp
     src/platform/win32/lockscreen_manager.cpp
     src/platform/win32/tray_icon.cpp
+    src/ui/settings_app.cpp
 )
 
-target_include_directories(litewp_daemon PRIVATE
+target_include_directories(LiteWallpaper PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
     ${FFMPEG_INCLUDE_DIR}
 )
 
-target_link_directories(litewp_daemon PRIVATE ${FFMPEG_LIB_DIR})
+target_link_directories(LiteWallpaper PRIVATE ${FFMPEG_LIB_DIR})
 
-target_link_libraries(litewp_daemon PRIVATE
+target_link_libraries(LiteWallpaper PRIVATE
     nlohmann_json::nlohmann_json
     mimalloc
+    imgui::imgui
     # FFmpeg libs
     avcodec avformat avutil swscale swresample
     # Windows system libs
-    d3d11 dxgi d3dcompiler
-    dwmapi user32 gdi32 shell32 ole32 uuid
-    winmm wtsapi32 psapi comdlg32 advapi32 imm32
-)
-
-# === Settings UI executable ===
-add_executable(litewp_settings WIN32
-    src/ui/settings_app.cpp
-    src/core/config.cpp
-    src/core/ipc_server.cpp  # IPC client mode
-)
-
-target_include_directories(litewp_settings PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/third_party
-)
-
-target_link_libraries(litewp_settings PRIVATE
-    nlohmann_json::nlohmann_json
-    imgui::imgui
     d3d11 dxgi d3dcompiler
     dwmapi user32 gdi32 shell32 ole32 uuid
     winmm wtsapi32 psapi comdlg32 advapi32 imm32

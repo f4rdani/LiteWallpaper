@@ -1,3 +1,7 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "settings_app.h"
 #include <windows.h>
 #include <commdlg.h>
@@ -7,6 +11,7 @@
 #include <filesystem>
 #include <vector>
 #include <string>
+#include <mimalloc.h>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -22,13 +27,16 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace litewp {
 
+static HWND                     g_hWnd = nullptr;
+static HINSTANCE                g_hInstance = nullptr;
 static ID3D11Device*            g_pd3dDevice = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain*          g_pSwapChain = nullptr;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
+static bool                     g_isOpen = false;
 
-static Config    g_settingsConfig;
-static IpcClient g_ipcClient;
+static Config                   g_settingsConfig;
+static IpcClient                g_ipcClient;
 
 // Performance metrics cache
 static bool   g_daemonConnected = false;
@@ -42,11 +50,14 @@ static double g_daemonDuration = 0.0;
 static std::string g_daemonCodec = "";
 static size_t g_daemonRamMB = 0;
 static std::vector<float> g_ramHistory(60, 0.0f);
+static int    g_fetchCounter = 0;
 
 static void CreateRenderTarget() {
+    if (!g_pSwapChain || !g_pd3dDevice) return;
     ComPtr<ID3D11Texture2D> pBackBuffer;
-    g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-    g_pd3dDevice->CreateRenderTargetView(pBackBuffer.Get(), nullptr, &g_mainRenderTargetView);
+    if (SUCCEEDED(g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer)))) {
+        g_pd3dDevice->CreateRenderTargetView(pBackBuffer.Get(), nullptr, &g_mainRenderTargetView);
+    }
 }
 
 static void CleanupRenderTarget() {
@@ -104,7 +115,7 @@ static void CleanupDeviceD3D() {
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
 }
 
-static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
         return true;
     }
@@ -120,8 +131,8 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_SYSCOMMAND:
             if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
             break;
-        case WM_DESTROY:
-            PostQuitMessage(0);
+        case WM_CLOSE:
+            SettingsUI::Close();
             return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -177,7 +188,7 @@ static void RenderGalleryPanel() {
         wchar_t filename[MAX_PATH] = L"";
         OPENFILENAMEW ofn = {};
         ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = nullptr;
+        ofn.hwndOwner = g_hWnd;
         ofn.lpstrFilter = L"Video Files (*.mp4;*.webm;*.mkv;*.avi)\0*.mp4;*.webm;*.mkv;*.avi\0All Files (*.*)\0*.*\0";
         ofn.lpstrFile = filename;
         ofn.nMaxFile = MAX_PATH;
@@ -196,7 +207,7 @@ static void RenderGalleryPanel() {
     ImGui::Separator();
     ImGui::Text("Found Video Files (%d):", (int)videoFiles.size());
 
-    ImGui::BeginChild("VideoList", ImVec2(0, 300), true);
+    ImGui::BeginChild("VideoList", ImVec2(0, 260), true);
     for (const auto& file : videoFiles) {
         if (ImGui::Button(file.c_str(), ImVec2(-1, 30))) {
             nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", file}};
@@ -218,178 +229,211 @@ static void RenderSettingsPanel() {
     }
 
     ImGui::SliderInt("Battery Saver FPS", &cfg.battery_fps, 10, 30);
-    ImGui::Checkbox("Pause Wallpaper on Fullscreen Apps / Games", &cfg.pause_on_fullscreen);
-    ImGui::Checkbox("Pause Wallpaper on Battery Power", &cfg.pause_on_battery);
-    ImGui::Checkbox("Update Lock Screen Snapshot on Lock (Win+L)", &cfg.update_lockscreen);
-    ImGui::Checkbox("Run LiteWallpaper on Windows Startup", &cfg.run_on_startup);
+    ImGui::Checkbox("Auto-Pause on Fullscreen Apps / Games", &cfg.pause_on_fullscreen);
+    ImGui::Checkbox("Pause on Battery Power", &cfg.pause_on_battery);
+    ImGui::Checkbox("Capture Lock Screen Background", &cfg.update_lockscreen);
+    ImGui::Checkbox("Launch on Windows Startup", &cfg.run_on_startup);
 
     ImGui::Spacing();
-    ImGui::Text("Audio Output");
+    ImGui::Text("Audio Output Settings");
     ImGui::Separator();
 
-    static float currentVol = 0.0f;
-    if (!cfg.wallpapers.empty()) {
-        currentVol = cfg.wallpapers[0].volume;
+    static float volume = 0.5f;
+    static bool volume_init = false;
+    if (!volume_init && !cfg.wallpapers.empty()) {
+        volume = cfg.wallpapers[0].volume;
+        volume_init = true;
     }
 
-    if (ImGui::SliderFloat("Master Volume", &currentVol, 0.0f, 1.0f, "%.2f")) {
+    if (ImGui::SliderFloat("Master Volume", &volume, 0.0f, 1.0f, "%.2f")) {
         if (!cfg.wallpapers.empty()) {
-            cfg.wallpapers[0].volume = currentVol;
+            cfg.wallpapers[0].volume = volume;
         }
-        nlohmann::json req{{"cmd", "set_volume"}, {"volume", currentVol}};
+        nlohmann::json req{{"cmd", "set_volume"}, {"volume", volume}};
         g_ipcClient.SendRequest(req.dump());
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Save and Apply Configuration", ImVec2(240, 35))) {
+    if (ImGui::Button("Save Configuration", ImVec2(180, 32))) {
         g_settingsConfig.Save();
         g_ipcClient.SendRequest("{\"cmd\":\"reload_config\"}");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Hide Window to Tray", ImVec2(180, 32))) {
+        SettingsUI::Close();
     }
 }
 
 static void RenderPerformancePanel() {
-    static int updateCounter = 0;
-    if (++updateCounter % 30 == 0) {
-        FetchDaemonStatus();
-    }
-
-    ImGui::Text("Daemon Status: %s", g_daemonConnected ? "Connected" : "Disconnected (Daemon Offline)");
+    ImGui::Text("Real-Time Engine Monitor");
     ImGui::Separator();
 
-    if (g_daemonConnected) {
-        ImGui::Text("Playback State: %s", g_daemonPaused ? "Paused" : "Playing");
-        ImGui::Text("Engine Target FPS: %d", g_daemonFps);
-        ImGui::Text("Video Resolution: %d x %d (Native FPS: %.2f)", g_daemonWidth, g_daemonHeight, g_daemonVideoFps);
-        ImGui::Text("Video Codec: %s", g_daemonCodec.c_str());
-        ImGui::Text("Video Duration: %.1f seconds", g_daemonDuration);
-        ImGui::Text("Process Working Set RAM: %zu MB", g_daemonRamMB);
-
-        ImGui::PlotLines("RAM Usage (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 80));
-
-        ImGui::Spacing();
-        if (ImGui::Button(g_daemonPaused ? "Resume Wallpaper" : "Pause Wallpaper", ImVec2(160, 30))) {
-            if (g_daemonPaused) {
-                g_ipcClient.SendRequest("{\"cmd\":\"resume\"}");
-            } else {
-                g_ipcClient.SendRequest("{\"cmd\":\"pause\"}");
-            }
-        }
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Make sure litewp_daemon.exe is running in background.");
+    if (!g_daemonConnected) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Engine Status: Background Engine Initializing...");
+        return;
     }
+
+    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Engine Status: Active (Running)");
+    ImGui::Text("State: %s", g_daemonPaused ? "Paused (Game / Lock Screen)" : (g_daemonPlaying ? "Playing" : "Idle"));
+    ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
+    ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
+    ImGui::Text("Video Duration: %.1f seconds", g_daemonDuration);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Process Working Set (RAM Usage): %zu MB", g_daemonRamMB);
+
+    ImGui::PlotLines("RAM History (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 60.0f, ImVec2(0, 80));
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "*Target memory budget: < 45 MB");
 }
 
-int SettingsApp::Run(void* hInstance, int nCmdShow) {
-    g_settingsConfig.Load();
+bool SettingsUI::Open(HINSTANCE hInstance) {
+    if (g_isOpen && g_hWnd) {
+        ShowWindow(g_hWnd, SW_RESTORE);
+        SetForegroundWindow(g_hWnd);
+        return true;
+    }
 
-    // Register Win32 window class
+    g_hInstance = hInstance;
+
     WNDCLASSEXW wc = {
         sizeof(wc),
         CS_CLASSDC,
-        WndProc,
+        SettingsWndProc,
         0L, 0L,
-        (HINSTANCE)hInstance,
-        nullptr, nullptr, nullptr, nullptr,
-        L"LiteWallpaper_Settings",
+        hInstance,
+        LoadIconW(hInstance, MAKEINTRESOURCEW(101)),
+        LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)), // IDC_ARROW
+        nullptr, nullptr,
+        L"LiteWallpaper_SettingsClass",
         nullptr
     };
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowW(
+    g_hWnd = CreateWindowExW(
+        0,
         wc.lpszClassName,
         L"LiteWallpaper Control Panel",
         WS_OVERLAPPEDWINDOW,
-        100, 100, 720, 560,
+        150, 150, 720, 560,
         nullptr, nullptr, wc.hInstance, nullptr
     );
 
-    if (!CreateDeviceD3D(hwnd)) {
+    if (!g_hWnd || !CreateDeviceD3D(g_hWnd)) {
         CleanupDeviceD3D();
+        if (g_hWnd) DestroyWindow(g_hWnd);
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        return 1;
+        g_hWnd = nullptr;
+        return false;
     }
 
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
+    ShowWindow(g_hWnd, SW_SHOW);
+    UpdateWindow(g_hWnd);
 
-    // Setup ImGui
+    // Setup ImGui Context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     (void)io;
     ImGui::StyleColorsDark();
 
-    ImGui_ImplWin32_Init(hwnd);
+    ImGui_ImplWin32_Init(g_hWnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    // Initial status fetch
+    g_settingsConfig.Load();
     FetchDaemonStatus();
 
-    // Main loop
-    bool done = false;
-    while (!done) {
-        MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-            if (msg.message == WM_QUIT) {
-                done = true;
-            }
-        }
-        if (done) break;
+    g_isOpen = true;
+    return true;
+}
 
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
+void SettingsUI::RenderFrame() {
+    if (!g_isOpen || !g_hWnd) return;
 
-        // Settings Viewport Window
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(io.DisplaySize);
-        ImGui::Begin("LiteWallpaper Settings", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
-
-        if (ImGui::BeginTabBar("MainTabBar")) {
-            if (ImGui::BeginTabItem("Gallery")) {
-                RenderGalleryPanel();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Settings")) {
-                RenderSettingsPanel();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Performance")) {
-                RenderPerformancePanel();
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
-        }
-
-        ImGui::End();
-
-        // Render ImGui frame
-        ImGui::Render();
-        const float clear_color_with_alpha[4] = { 0.1f, 0.1f, 0.12f, 1.0f };
-        g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
-        g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-
-        g_pSwapChain->Present(1, 0);
+    MSG msg;
+    while (PeekMessageW(&msg, g_hWnd, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 
-    // Cleanup
+    if (!g_isOpen || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
+
+    if (++g_fetchCounter >= 30) {
+        g_fetchCounter = 0;
+        FetchDaemonStatus();
+    }
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    ImGui::Begin("LiteWallpaper Settings", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+
+    if (ImGui::BeginTabBar("MainTabBar")) {
+        if (ImGui::BeginTabItem("Gallery")) {
+            RenderGalleryPanel();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Settings")) {
+            RenderSettingsPanel();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Performance")) {
+            RenderPerformancePanel();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+
+    ImGui::Render();
+    const float clear_color[4] = { 0.1f, 0.1f, 0.12f, 1.0f };
+    g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
+    g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+    g_pSwapChain->Present(1, 0);
+}
+
+bool SettingsUI::IsOpen() {
+    return g_isOpen;
+}
+
+HWND SettingsUI::GetHwnd() {
+    return g_hWnd;
+}
+
+void SettingsUI::Close() {
+    if (!g_isOpen) return;
+
+    g_isOpen = false;
+
+    // Shutdown ImGui
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
+    // Release DirectX 11 resources
     CleanupDeviceD3D();
-    DestroyWindow(hwnd);
-    UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
-    return 0;
+    if (g_hWnd) {
+        DestroyWindow(g_hWnd);
+        g_hWnd = nullptr;
+    }
+
+    if (g_hInstance) {
+        UnregisterClassW(L"LiteWallpaper_SettingsClass", g_hInstance);
+    }
+
+    // Force Windows OS and mimalloc to immediately trim working set memory!
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    mi_collect(true);
 }
 
 } // namespace litewp
-
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
-    return litewp::SettingsApp::Run(hInstance, nCmdShow);
-}

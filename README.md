@@ -18,9 +18,10 @@ Lightweight animated video wallpaper engine for Windows.
 
 ## Usage
 1. Extract the .zip file
-2. Run `litewp_daemon.exe`
-3. Right-click the tray icon to change wallpaper
-4. Run `litewp_settings.exe` for advanced settings
+2. Run `LiteWallpaper.exe`
+3. The Settings control panel will open immediately, and the background engine will activate on your desktop.
+4. Close the settings window anytime to keep LiteWallpaper running in ultra-lean background mode (~12-18 MB RAM).
+5. Right-click the system tray icon or re-launch `LiteWallpaper.exe` anytime to reopen Settings.
 
 ## Building from Source
 
