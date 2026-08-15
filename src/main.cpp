@@ -68,65 +68,64 @@ static void TrimWorkingSetMemory() {
 }
 
 static void OpenWallpaperDialog() {
-    std::thread([]() {
-        wchar_t filename[MAX_PATH] = L"";
-        OPENFILENAMEW ofn = {};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = nullptr;
-        ofn.lpstrFilter = L"Video Files (*.mp4;*.webm;*.mkv;*.avi)\0*.mp4;*.webm;*.mkv;*.avi\0All Files (*.*)\0*.*\0";
-        ofn.lpstrFile = filename;
-        ofn.nMaxFile = MAX_PATH;
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    wchar_t filename[MAX_PATH] = L"";
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = nullptr;
+    ofn.lpstrFilter = L"Video Files (*.mp4;*.webm;*.mkv;*.avi;*.mov)\0*.mp4;*.webm;*.mkv;*.avi;*.mov\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = filename;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
 
-        if (GetOpenFileNameW(&ofn)) {
-            // Convert to UTF-8
-            int size_needed = WideCharToMultiByte(CP_UTF8, 0, filename, -1, NULL, 0, NULL, NULL);
-            std::string utf8_path(size_needed - 1, 0);
-            WideCharToMultiByte(CP_UTF8, 0, filename, -1, &utf8_path[0], size_needed, NULL, NULL);
+    if (GetOpenFileNameW(&ofn)) {
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, filename, -1, NULL, 0, NULL, NULL);
+        std::string utf8_path(size_needed - 1, 0);
+        WideCharToMultiByte(CP_UTF8, 0, filename, -1, &utf8_path[0], size_needed, NULL, NULL);
 
-            auto& cfg = g_config.Get();
-            if (cfg.wallpapers.empty()) {
-                MonitorWallpaper mw;
-                mw.video_path = utf8_path;
-                cfg.wallpapers.push_back(mw);
-            } else {
-                cfg.wallpapers[0].video_path = utf8_path;
-            }
-            cfg.AddToGallery(utf8_path);
-            g_config.Save();
-
-            // Thread-safe decoder reload
-            {
-                std::lock_guard<std::mutex> lock(g_decoder_mutex);
-                g_current_frame = VideoFrame{};
-                g_decoder.Close();
-                g_decoder.Open(utf8_path.c_str(), g_presenter.GetDevice());
-            }
-
-            TrimWorkingSetMemory();
+        auto& cfg = g_config.Get();
+        if (cfg.wallpapers.empty()) {
+            MonitorWallpaper mw;
+            mw.video_path = utf8_path;
+            cfg.wallpapers.push_back(mw);
+        } else {
+            cfg.wallpapers[0].video_path = utf8_path;
         }
-    }).detach();
+        cfg.AddToGallery(utf8_path);
+        g_config.Save();
+
+        // Thread-safe decoder reload
+        {
+            std::lock_guard<std::mutex> lock(g_decoder_mutex);
+            g_current_frame = VideoFrame{};
+            g_decoder.Close();
+            g_decoder.Open(utf8_path.c_str(), g_presenter.GetDevice());
+            g_paused = false;
+            g_clock.Reset();
+        }
+
+        TrimWorkingSetMemory();
+    }
 }
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
-    // 0. Single Instance Mutex Check
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
+    // 0. Single-Instance Check
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LiteWallpaper_SingleInstance_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Another instance is already running! Tell it to open the Settings UI and exit this process
+        // Another instance is already running! Notify it via IPC to open Settings UI
         IpcClient client;
         client.SendRequest("{\"cmd\":\"open_settings\"}");
         if (hMutex) CloseHandle(hMutex);
         return 0;
     }
 
-    // Enable 1ms multimedia timer resolution for high precision frame pacing without CPU spin
+    // High precision multimedia timer for frame pacing
     timeBeginPeriod(1);
 
-    // 1. Load config
+    // 1. Load Configuration
     g_config.Load();
     auto& cfg = g_config.Get();
 
-    // 2. Register window class for the background wallpaper canvas
+    // 2. Register Background Render Window Class
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
@@ -155,16 +154,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    // 3. Initialize Direct3D 11 Presenter
+    // 3. Inject window behind desktop icons (WorkerW) BEFORE DXGI initialization
+    g_injector.Attach(g_main_hwnd);
+    g_injector.RegisterExplorerRestart(g_main_hwnd);
+
+    // 4. Initialize Direct3D 11 Presenter on the attached child window
     if (!g_presenter.Init(g_main_hwnd, vw, vh)) {
         timeEndPeriod(1);
         if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
         return 1;
     }
-
-    // 4. Inject window behind desktop icons (WorkerW)
-    g_injector.Attach(g_main_hwnd);
-    g_injector.RegisterExplorerRestart(g_main_hwnd);
 
     // 5. Open video if available
     if (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty()) {
@@ -172,7 +171,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         g_decoder.Open(cfg.wallpapers[0].video_path.c_str(), g_presenter.GetDevice());
     }
 
-    // 6. Setup audio parameters (Lazy-init: only allocate WASAPI if unmuted)
+    // 6. Setup audio parameters
     if (!cfg.wallpapers.empty()) {
         g_audio.SetVolume(cfg.wallpapers[0].volume);
         g_audio.SetMuted(!cfg.wallpapers[0].audio_enabled);
@@ -193,15 +192,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     // 10. Start IPC Server
     g_ipc.Start(OnIpcRequest);
 
-    // Initial launch: Open Settings UI on-demand
+    // 11. Open Settings UI on first startup
     SettingsUI::Open(hInstance);
 
-    // Initial memory working set cleanup (drops startup overhead down to ~15-25 MB)
+    // Initial RAM cleanup
     TrimWorkingSetMemory();
 
-    // 11. Main loop
-    MSG msg;
-    float audio_buffer[4096];
+    // 12. Main Event & Render Loop
+    MSG msg = {};
+    float audio_buffer[4096 * 2];
 
     while (g_running) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -222,24 +221,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
         PowerState power = g_governor.GetCurrentState();
 
-        // Correct evaluation of pause conditions:
-        // - Workstation locked
-        // - Fullscreen app/game detected (if pause_on_fullscreen is on)
-        // - Battery power active (if pause_on_battery is on)
-        // - Manually paused by user
         bool should_pause = (power == PowerState::Sleeping) ||
                             (power == PowerState::Paused && cfg.pause_on_fullscreen) ||
                             (power == PowerState::Reduced && cfg.pause_on_battery) ||
                             g_paused;
 
         if (should_pause) {
-            MsgWaitForMultipleObjects(0, nullptr, FALSE, 250, QS_ALLINPUT);
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
         }
 
-        // Adjust FPS based on power state:
-        // When on battery power (and pause_on_battery is false), reduce FPS to battery_fps.
-        // When on AC charger / desktop, always run at target_fps.
+        // Adjust FPS based on battery status
         if (power == PowerState::Reduced) {
             g_clock.SetTargetFPS(cfg.battery_fps);
         } else {
@@ -251,7 +243,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
             if (g_decoder.DecodeNextFrame(g_current_frame)) {
                 if (g_current_frame.texture) {
                     g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode);
-                    g_presenter.Present(0); // Zero-sync presentation driven by PlaybackClock pacing
+                    g_presenter.Present(0);
                 }
 
                 // Decode and feed all available audio frames if enabled
@@ -274,73 +266,58 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     SettingsUI::Close();
     g_ipc.Stop();
     g_tray.Destroy();
-    g_governor.Shutdown();
-
+    g_audio.Stop();
     {
         std::lock_guard<std::mutex> lock(g_decoder_mutex);
-        g_current_frame = VideoFrame{};
         g_decoder.Close();
     }
-
-    g_audio.Stop();
     g_presenter.Cleanup();
     g_injector.Detach();
 
+    timeEndPeriod(1);
     if (hMutex) {
         ReleaseMutex(hMutex);
         CloseHandle(hMutex);
     }
 
-    timeEndPeriod(1);
     return 0;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_APP_OPEN_SETTINGS:
-            SettingsUI::Open(GetModuleHandleW(nullptr));
-            return 0;
-
-        case WM_WTSSESSION_CHANGE:
-            g_governor.HandleSessionChange(wParam);
-            if (wParam == WTS_SESSION_LOCK && g_config.Get().update_lockscreen) {
-                std::lock_guard<std::mutex> lock(g_decoder_mutex);
-                if (g_current_frame.texture) {
-                    g_lockscreen.CaptureAndSetLockScreen(
-                        g_presenter.GetDevice(),
-                        g_presenter.GetContext(),
-                        g_current_frame.texture,
-                        g_current_frame.texture_index
-                    );
-                }
-            }
-            return 0;
-
-        case WM_POWERBROADCAST:
-            g_governor.HandlePowerChange(wParam);
-            return TRUE;
-
-        case WM_DISPLAYCHANGE: {
-            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            g_presenter.Resize(vw, vh);
-            g_injector.Reattach(hwnd);
-            return 0;
-        }
-
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            return 0;
-    }
-
-    if (msg == WM_APP + 1) {
-        g_tray.HandleMessage(wParam, lParam);
+    if (msg == WM_APP_OPEN_SETTINGS) {
+        SettingsUI::Open(GetModuleHandleW(nullptr));
         return 0;
     }
 
     if (msg == g_injector.GetTaskbarRestartMsg()) {
-        g_injector.Reattach(hwnd);
+        g_tray.Create(g_main_hwnd, OnTrayAction);
+        g_injector.Reattach(g_main_hwnd);
         return 0;
+    }
+
+    switch (msg) {
+        case WM_WTSSESSION_CHANGE:
+            g_governor.HandleSessionChange(wParam);
+            return 0;
+
+        case WM_POWERBROADCAST:
+            g_governor.HandlePowerChange(wParam);
+            return 0;
+
+        case WM_DISPLAYCHANGE: {
+            int cx = LOWORD(lParam);
+            int cy = HIWORD(lParam);
+            g_presenter.Resize(cx, cy);
+            return 0;
+        }
+
+        case WM_USER + 1: // Tray icon callback
+            g_tray.HandleMessage(wParam, lParam);
+            return 0;
+
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
     }
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -350,6 +327,7 @@ void OnTrayAction(TrayAction action) {
     switch (action) {
         case TrayAction::PauseResume:
             g_paused = !g_paused;
+            if (!g_paused) g_clock.Reset();
             break;
         case TrayAction::MuteUnmute:
             g_audio.SetMuted(!g_audio.IsMuted());
@@ -463,10 +441,13 @@ std::string OnIpcRequest(const std::string& request_json) {
         size_t ram = GetProcessMemoryUsageMB();
         std::lock_guard<std::mutex> lock(g_decoder_mutex);
         auto info = g_decoder.GetInfo();
+        auto& cfg = g_config.Get();
+        std::string current_video = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
         return nlohmann::json{
             {"ok", true},
-            {"playing", !g_paused},
+            {"playing", !g_paused && !current_video.empty()},
             {"paused", g_paused},
+            {"current_video", current_video},
             {"fps", g_clock.GetTargetFPS()},
             {"video_fps", info.fps},
             {"width", info.width},
@@ -481,6 +462,17 @@ std::string OnIpcRequest(const std::string& request_json) {
     } else if (cmd == "resume") {
         g_paused = false;
         g_clock.Reset();
+        return "{\"ok\":true}";
+    } else if (cmd == "stop") {
+        std::lock_guard<std::mutex> lock(g_decoder_mutex);
+        g_decoder.Close();
+        g_current_frame = VideoFrame{};
+        g_paused = true;
+        auto& cfg = g_config.Get();
+        if (!cfg.wallpapers.empty()) {
+            cfg.wallpapers[0].video_path = "";
+            g_config.Save();
+        }
         return "{\"ok\":true}";
     } else if (cmd == "set_volume") {
         float vol = req.value("volume", 0.0f);

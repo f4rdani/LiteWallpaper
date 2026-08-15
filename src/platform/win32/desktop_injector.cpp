@@ -76,6 +76,10 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
     // Set WorkerW as parent
     SetParent(renderHwnd, m_workerw);
 
+    // Ensure WorkerW is shown and visible
+    ShowWindow(m_workerw, SW_SHOW);
+    UpdateWindow(m_workerw);
+
     // Resize to cover entire virtual screen across all monitors
     int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int y = GetSystemMetrics(SM_YVIRTUALSCREEN);

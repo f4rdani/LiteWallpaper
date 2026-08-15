@@ -52,6 +52,7 @@ static IpcClient                g_ipcClient;
 static bool   g_daemonConnected = false;
 static bool   g_daemonPlaying = false;
 static bool   g_daemonPaused = false;
+static std::string g_daemonCurrentVideo = "";
 static int    g_daemonFps = 0;
 static double g_daemonVideoFps = 0.0;
 static int    g_daemonWidth = 0;
@@ -179,6 +180,10 @@ static void ApplyAction(std::string utf8_path, std::string action) {
     } else if (action == "both") {
         nlohmann::json req{{"cmd", "set_both"}, {"path", utf8_path}};
         g_ipcClient.SendRequest(req.dump());
+    } else if (action == "stop") {
+        g_ipcClient.SendRequest("{\"cmd\":\"stop\"}");
+    } else if (action == "resume") {
+        g_ipcClient.SendRequest("{\"cmd\":\"resume\"}");
     }
 }
 
@@ -237,6 +242,7 @@ static void FetchDaemonStatus() {
         g_daemonConnected = true;
         g_daemonPlaying = res.value("playing", false);
         g_daemonPaused = res.value("paused", false);
+        g_daemonCurrentVideo = res.value("current_video", "");
         g_daemonFps = res.value("fps", 0);
         g_daemonVideoFps = res.value("video_fps", 0.0);
         g_daemonWidth = res.value("width", 0);
@@ -330,23 +336,59 @@ static void RenderGalleryPanel() {
             std::string filenameOnly = fs::path(file).filename().string();
             if (filenameOnly.empty()) filenameOnly = file;
 
+            bool isCurrent = (file == g_daemonCurrentVideo && !g_daemonCurrentVideo.empty());
+            bool isPlaying = isCurrent && g_daemonPlaying && !g_daemonPaused;
+            bool isPaused = isCurrent && g_daemonPaused;
+
             ImGui::PushID((int)i);
             
             // Render an individual interactive card container
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.14f, 0.15f, 0.20f, 0.90f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.38f, 0.60f));
-            ImGui::BeginChild("CardItem", ImVec2(0, 72), true);
+            if (isPlaying) {
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.22f, 0.18f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.75f, 0.45f, 0.80f));
+            } else if (isPaused) {
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.22f, 0.18f, 0.10f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.60f, 0.20f, 0.80f));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.14f, 0.15f, 0.20f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.38f, 0.60f));
+            }
+            
+            ImGui::BeginChild("CardItem", ImVec2(0, 74), true);
 
-            // Card Header & Filename
-            ImGui::TextColored(ImVec4(0.35f, 0.85f, 1.00f, 1.00f), "%s  %s", ICON_FA_FILM, filenameOnly.c_str());
+            // Card Header & Status Badge
+            if (isPlaying) {
+                ImGui::TextColored(ImVec4(0.35f, 1.00f, 0.50f, 1.00f), "%s  %s  [ RUNNING / PLAYING ]", ICON_FA_FILM, filenameOnly.c_str());
+            } else if (isPaused) {
+                ImGui::TextColored(ImVec4(1.00f, 0.70f, 0.20f, 1.00f), "%s  %s  [ PAUSED ]", ICON_FA_FILM, filenameOnly.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(0.35f, 0.85f, 1.00f, 1.00f), "%s  %s", ICON_FA_FILM, filenameOnly.c_str());
+            }
+            
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.60f, 1.00f), "- %s", file.c_str());
 
             ImGui::Spacing();
 
-            // 3 Apply Target Action Buttons
-            if (ImGui::Button(ICON_FA_PLAY "  Set Wallpaper", ImVec2(145, 26))) {
-                ApplyAction(file, "wallpaper");
+            // Dynamic Action Button based on running state
+            if (isPlaying) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.20f, 0.20f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.25f, 0.25f, 1.0f));
+                if (ImGui::Button(ICON_FA_STOP "  Stop Wallpaper", ImVec2(150, 26))) {
+                    ApplyAction(file, "stop");
+                }
+                ImGui::PopStyleColor(2);
+            } else if (isPaused) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.75f, 0.45f, 1.0f));
+                if (ImGui::Button(ICON_FA_PLAY "  Resume Wallpaper", ImVec2(165, 26))) {
+                    ApplyAction(file, "resume");
+                }
+                ImGui::PopStyleColor(2);
+            } else {
+                if (ImGui::Button(ICON_FA_PLAY "  Set Wallpaper", ImVec2(145, 26))) {
+                    ApplyAction(file, "wallpaper");
+                }
             }
             ImGui::SameLine();
 
@@ -483,8 +525,15 @@ static void RenderPerformancePanel() {
         return;
     }
 
-    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  Engine Status: Active (Running)");
-    ImGui::Text("State: %s", g_daemonPaused ? "Paused (Game / Lock Screen)" : (g_daemonPlaying ? "Playing" : "Idle"));
+    if (g_daemonPlaying && !g_daemonPaused) {
+        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  Engine Status: Playing (Active)");
+    } else if (g_daemonPaused) {
+        ImGui::TextColored(ImVec4(1.00f, 0.70f, 0.20f, 1.00f), ICON_FA_PAUSE "  Engine Status: Paused");
+    } else {
+        ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.00f), ICON_FA_STOP "  Engine Status: Idle");
+    }
+
+    ImGui::Text("Active Video: %s", g_daemonCurrentVideo.empty() ? "(None)" : g_daemonCurrentVideo.c_str());
     ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
     ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
     ImGui::Text("Video Duration: %.1f seconds", g_daemonDuration);
