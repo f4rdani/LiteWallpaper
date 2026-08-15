@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl/client.h>
@@ -20,6 +21,13 @@
 
 #include "core/config.h"
 #include "core/ipc_server.h"
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -52,6 +60,46 @@ static std::string g_daemonCodec = "";
 static size_t g_daemonRamMB = 0;
 static std::vector<float> g_ramHistory(60, 0.0f);
 static int    g_fetchCounter = 0;
+
+static void SetupImGuiStyle() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 4.0f;
+    style.ScrollbarRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+    style.TabRounding = 4.0f;
+    style.WindowBorderSize = 0.0f;
+    style.FrameBorderSize = 1.0f;
+    style.ItemSpacing = ImVec2(10, 8);
+    style.FramePadding = ImVec2(8, 6);
+
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_WindowBg]             = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+    colors[ImGuiCol_ChildBg]              = ImVec4(0.11f, 0.11f, 0.14f, 1.00f);
+    colors[ImGuiCol_PopupBg]              = ImVec4(0.12f, 0.12f, 0.15f, 1.00f);
+    colors[ImGuiCol_Border]               = ImVec4(0.20f, 0.22f, 0.28f, 0.80f);
+    colors[ImGuiCol_FrameBg]              = ImVec4(0.15f, 0.16f, 0.20f, 1.00f);
+    colors[ImGuiCol_FrameBgHovered]       = ImVec4(0.22f, 0.24f, 0.30f, 1.00f);
+    colors[ImGuiCol_FrameBgActive]        = ImVec4(0.28f, 0.30f, 0.38f, 1.00f);
+    colors[ImGuiCol_TitleBg]              = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+    colors[ImGuiCol_TitleBgActive]        = ImVec4(0.12f, 0.12f, 0.15f, 1.00f);
+    colors[ImGuiCol_Button]               = ImVec4(0.18f, 0.32f, 0.52f, 1.00f);
+    colors[ImGuiCol_ButtonHovered]        = ImVec4(0.25f, 0.44f, 0.70f, 1.00f);
+    colors[ImGuiCol_ButtonActive]         = ImVec4(0.14f, 0.26f, 0.44f, 1.00f);
+    colors[ImGuiCol_Header]               = ImVec4(0.18f, 0.32f, 0.52f, 0.80f);
+    colors[ImGuiCol_HeaderHovered]        = ImVec4(0.25f, 0.44f, 0.70f, 0.80f);
+    colors[ImGuiCol_HeaderActive]         = ImVec4(0.14f, 0.26f, 0.44f, 1.00f);
+    colors[ImGuiCol_Tab]                  = ImVec4(0.12f, 0.13f, 0.17f, 1.00f);
+    colors[ImGuiCol_TabHovered]           = ImVec4(0.25f, 0.44f, 0.70f, 0.80f);
+    colors[ImGuiCol_TabActive]            = ImVec4(0.18f, 0.32f, 0.52f, 1.00f);
+    colors[ImGuiCol_TabUnfocused]         = ImVec4(0.09f, 0.10f, 0.13f, 1.00f);
+    colors[ImGuiCol_TabUnfocusedActive]  = ImVec4(0.14f, 0.16f, 0.22f, 1.00f);
+    colors[ImGuiCol_SliderGrab]           = ImVec4(0.35f, 0.60f, 0.95f, 1.00f);
+    colors[ImGuiCol_SliderGrabActive]     = ImVec4(0.45f, 0.75f, 1.00f, 1.00f);
+    colors[ImGuiCol_CheckMark]            = ImVec4(0.40f, 0.85f, 1.00f, 1.00f);
+}
 
 static void CreateRenderTarget() {
     if (!g_pSwapChain || !g_pd3dDevice) return;
@@ -199,13 +247,14 @@ static void RenderGalleryPanel() {
     auto& cfg = g_settingsConfig.Get();
 
     // Drag and Drop Area Banner
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.6f, 1.0f, 0.8f));
-    ImGui::BeginChild("DropZoneBanner", ImVec2(0, 50), true);
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - 140.0f);
-    ImGui::SetCursorPosY(15.0f);
-    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "📥 Drag & Drop Video Files Anywhere Here!");
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.55f, 0.95f, 0.80f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.15f, 0.22f, 0.90f));
+    ImGui::BeginChild("DropZoneBanner", ImVec2(0, 52), true);
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - 180.0f);
+    ImGui::SetCursorPosY(16.0f);
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "[ Drag & Drop Video Files Anywhere in this Window ]");
     ImGui::EndChild();
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);
 
     ImGui::Spacing();
 
@@ -213,8 +262,8 @@ static void RenderGalleryPanel() {
     static char folderPath[MAX_PATH] = "C:\\";
     static std::vector<std::string> scannedFiles;
 
-    ImGui::Text("Add New Video Wallpaper:");
-    if (ImGui::Button("📂 Browse Video File...", ImVec2(200, 30))) {
+    ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.90f, 1.00f), "Add New Video Wallpaper:");
+    if (ImGui::Button("Browse Video File...", ImVec2(180, 32))) {
         wchar_t filename[MAX_PATH] = L"";
         OPENFILENAMEW ofn = {};
         ofn.lStructSize = sizeof(ofn);
@@ -233,9 +282,10 @@ static void RenderGalleryPanel() {
     }
 
     ImGui::SameLine();
+    ImGui::SetNextItemWidth(340);
     ImGui::InputText("##FolderPath", folderPath, MAX_PATH);
     ImGui::SameLine();
-    if (ImGui::Button("Scan Folder")) {
+    if (ImGui::Button("Scan Folder", ImVec2(110, 32))) {
         scannedFiles.clear();
         std::error_code ec;
         if (fs::exists(folderPath, ec) && fs::is_directory(folderPath, ec)) {
@@ -255,11 +305,11 @@ static void RenderGalleryPanel() {
     ImGui::Separator();
 
     // Persistent Gallery History List
-    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "★ Wallpaper Gallery & History (%d items):", (int)cfg.gallery_history.size());
+    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), "Gallery & History (%d saved):", (int)cfg.gallery_history.size());
 
     ImGui::BeginChild("GalleryHistoryList", ImVec2(0, 180), true);
     if (cfg.gallery_history.empty()) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No wallpapers in gallery yet. Drag & drop a video file or click Browse!");
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "No wallpapers in gallery yet. Drag & drop a video file or click Browse Video File!");
     } else {
         std::string toRemove = "";
         for (size_t i = 0; i < cfg.gallery_history.size(); i++) {
@@ -267,14 +317,18 @@ static void RenderGalleryPanel() {
             std::string filenameOnly = fs::path(file).filename().string();
 
             ImGui::PushID((int)i);
-            if (ImGui::Button("▶ Apply", ImVec2(70, 24))) {
+            if (ImGui::Button("Apply", ImVec2(65, 26))) {
                 ApplyWallpaper(file);
             }
             ImGui::SameLine();
-            if (ImGui::Button("✖", ImVec2(24, 24))) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.15f, 0.15f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
+            if (ImGui::Button("X", ImVec2(26, 26))) {
                 toRemove = file;
             }
+            ImGui::PopStyleColor(2);
             ImGui::SameLine();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
             ImGui::Text("%s", filenameOnly.c_str());
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", file.c_str());
@@ -290,11 +344,11 @@ static void RenderGalleryPanel() {
 
     if (!scannedFiles.empty()) {
         ImGui::Spacing();
-        ImGui::Text("Scanned Folder Results (%d):", (int)scannedFiles.size());
+        ImGui::TextColored(ImVec4(0.75f, 0.85f, 1.0f, 1.0f), "Scanned Folder Videos (%d found):", (int)scannedFiles.size());
         ImGui::BeginChild("ScannedFolderList", ImVec2(0, 100), true);
         for (const auto& file : scannedFiles) {
             std::string filenameOnly = fs::path(file).filename().string();
-            if (ImGui::Button(filenameOnly.c_str(), ImVec2(-1, 24))) {
+            if (ImGui::Button(filenameOnly.c_str(), ImVec2(-1, 26))) {
                 ApplyWallpaper(file);
             }
             if (ImGui::IsItemHovered()) {
@@ -308,7 +362,7 @@ static void RenderGalleryPanel() {
 static void RenderSettingsPanel() {
     auto& cfg = g_settingsConfig.Get();
 
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Display & Aspect Ratio Scaling");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Display & Aspect Ratio Scaling");
     ImGui::Separator();
 
     const char* scalingModes[] = {
@@ -317,23 +371,26 @@ static void RenderSettingsPanel() {
         "Stretch (Fill Display Area)"
     };
     int currentMode = cfg.scaling_mode;
-    if (ImGui::Combo("Scaling Mode", &currentMode, scalingModes, IM_ARRAYSIZE(scalingModes))) {
+    ImGui::SetNextItemWidth(500);
+    if (ImGui::Combo("##ScalingMode", &currentMode, scalingModes, IM_ARRAYSIZE(scalingModes))) {
         cfg.scaling_mode = currentMode;
         g_settingsConfig.Save();
         nlohmann::json req{{"cmd", "set_scaling"}, {"mode", currentMode}};
         g_ipcClient.SendRequest(req.dump());
     }
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "*Auto Fill proportionally scales and centers videos across vertical/horizontal monitors.");
+    ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.70f, 1.00f), "*Auto Fill proportionally scales and centers videos across vertical & horizontal monitors.");
 
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Playback & Power Governance");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Playback & Power Governance");
     ImGui::Separator();
 
+    ImGui::SetNextItemWidth(250);
     if (ImGui::SliderInt("Target FPS", &cfg.target_fps, 15, 60)) {
         nlohmann::json req{{"cmd", "set_fps"}, {"fps", cfg.target_fps}};
         g_ipcClient.SendRequest(req.dump());
     }
 
+    ImGui::SetNextItemWidth(250);
     ImGui::SliderInt("Battery Saver FPS", &cfg.battery_fps, 10, 30);
     ImGui::Checkbox("Auto-Pause on Fullscreen Apps / Games", &cfg.pause_on_fullscreen);
     ImGui::Checkbox("Pause on Battery Power", &cfg.pause_on_battery);
@@ -341,7 +398,7 @@ static void RenderSettingsPanel() {
     ImGui::Checkbox("Launch on Windows Startup", &cfg.run_on_startup);
 
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Audio Output");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Audio Output");
     ImGui::Separator();
 
     static float volume = 0.5f;
@@ -351,6 +408,7 @@ static void RenderSettingsPanel() {
         volume_init = true;
     }
 
+    ImGui::SetNextItemWidth(250);
     if (ImGui::SliderFloat("Master Volume", &volume, 0.0f, 1.0f, "%.2f")) {
         if (!cfg.wallpapers.empty()) {
             cfg.wallpapers[0].volume = volume;
@@ -361,19 +419,19 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (ImGui::Button("Save Configuration", ImVec2(180, 32))) {
+    if (ImGui::Button("Save Configuration", ImVec2(180, 34))) {
         g_settingsConfig.Save();
         g_ipcClient.SendRequest("{\"cmd\":\"reload_config\"}");
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Hide Window to Tray", ImVec2(180, 32))) {
+    if (ImGui::Button("Hide Window to Tray", ImVec2(180, 34))) {
         SettingsUI::Close();
     }
 }
 
 static void RenderPerformancePanel() {
-    ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "Real-Time Engine Monitor");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Real-Time Engine Monitor");
     ImGui::Separator();
 
     if (!g_daemonConnected) {
@@ -381,7 +439,7 @@ static void RenderPerformancePanel() {
         return;
     }
 
-    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Engine Status: Active (Running)");
+    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "Engine Status: Active (Running)");
     ImGui::Text("State: %s", g_daemonPaused ? "Paused (Game / Lock Screen)" : (g_daemonPlaying ? "Playing" : "Idle"));
     ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
     ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
@@ -391,8 +449,8 @@ static void RenderPerformancePanel() {
     ImGui::Separator();
     ImGui::Text("Process Working Set (RAM Usage): %zu MB", g_daemonRamMB);
 
-    ImGui::PlotLines("RAM History (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 60.0f, ImVec2(0, 80));
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "*Target memory budget: < 45 MB");
+    ImGui::PlotLines("RAM History (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 60.0f, ImVec2(0, 85));
+    ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.70f, 1.00f), "*Target memory budget: < 45 MB");
 }
 
 bool SettingsUI::Open(HINSTANCE hInstance) {
@@ -435,18 +493,24 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         return false;
     }
 
+    // Apply Windows 10/11 Dark Title Bar & matching caption color
+    BOOL darkMode = TRUE;
+    DwmSetWindowAttribute(g_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+    COLORREF captionColor = RGB(20, 20, 26);
+    DwmSetWindowAttribute(g_hWnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
+
     // Enable Drag and Drop
     DragAcceptFiles(g_hWnd, TRUE);
 
     ShowWindow(g_hWnd, SW_SHOW);
     UpdateWindow(g_hWnd);
 
-    // Setup ImGui Context
+    // Setup ImGui Context & Custom Dark Theme
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     (void)io;
-    ImGui::StyleColorsDark();
+    SetupImGuiStyle();
 
     ImGui_ImplWin32_Init(g_hWnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
@@ -495,7 +559,7 @@ void SettingsUI::RenderFrame() {
     ImGui::End();
 
     ImGui::Render();
-    const float clear_color[4] = { 0.1f, 0.1f, 0.12f, 1.0f };
+    const float clear_color[4] = { 0.08f, 0.08f, 0.10f, 1.0f };
     g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
     g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
