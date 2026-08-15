@@ -21,6 +21,7 @@
 
 #include "core/config.h"
 #include "core/ipc_server.h"
+#include "icons_fontawesome6.h"
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -69,7 +70,7 @@ static void SetupImGuiStyle() {
     style.PopupRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
     style.GrabRounding = 4.0f;
-    style.TabRounding = 4.0f;
+    style.TabRounding = 5.0f;
     style.WindowBorderSize = 0.0f;
     style.FrameBorderSize = 1.0f;
     style.ItemSpacing = ImVec2(10, 8);
@@ -85,15 +86,15 @@ static void SetupImGuiStyle() {
     colors[ImGuiCol_FrameBgActive]        = ImVec4(0.28f, 0.30f, 0.38f, 1.00f);
     colors[ImGuiCol_TitleBg]              = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
     colors[ImGuiCol_TitleBgActive]        = ImVec4(0.12f, 0.12f, 0.15f, 1.00f);
-    colors[ImGuiCol_Button]               = ImVec4(0.18f, 0.32f, 0.52f, 1.00f);
-    colors[ImGuiCol_ButtonHovered]        = ImVec4(0.25f, 0.44f, 0.70f, 1.00f);
-    colors[ImGuiCol_ButtonActive]         = ImVec4(0.14f, 0.26f, 0.44f, 1.00f);
-    colors[ImGuiCol_Header]               = ImVec4(0.18f, 0.32f, 0.52f, 0.80f);
-    colors[ImGuiCol_HeaderHovered]        = ImVec4(0.25f, 0.44f, 0.70f, 0.80f);
-    colors[ImGuiCol_HeaderActive]         = ImVec4(0.14f, 0.26f, 0.44f, 1.00f);
+    colors[ImGuiCol_Button]               = ImVec4(0.16f, 0.32f, 0.54f, 1.00f);
+    colors[ImGuiCol_ButtonHovered]        = ImVec4(0.22f, 0.44f, 0.72f, 1.00f);
+    colors[ImGuiCol_ButtonActive]         = ImVec4(0.13f, 0.26f, 0.46f, 1.00f);
+    colors[ImGuiCol_Header]               = ImVec4(0.16f, 0.32f, 0.54f, 0.80f);
+    colors[ImGuiCol_HeaderHovered]        = ImVec4(0.22f, 0.44f, 0.72f, 0.80f);
+    colors[ImGuiCol_HeaderActive]         = ImVec4(0.13f, 0.26f, 0.46f, 1.00f);
     colors[ImGuiCol_Tab]                  = ImVec4(0.12f, 0.13f, 0.17f, 1.00f);
-    colors[ImGuiCol_TabHovered]           = ImVec4(0.25f, 0.44f, 0.70f, 0.80f);
-    colors[ImGuiCol_TabActive]            = ImVec4(0.18f, 0.32f, 0.52f, 1.00f);
+    colors[ImGuiCol_TabHovered]           = ImVec4(0.22f, 0.44f, 0.72f, 0.80f);
+    colors[ImGuiCol_TabActive]            = ImVec4(0.16f, 0.32f, 0.54f, 1.00f);
     colors[ImGuiCol_TabUnfocused]         = ImVec4(0.09f, 0.10f, 0.13f, 1.00f);
     colors[ImGuiCol_TabUnfocusedActive]  = ImVec4(0.14f, 0.16f, 0.22f, 1.00f);
     colors[ImGuiCol_SliderGrab]           = ImVec4(0.35f, 0.60f, 0.95f, 1.00f);
@@ -246,13 +247,13 @@ static void FetchDaemonStatus() {
 static void RenderGalleryPanel() {
     auto& cfg = g_settingsConfig.Get();
 
-    // Drag and Drop Area Banner
+    // Drag and Drop Area Banner with Icon
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.55f, 0.95f, 0.80f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.15f, 0.22f, 0.90f));
     ImGui::BeginChild("DropZoneBanner", ImVec2(0, 52), true);
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - 180.0f);
-    ImGui::SetCursorPosY(16.0f);
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "[ Drag & Drop Video Files Anywhere in this Window ]");
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() * 0.5f - 190.0f);
+    ImGui::SetCursorPosY(15.0f);
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DOWNLOAD "  Drag & Drop Video Files Anywhere Here");
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
 
@@ -263,7 +264,7 @@ static void RenderGalleryPanel() {
     static std::vector<std::string> scannedFiles;
 
     ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.90f, 1.00f), "Add New Video Wallpaper:");
-    if (ImGui::Button("Browse Video File...", ImVec2(180, 32))) {
+    if (ImGui::Button(ICON_FA_FOLDER_OPEN "  Browse Video File...", ImVec2(195, 32))) {
         wchar_t filename[MAX_PATH] = L"";
         OPENFILENAMEW ofn = {};
         ofn.lStructSize = sizeof(ofn);
@@ -282,10 +283,10 @@ static void RenderGalleryPanel() {
     }
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(340);
+    ImGui::SetNextItemWidth(320);
     ImGui::InputText("##FolderPath", folderPath, MAX_PATH);
     ImGui::SameLine();
-    if (ImGui::Button("Scan Folder", ImVec2(110, 32))) {
+    if (ImGui::Button(ICON_FA_MAGNIFYING_GLASS "  Scan Folder", ImVec2(125, 32))) {
         scannedFiles.clear();
         std::error_code ec;
         if (fs::exists(folderPath, ec) && fs::is_directory(folderPath, ec)) {
@@ -305,7 +306,7 @@ static void RenderGalleryPanel() {
     ImGui::Separator();
 
     // Persistent Gallery History List
-    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), "Gallery & History (%d saved):", (int)cfg.gallery_history.size());
+    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), ICON_FA_FILM "  Wallpaper Gallery & History (%d saved):", (int)cfg.gallery_history.size());
 
     ImGui::BeginChild("GalleryHistoryList", ImVec2(0, 180), true);
     if (cfg.gallery_history.empty()) {
@@ -317,13 +318,13 @@ static void RenderGalleryPanel() {
             std::string filenameOnly = fs::path(file).filename().string();
 
             ImGui::PushID((int)i);
-            if (ImGui::Button("Apply", ImVec2(65, 26))) {
+            if (ImGui::Button(ICON_FA_PLAY " Apply", ImVec2(78, 26))) {
                 ApplyWallpaper(file);
             }
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.15f, 0.15f, 0.8f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
-            if (ImGui::Button("X", ImVec2(26, 26))) {
+            if (ImGui::Button(ICON_FA_TRASH, ImVec2(28, 26))) {
                 toRemove = file;
             }
             ImGui::PopStyleColor(2);
@@ -344,7 +345,7 @@ static void RenderGalleryPanel() {
 
     if (!scannedFiles.empty()) {
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.75f, 0.85f, 1.0f, 1.0f), "Scanned Folder Videos (%d found):", (int)scannedFiles.size());
+        ImGui::TextColored(ImVec4(0.75f, 0.85f, 1.0f, 1.0f), ICON_FA_COMPACT_DISC "  Scanned Folder Videos (%d found):", (int)scannedFiles.size());
         ImGui::BeginChild("ScannedFolderList", ImVec2(0, 100), true);
         for (const auto& file : scannedFiles) {
             std::string filenameOnly = fs::path(file).filename().string();
@@ -362,7 +363,7 @@ static void RenderGalleryPanel() {
 static void RenderSettingsPanel() {
     auto& cfg = g_settingsConfig.Get();
 
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Display & Aspect Ratio Scaling");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DESKTOP "  Display & Aspect Ratio Scaling");
     ImGui::Separator();
 
     const char* scalingModes[] = {
@@ -381,7 +382,7 @@ static void RenderSettingsPanel() {
     ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.70f, 1.00f), "*Auto Fill proportionally scales and centers videos across vertical & horizontal monitors.");
 
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Playback & Power Governance");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GEARS "  Playback & Power Governance");
     ImGui::Separator();
 
     ImGui::SetNextItemWidth(250);
@@ -398,7 +399,7 @@ static void RenderSettingsPanel() {
     ImGui::Checkbox("Launch on Windows Startup", &cfg.run_on_startup);
 
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Audio Output");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_VOLUME_HIGH "  Audio Output");
     ImGui::Separator();
 
     static float volume = 0.5f;
@@ -419,19 +420,19 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (ImGui::Button("Save Configuration", ImVec2(180, 34))) {
+    if (ImGui::Button(ICON_FA_FLOPPY_DISK "  Save Configuration", ImVec2(190, 34))) {
         g_settingsConfig.Save();
         g_ipcClient.SendRequest("{\"cmd\":\"reload_config\"}");
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Hide Window to Tray", ImVec2(180, 34))) {
+    if (ImGui::Button(ICON_FA_EYE_SLASH "  Hide Window to Tray", ImVec2(190, 34))) {
         SettingsUI::Close();
     }
 }
 
 static void RenderPerformancePanel() {
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "Real-Time Engine Monitor");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_MICROCHIP "  Real-Time Engine Monitor");
     ImGui::Separator();
 
     if (!g_daemonConnected) {
@@ -439,7 +440,7 @@ static void RenderPerformancePanel() {
         return;
     }
 
-    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "Engine Status: Active (Running)");
+    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  Engine Status: Active (Running)");
     ImGui::Text("State: %s", g_daemonPaused ? "Paused (Game / Lock Screen)" : (g_daemonPlaying ? "Playing" : "Idle"));
     ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
     ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
@@ -512,6 +513,34 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
     (void)io;
     SetupImGuiStyle();
 
+    // 1. Load Segoe UI font if available on Windows
+    ImFont* mainFont = nullptr;
+    if (fs::exists("C:\\Windows\\Fonts\\segoeui.ttf")) {
+        mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f);
+    }
+    if (!mainFont) {
+        io.Fonts->AddFontDefault();
+    }
+
+    // 2. Merge FontAwesome 6 Icon Font
+    static const ImWchar icons_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+    ImFontConfig icons_config;
+    icons_config.MergeMode = true;
+    icons_config.PixelSnapH = true;
+    icons_config.GlyphMinAdvanceX = 16.0f;
+
+    char exePath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    fs::path exeDir = fs::path(exePath).parent_path();
+    fs::path fontPath1 = exeDir / "assets" / "fa-solid-900.ttf";
+    fs::path fontPath2 = exeDir / "fa-solid-900.ttf";
+
+    if (fs::exists(fontPath1)) {
+        io.Fonts->AddFontFromFileTTF(fontPath1.string().c_str(), 15.0f, &icons_config, icons_ranges);
+    } else if (fs::exists(fontPath2)) {
+        io.Fonts->AddFontFromFileTTF(fontPath2.string().c_str(), 15.0f, &icons_config, icons_ranges);
+    }
+
     ImGui_ImplWin32_Init(g_hWnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
@@ -541,15 +570,15 @@ void SettingsUI::RenderFrame() {
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
 
     if (ImGui::BeginTabBar("MainTabBar")) {
-        if (ImGui::BeginTabItem("Gallery")) {
+        if (ImGui::BeginTabItem(ICON_FA_IMAGES "  Gallery")) {
             RenderGalleryPanel();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Settings")) {
+        if (ImGui::BeginTabItem(ICON_FA_GEAR "  Settings")) {
             RenderSettingsPanel();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Performance")) {
+        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Performance")) {
             RenderPerformancePanel();
             ImGui::EndTabItem();
         }
