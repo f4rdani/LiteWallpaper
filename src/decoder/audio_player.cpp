@@ -1,3 +1,6 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "audio_player.h"
 #include <windows.h>
 #include <mmdeviceapi.h>

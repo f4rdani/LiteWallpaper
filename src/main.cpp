@@ -224,10 +224,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
                     g_presenter.Present(0); // Zero-sync presentation driven by PlaybackClock pacing
                 }
 
-                // Decode and feed audio if enabled
+                // Decode and feed all available audio frames if enabled
                 if (!g_audio.IsMuted() && g_decoder.HasAudio()) {
-                    int samples = g_decoder.DecodeAudioSamples(audio_buffer, 4096);
-                    if (samples > 0) {
+                    int samples = 0;
+                    while ((samples = g_decoder.DecodeAudioSamples(audio_buffer, 4096)) > 0) {
                         g_audio.PushSamples(audio_buffer, samples);
                     }
                 }

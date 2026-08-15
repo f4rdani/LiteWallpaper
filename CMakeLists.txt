@@ -7,8 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # === Performance flags ===
 if(MSVC)
     # Optimize for size and performance, disable RTTI
-    string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-    add_compile_options(/O2 /Oi /Gy /GL /GR- /std:c++20 /W3 /utf-8)
+    add_compile_options(/O2 /Oi /Gy /GL /GR- /EHsc /std:c++20 /W3 /utf-8)
     add_link_options(/LTCG /OPT:REF /OPT:ICF)
 else()
     add_compile_options(-O3 -flto -fno-exceptions -fno-rtti -std=c++20)

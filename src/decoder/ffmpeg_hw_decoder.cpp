@@ -19,8 +19,8 @@ FFmpegHWDecoder::~FFmpegHWDecoder() {
 bool FFmpegHWDecoder::InitHWDecoder(ID3D11Device* device) {
     if (!device) return false;
 
-    AVBufferRef* hw_device_ctx = nullptr;
-    if (av_hwdevice_ctx_alloc(&hw_device_ctx, AV_HWDEVICE_TYPE_D3D11VA) < 0) {
+    AVBufferRef* hw_device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!hw_device_ctx) {
         return false;
     }
 

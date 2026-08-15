@@ -2,6 +2,8 @@
 #include "video_decoder.h"
 #include <string>
 
+#include <d3d11.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -12,8 +14,6 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 }
-
-#include <d3d11.h>
 
 namespace litewp {
 
