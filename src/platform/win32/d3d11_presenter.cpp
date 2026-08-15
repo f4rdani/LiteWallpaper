@@ -131,7 +131,7 @@ bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
             sd.SampleDesc.Count = 1;
             sd.SampleDesc.Quality = 0;
             sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-            sd.BufferCount = 3;
+            sd.BufferCount = 2; // Double buffering saves ~33MB backbuffer memory
             sd.Scaling = DXGI_SCALING_STRETCH;
             sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
             sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;

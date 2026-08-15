@@ -35,6 +35,8 @@ public:
     // True if the decoder is using D3D11VA hardware acceleration.
     bool IsHWAccelerated() const { return m_is_hw_accelerated; }
 
+    void SetAudioEnabled(bool enabled) { m_audio_enabled = enabled; }
+
 private:
     AVFormatContext* m_fmt_ctx = nullptr;
     AVCodecContext*  m_video_codec_ctx = nullptr;
@@ -50,6 +52,7 @@ private:
 
     ID3D11Device* m_d3d_device = nullptr;
     bool m_is_hw_accelerated = false;
+    bool m_audio_enabled = false;
 
     VideoInfo m_info;
 

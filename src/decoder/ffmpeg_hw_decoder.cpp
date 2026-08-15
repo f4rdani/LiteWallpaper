@@ -49,6 +49,10 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device) {
         return false;
     }
 
+    // Fast demuxer probing settings to minimize RAM buffers
+    m_fmt_ctx->probesize = 64 * 1024;
+    m_fmt_ctx->max_analyze_duration = 500000;
+
     if (avformat_find_stream_info(m_fmt_ctx, nullptr) < 0) {
         Close();
         return false;
@@ -88,6 +92,12 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device) {
         return false;
     }
 
+    // Limit thread count and buffer footprint
+    m_video_codec_ctx->thread_count = 1; // HW decoding is done on GPU; 1 CPU thread minimizes thread pool RAM!
+    m_video_codec_ctx->thread_type = FF_THREAD_SLICE;
+    m_video_codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    m_video_codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+
     if (InitHWDecoder(d3d_device)) {
         m_video_codec_ctx->hw_device_ctx = av_buffer_ref(m_hw_device_ctx);
         m_video_codec_ctx->get_format = GetHWFormat;
@@ -120,6 +130,7 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device) {
         if (audio_codec) {
             m_audio_codec_ctx = avcodec_alloc_context3(audio_codec);
             if (m_audio_codec_ctx && avcodec_parameters_to_context(m_audio_codec_ctx, audio_stream->codecpar) >= 0) {
+                m_audio_codec_ctx->thread_count = 1;
                 if (avcodec_open2(m_audio_codec_ctx, audio_codec, nullptr) >= 0) {
                     // Initialize SwrContext to resample to Stereo Float32 @ 44100 Hz
                     AVChannelLayout out_ch_layout;
@@ -189,8 +200,12 @@ bool FFmpegHWDecoder::DecodeNextFrame(VideoFrame& frame) {
         if (m_packet->stream_index == m_video_stream_idx) {
             avcodec_send_packet(m_video_codec_ctx, m_packet);
             av_packet_unref(m_packet);
-        } else if (m_packet->stream_index == m_audio_stream_idx && m_audio_codec_ctx) {
-            avcodec_send_packet(m_audio_codec_ctx, m_packet);
+        } else if (m_packet->stream_index == m_audio_stream_idx) {
+            // CRITICAL MEMORY OPTIMIZATION: Only feed audio packets if audio is actually enabled/unmuted!
+            // When audio is muted, sending packets causes FFmpeg to buffer thousands of unread audio frames in RAM!
+            if (m_audio_enabled && m_audio_codec_ctx && m_swr_ctx) {
+                avcodec_send_packet(m_audio_codec_ctx, m_packet);
+            }
             av_packet_unref(m_packet);
         } else {
             av_packet_unref(m_packet);
@@ -392,6 +407,7 @@ void FFmpegHWDecoder::Close() {
     m_audio_stream_idx = -1;
     m_d3d_device = nullptr;
     m_is_hw_accelerated = false;
+    m_audio_enabled = false;
     m_info = VideoInfo{};
 }
 

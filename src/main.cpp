@@ -141,6 +141,8 @@ static void OpenWallpaperDialog() {
             std::lock_guard<std::mutex> lock(g_decoder_mutex);
             g_current_frame = VideoFrame{};
             g_decoder.Close();
+            bool audio_on = !cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && (cfg.wallpapers[0].volume > 0.0f);
+            g_decoder.SetAudioEnabled(audio_on);
             if (g_decoder.Open(utf8_path.c_str(), g_presenter.GetDevice())) {
                 SetVideoPacing(g_decoder.GetInfo().fps);
             }
@@ -153,9 +155,13 @@ static void OpenWallpaperDialog() {
 }
 
 static bool OpenWallpaperVideo(const std::string& path) {
+    auto& cfg = g_config.Get();
+    bool audio_on = !cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && (cfg.wallpapers[0].volume > 0.0f);
+
     std::lock_guard<std::mutex> lock(g_decoder_mutex);
     g_current_frame = VideoFrame{};
     g_decoder.Close();
+    g_decoder.SetAudioEnabled(audio_on);
     bool ok = g_decoder.Open(path.c_str(), g_presenter.GetDevice());
     g_decoder_hw = g_decoder.IsHWAccelerated();
     g_paused = false;
@@ -177,7 +183,7 @@ static bool OpenWallpaperVideo(const std::string& path) {
 }
 
 // Release ALL wallpaper resources (decoder GPU textures, audio, render window)
-// when a fullscreen app covers the desktop, freeing RAM/VRAM and CPU/GPU usage.
+// when a fullscreen app covers the desktop, freeing RAM/VRAM and CPU/GPU resources.
 // Call on the main thread.
 static void SuspendWallpaperForFullscreen() {
     if (g_fullscreen_paused) return;
@@ -293,8 +299,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     Logger::Info("Presenter init OK, swapchain size=", vw, "x", vh);
 
     // Smoke test: flash a solid green frame for ~1.5 s.
-    // If the desktop turns green the injection + swapchain are working and any
-    // "no wallpaper" issue is in the decode/render path, not the injection.
     g_flash_until_us = g_clock.GetCurrentTimeMicros() + 1500000;
     Logger::Info("Smoke test: flashing solid green for 1.5s");
 
@@ -319,10 +323,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     g_tray.Create(g_main_hwnd, OnTrayAction);
 
     // 9. Setup Playback Clock
-    // NOTE: pacing is set to the video's NATIVE fps when a wallpaper opens
-    // (SetVideoPacing). target_fps is only a display cap (frame skipping), so
-    // we intentionally do NOT call SetTargetFPS(cfg.target_fps) here.
-
     // 10. Start IPC Server
     g_ipc.Start(OnIpcRequest);
 
@@ -335,6 +335,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     // 12. Main Event & Render Loop
     MSG msg = {};
     float audio_buffer[4096 * 2];
+    uint64_t last_trim_us = 0;
 
     while (g_running) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -369,9 +370,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             ResumeWallpaperFromFullscreen();
         }
 
-        // Re-attach if "Show Desktop" (Win+D / 3-finger swipe) rebuilt the
-        // desktop hierarchy and invalidated our WorkerW parent. Throttled to
-        // once per second; the calls are cheap but unnecessary every frame.
+        // Re-attach if "Show Desktop" (Win+D / 3-finger swipe) rebuilt the desktop hierarchy
         static uint64_t last_inject_check_us = 0;
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
         if (!g_fullscreen_paused && g_inject_ok && g_main_hwnd &&
@@ -388,6 +387,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             last_inject_check_us = now_us;
         }
 
+        // Periodic process working set memory trimming every 5 seconds
+        if (now_us - last_trim_us >= 5000000) {
+            last_trim_us = now_us;
+            TrimWorkingSetMemory();
+        }
+
         bool should_pause = (power == PowerState::Sleeping) ||
                             (power == PowerState::Reduced && cfg.pause_on_battery) ||
                             g_paused;
@@ -397,9 +402,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             continue;
         }
 
-        // Playback always advances at the video's native fps (SetVideoPacing),
-        // so speed is 1x regardless of the display FPS cap. When on battery /
-        // reduced power we lower the DISPLAY rate by skipping frames.
+        // Playback always advances at the video's native fps (SetVideoPacing)
         int display_fps_cap = (power == PowerState::Reduced) ? cfg.battery_fps : cfg.target_fps;
         g_frame_skip = ComputeFrameSkip(g_video_fps, display_fps_cap);
 
@@ -417,9 +420,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
 
             std::lock_guard<std::mutex> lock(g_decoder_mutex);
             if (g_decoder.DecodeNextFrame(g_current_frame)) {
-                // Always decode every frame (keeps playback position at native
-                // speed + audio in sync); only PRESENT every N-th frame when the
-                // display FPS cap is below the video's native rate.
                 g_frames_decoded++;
                 bool should_present = (g_frame_skip <= 1) ||
                                       ((g_frames_decoded % g_frame_skip) == 0);
@@ -433,10 +433,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
                         }
                     }
                     g_frames_rendered++;
-                } else if (g_current_frame.texture && g_last_error.empty()) {
-                    // Frame decoded but intentionally skipped for power saving.
                 } else if (!g_current_frame.texture && g_last_error.empty()) {
-                    // Decoder produced a non-GPU frame (SW fallback not engaged yet)
                     g_last_error = "Decoded frame has no GPU texture (HW decode inactive)";
                     Logger::Info(g_last_error);
                 }
@@ -490,8 +487,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
 
-    // Attach / detach render window on the main thread (window owner), because
-    // the IPC server runs on a background thread.
+    // Attach / detach render window on the main thread (window owner)
     if (msg == WM_APP_ATTACH) {
         if (g_main_hwnd && !g_injector.IsAttached()) {
             g_inject_ok = g_injector.Attach(g_main_hwnd);
@@ -588,8 +584,6 @@ std::string OnIpcRequest(const std::string& request_json) {
             cfg.AddToGallery(path);
             g_config.Save();
 
-            // If a fullscreen app is active the resources are suspended; just
-            // persist the new path and let ResumeWallpaperFromFullscreen open it.
             bool ok = g_fullscreen_paused;
             if (!g_fullscreen_paused) {
                 ok = OpenWallpaperVideo(path);
@@ -601,10 +595,9 @@ std::string OnIpcRequest(const std::string& request_json) {
             return nlohmann::json{{"ok", ok}, {"hw", g_decoder_hw}}.dump();
         }
     } else if (cmd == "test_render") {
-        // Diagnostic: flash the render window a solid color so the user can see
-        // whether the injection/swapchain is live on the desktop.
         g_flash_until_us = g_clock.GetCurrentTimeMicros() + 1500000;
         return nlohmann::json{{"ok", true}}.dump();
+    } else if (cmd == "set_lockscreen") {
         std::string path = req.value("path", "");
         if (!path.empty()) {
             auto& cfg = g_config.Get();
@@ -636,7 +629,6 @@ std::string OnIpcRequest(const std::string& request_json) {
             g_config.Save();
 
             if (g_fullscreen_paused) {
-                // Suspended for fullscreen: persist path, open on resume.
                 return nlohmann::json{{"ok", true}, {"hw", false}}.dump();
             }
 
@@ -712,6 +704,7 @@ std::string OnIpcRequest(const std::string& request_json) {
         if (g_main_hwnd) {
             PostMessageW(g_main_hwnd, WM_APP_DEATTACH, 0, 0);
         }
+        TrimWorkingSetMemory();
         return "{\"ok\":true}";
     } else if (cmd == "set_volume") {
         float vol = req.value("volume", 0.0f);
@@ -719,10 +712,9 @@ std::string OnIpcRequest(const std::string& request_json) {
         if (vol > 0.0f && !g_audio.IsRunning()) {
             g_audio.Init();
         }
+        g_decoder.SetAudioEnabled(vol > 0.0f && !g_audio.IsMuted());
         return "{\"ok\":true}";
     } else if (cmd == "set_fps") {
-        // target_fps is a DISPLAY cap (frame skipping), never changes playback
-        // speed. The pacing clock stays at the video's native fps.
         int fps = req.value("fps", 30);
         if (fps < 1) fps = 1;
         g_config.Get().target_fps = fps;
@@ -730,7 +722,6 @@ std::string OnIpcRequest(const std::string& request_json) {
         return "{\"ok\":true}";
     } else if (cmd == "reload_config") {
         g_config.Load();
-        auto& cfg = g_config.Get();
         return "{\"ok\":true}";
     }
 
