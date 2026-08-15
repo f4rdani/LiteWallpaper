@@ -130,6 +130,17 @@ bool DesktopInjector::IsAttached() const {
     return m_workerw != nullptr && m_render_hwnd != nullptr;
 }
 
+bool DesktopInjector::IsAttachedValid() const {
+    if (!IsAttached()) return false;
+    if (!IsWindow(m_workerw)) return false;
+    // The render window must still be a child of the WorkerW layer. When
+    // Windows shows the desktop it re-parents SHELLDLL_DefView between
+    // Progman and WorkerW, which invalidates (or destroys) our parent.
+    HWND parent = GetParent(m_render_hwnd);
+    if (parent != m_workerw) return false;
+    return IsWindowVisible(m_workerw);
+}
+
 HWND DesktopInjector::GetWorkerW() const {
     return m_workerw;
 }

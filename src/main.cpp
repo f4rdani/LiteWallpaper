@@ -369,6 +369,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             ResumeWallpaperFromFullscreen();
         }
 
+        // Re-attach if "Show Desktop" (Win+D / 3-finger swipe) rebuilt the
+        // desktop hierarchy and invalidated our WorkerW parent. Throttled to
+        // once per second; the calls are cheap but unnecessary every frame.
+        static uint64_t last_inject_check_us = 0;
+        uint64_t now_us = g_clock.GetCurrentTimeMicros();
+        if (!g_fullscreen_paused && g_inject_ok && g_main_hwnd &&
+            (now_us - last_inject_check_us >= 1000000) &&
+            !g_injector.IsAttachedValid()) {
+            last_inject_check_us = now_us;
+            Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
+            g_injector.Reattach(g_main_hwnd);
+            g_inject_ok = g_injector.IsAttached();
+            if (g_main_hwnd) {
+                ShowWindow(g_main_hwnd, SW_SHOW);
+            }
+        } else {
+            last_inject_check_us = now_us;
+        }
+
         bool should_pause = (power == PowerState::Sleeping) ||
                             (power == PowerState::Reduced && cfg.pause_on_battery) ||
                             g_paused;

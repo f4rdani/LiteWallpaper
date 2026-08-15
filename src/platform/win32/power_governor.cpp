@@ -95,6 +95,19 @@ BOOL CALLBACK EnumFullscreenWindowProc(HWND hwnd, LPARAM lParam) {
         return TRUE;
     }
 
+    // Skip layered windows that are fully transparent (alpha == 0), such as
+    // the NVIDIA GeForce Overlay. They cover the whole monitor but are
+    // invisible, so they never actually occlude the desktop.
+    LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if ((exStyle & WS_EX_LAYERED) != 0) {
+        DWORD colorKey = 0;
+        BYTE alpha = 0;
+        DWORD flags = 0;
+        if (GetLayeredWindowAttributes(hwnd, &colorKey, &alpha, &flags) && alpha == 0) {
+            return TRUE;
+        }
+    }
+
     // Skip shell and our own windows.
     wchar_t className[256];
     if (GetClassNameW(hwnd, className, 256)) {
@@ -116,10 +129,17 @@ BOOL CALLBACK EnumFullscreenWindowProc(HWND hwnd, LPARAM lParam) {
         return TRUE;
     }
 
-    // A window covers the entire working area when maximized (has a caption)
-    // or when it is borderless fullscreen. Either way the wallpaper behind it
-    // is not visible.
+    // A window only occludes the desktop when it is TRULY fullscreen: a
+    // frameless (no caption) window covering the full monitor, e.g. a game,
+    // F11 video/terminal, or a media player. Plain maximized windows (Edge,
+    // Explorer, terminals with a title bar) are NORMAL usage — the user still
+    // reaches the desktop via Win+D / 3-finger swipe and Alt-Tab, so the
+    // wallpaper must keep running behind them.
     RECT work = mi.rcWork;
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if ((style & WS_CAPTION) != 0 || (style & WS_CHILD) != 0) {
+        return TRUE;
+    }
     if (rc.left <= work.left + 2 && rc.top <= work.top + 2 &&
         rc.right >= work.right - 2 && rc.bottom >= work.bottom - 2) {
         ctx->any_fullscreen = true;

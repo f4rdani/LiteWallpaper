@@ -29,6 +29,12 @@ public:
     // Check if currently attached
     bool IsAttached() const;
     
+    // Check if the render window is still a child of a valid WorkerW. The
+    // desktop hierarchy is rebuilt on "Show Desktop" / Win+D (Windows moves
+    // SHELLDLL_DefView between Progman and WorkerW), which can destroy or
+    // re-parent the WorkerW we attached to.
+    bool IsAttachedValid() const;
+    
     // Get WorkerW handle
     HWND GetWorkerW() const;
     
