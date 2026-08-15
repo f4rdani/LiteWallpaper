@@ -44,5 +44,8 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.c
 cmake --build build --config Release
 ```
 
+## Developer Documentation
+For in-depth architectural details, IPC protocol specifications, and contributing guidelines, check out **[DEVELOPMENT.md](DEVELOPMENT.md)**.
+
 ## License
 GPL v3
