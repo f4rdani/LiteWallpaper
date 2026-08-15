@@ -41,6 +41,13 @@ private:
     ComPtr<ID3D11VertexShader>       m_fullscreen_vs;
     ComPtr<ID3D11SamplerState>       m_sampler;
     ComPtr<ID3D11Buffer>             m_scaling_cb;
+
+    // GPU Shader Resource Texture & Views for NV12 rendering
+    ComPtr<ID3D11Texture2D>          m_srv_texture;
+    ComPtr<ID3D11ShaderResourceView> m_srv_y;
+    ComPtr<ID3D11ShaderResourceView> m_srv_uv;
+    UINT                             m_srv_width = 0;
+    UINT                             m_srv_height = 0;
     
     HWND m_hwnd = nullptr;
     int m_width = 0;

@@ -30,13 +30,13 @@ VS_OUT main(uint vertexID : SV_VertexID) {
 )";
 
 static const char* g_ps_source = R"(
-Texture2DArray<float>  texY  : register(t0);
-Texture2DArray<float2> texUV : register(t1);
-SamplerState           samp  : register(s0);
+Texture2D<float>  texY  : register(t0);
+Texture2D<float2> texUV : register(t1);
+SamplerState      samp  : register(s0);
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-    float y = texY.Sample(samp, float3(uv, 0.0f));
-    float2 uv_val = texUV.Sample(samp, float3(uv, 0.0f));
+    float y = texY.Sample(samp, uv);
+    float2 uv_val = texUV.Sample(samp, uv);
     
     float u = uv_val.x - 0.5f;
     float v = uv_val.y - 0.5f;
@@ -231,30 +231,43 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
 
-    ComPtr<ID3D11ShaderResourceView> srv_y;
-    ComPtr<ID3D11ShaderResourceView> srv_uv;
+    // Create or resize the shader resource NV12 texture if dimensions change
+    if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
+        m_srv_texture.Reset();
+        m_srv_y.Reset();
+        m_srv_uv.Reset();
 
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
-    srvDescY.Format = DXGI_FORMAT_R8_UNORM;
-    srvDescY.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-    srvDescY.Texture2DArray.FirstArraySlice = array_index;
-    srvDescY.Texture2DArray.ArraySize = 1;
-    srvDescY.Texture2DArray.MipLevels = 1;
+        D3D11_TEXTURE2D_DESC srvDesc = texDesc;
+        srvDesc.ArraySize = 1;
+        srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        srvDesc.MiscFlags = 0;
 
-    if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &srvDescY, &srv_y))) {
-        return;
+        if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_srv_texture))) {
+            return;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
+        yDesc.Format = DXGI_FORMAT_R8_UNORM;
+        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        yDesc.Texture2D.MipLevels = 1;
+        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &yDesc, &m_srv_y))) {
+            return;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
+        uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        uvDesc.Texture2D.MipLevels = 1;
+        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &uvDesc, &m_srv_uv))) {
+            return;
+        }
+
+        m_srv_width = texDesc.Width;
+        m_srv_height = texDesc.Height;
     }
 
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
-    srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
-    srvDescUV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-    srvDescUV.Texture2DArray.FirstArraySlice = array_index;
-    srvDescUV.Texture2DArray.ArraySize = 1;
-    srvDescUV.Texture2DArray.MipLevels = 1;
-
-    if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &srvDescUV, &srv_uv))) {
-        return;
-    }
+    // Direct GPU memory copy from the hardware decoder slice to the shader resource texture (0% CPU!)
+    m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
 
     // Calculate Aspect Ratio / Scaling Transformation
     float screenAspect = (m_height > 0) ? (static_cast<float>(m_width) / static_cast<float>(m_height)) : 1.0f;
@@ -294,7 +307,6 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         m_context->ClearRenderTargetView(m_rtv.Get(), black);
     }
-    // Mode 2: Stretch (Default 1.0 scale, 0.0 offset, Fullscreen viewport)
 
     // Update Constant Buffer
     if (m_scaling_cb) {
@@ -318,7 +330,7 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     m_context->VSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
     m_context->PSSetShader(m_nv12_ps.Get(), nullptr, 0);
 
-    ID3D11ShaderResourceView* srvs[] = { srv_y.Get(), srv_uv.Get() };
+    ID3D11ShaderResourceView* srvs[] = { m_srv_y.Get(), m_srv_uv.Get() };
     m_context->PSSetShaderResources(0, 2, srvs);
     m_context->PSSetSamplers(0, 1, m_sampler.GetAddressOf());
 
@@ -362,6 +374,11 @@ ID3D11DeviceContext* D3D11Presenter::GetContext() const {
 }
 
 void D3D11Presenter::Cleanup() {
+    m_srv_uv.Reset();
+    m_srv_y.Reset();
+    m_srv_texture.Reset();
+    m_srv_width = 0;
+    m_srv_height = 0;
     m_scaling_cb.Reset();
     m_sampler.Reset();
     m_nv12_ps.Reset();
