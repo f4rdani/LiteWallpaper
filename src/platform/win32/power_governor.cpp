@@ -1,4 +1,5 @@
 #include "power_governor.h"
+#include <dwmapi.h>
 #include <shellapi.h>
 
 namespace litewp {
@@ -70,12 +71,65 @@ void PowerGovernor::HandlePowerChange(WPARAM wParam) {
     }
 }
 
-bool PowerGovernor::IsFullscreenAppRunning() {
-    HWND fg = GetForegroundWindow();
-    if (!fg || fg == GetDesktopWindow() || fg == GetShellWindow() || fg == m_hwnd) {
-        return false;
+namespace {
+struct FullscreenCheckCtx {
+    bool any_fullscreen = false;
+};
+
+BOOL CALLBACK EnumFullscreenWindowProc(HWND hwnd, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<FullscreenCheckCtx*>(lParam);
+    if (ctx->any_fullscreen) {
+        return FALSE; // Early exit once one is found
     }
 
+    // Only visible, non-minimized top-level windows can occlude the desktop.
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return TRUE;
+    }
+
+    // Skip windows that DWM is currently cloaking (e.g. app startup splash
+    // screens, non-visible UWP/Settings windows). They report WS_VISIBLE but
+    // are not actually rendered on screen.
+    int cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+        return TRUE;
+    }
+
+    // Skip shell and our own windows.
+    wchar_t className[256];
+    if (GetClassNameW(hwnd, className, 256)) {
+        if (wcscmp(className, L"Progman") == 0 || wcscmp(className, L"WorkerW") == 0 ||
+            wcscmp(className, L"Shell_TrayWnd") == 0 || wcscmp(className, L"LiteWallpaper_SettingsClass") == 0 ||
+            wcscmp(className, L"LiteWallpaper_Daemon") == 0) {
+            return TRUE;
+        }
+    }
+
+    RECT rc;
+    if (!GetWindowRect(hwnd, &rc)) {
+        return TRUE;
+    }
+
+    HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(hmon, &mi)) {
+        return TRUE;
+    }
+
+    // A window covers the entire working area when maximized (has a caption)
+    // or when it is borderless fullscreen. Either way the wallpaper behind it
+    // is not visible.
+    RECT work = mi.rcWork;
+    if (rc.left <= work.left + 2 && rc.top <= work.top + 2 &&
+        rc.right >= work.right - 2 && rc.bottom >= work.bottom - 2) {
+        ctx->any_fullscreen = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+} // namespace
+
+bool PowerGovernor::IsFullscreenAppRunning() {
     // Method 1: Check for true fullscreen 3D D3D games
     QUERY_USER_NOTIFICATION_STATE state;
     if (SUCCEEDED(SHQueryUserNotificationState(&state))) {
@@ -84,35 +138,15 @@ bool PowerGovernor::IsFullscreenAppRunning() {
         }
     }
 
-    // Method 2: Check foreground window class name
-    wchar_t className[256];
-    if (GetClassNameW(fg, className, 256)) {
-        if (wcscmp(className, L"Progman") == 0 || wcscmp(className, L"WorkerW") == 0 ||
-            wcscmp(className, L"Shell_TrayWnd") == 0 || wcscmp(className, L"LiteWallpaper_SettingsClass") == 0 ||
-            wcscmp(className, L"LiteWallpaper_Daemon") == 0) {
-            return false;
-        }
-    }
-
-    // Method 3: Check if foreground window is truly frameless and covers the full monitor
-    RECT fgRect;
-    if (GetWindowRect(fg, &fgRect)) {
-        HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi = { sizeof(mi) };
-        if (GetMonitorInfoW(hmon, &mi)) {
-            RECT monRect = mi.rcMonitor;
-            LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
-            // Must be frameless (no standard titlebar caption) to count as full-screen game
-            if ((style & WS_CAPTION) == 0 && (style & WS_CHILD) == 0) {
-                if (fgRect.left <= monRect.left && fgRect.top <= monRect.top &&
-                    fgRect.right >= monRect.right && fgRect.bottom >= monRect.bottom) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
+    // Method 2: The desktop is considered "occluded" when ANY visible
+    // top-level window covers the entire working area of its monitor —
+    // maximized windows and borderless fullscreen apps alike. Unlike checking
+    // only the foreground window, this stays suspended when a small non-
+    // fullscreen window is brought on top of a fullscreen one, because the
+    // fullscreen window behind it still hides the wallpaper.
+    FullscreenCheckCtx ctx;
+    EnumWindows(EnumFullscreenWindowProc, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.any_fullscreen;
 }
 
 bool PowerGovernor::IsOnBattery() {

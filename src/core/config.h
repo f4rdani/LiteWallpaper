@@ -17,8 +17,8 @@ struct AppConfig {
     std::vector<MonitorWallpaper> wallpapers;
     std::vector<std::string> gallery_history; // Persistent gallery of used video files
     int scaling_mode = 0;        // 0 = Auto / Aspect Fill (Cover), 1 = Aspect Fit (Letterbox), 2 = Stretch
-    int target_fps = 30;         // Default 30 FPS to save power
-    int idle_fps = 15;           // FPS when no interaction
+    int target_fps = 30;         // Display cap. Video always plays at native speed;
+                                // if target < video fps, frames are skipped (not slowed).
     bool pause_on_fullscreen = true;
     bool pause_on_battery = false; // true = pause, false = reduce FPS
     int battery_fps = 15;
@@ -91,7 +91,6 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"gallery_history", c.gallery_history},
         {"scaling_mode", c.scaling_mode},
         {"target_fps", c.target_fps},
-        {"idle_fps", c.idle_fps},
         {"pause_on_fullscreen", c.pause_on_fullscreen},
         {"pause_on_battery", c.pause_on_battery},
         {"battery_fps", c.battery_fps},
@@ -106,7 +105,6 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("gallery_history")) j.at("gallery_history").get_to(c.gallery_history);
     if (j.contains("scaling_mode")) j.at("scaling_mode").get_to(c.scaling_mode);
     if (j.contains("target_fps")) j.at("target_fps").get_to(c.target_fps);
-    if (j.contains("idle_fps")) j.at("idle_fps").get_to(c.idle_fps);
     if (j.contains("pause_on_fullscreen")) j.at("pause_on_fullscreen").get_to(c.pause_on_fullscreen);
     if (j.contains("pause_on_battery")) j.at("pause_on_battery").get_to(c.pause_on_battery);
     if (j.contains("battery_fps")) j.at("battery_fps").get_to(c.battery_fps);

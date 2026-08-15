@@ -45,7 +45,6 @@ bool Config::Load() {
     if (!file.is_open()) {
         // File does not exist, initialize defaults and save
         m_config.target_fps = 30;
-        m_config.idle_fps = 15;
         m_config.pause_on_fullscreen = true;
         m_config.pause_on_battery = false;
         m_config.battery_fps = 15;

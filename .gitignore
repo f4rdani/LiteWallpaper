@@ -27,3 +27,6 @@ third_party/ffmpeg/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# ImGui Runtime State
+imgui.ini

@@ -111,35 +111,71 @@ bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
     m_rtv.Reset();
     m_swapchain.Reset();
 
-    DXGI_SWAP_CHAIN_DESC scDesc = {};
-    scDesc.BufferCount = 2;
-    scDesc.BufferDesc.Width = width;
-    scDesc.BufferDesc.Height = height;
-    scDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    scDesc.BufferDesc.RefreshRate.Numerator = 60;
-    scDesc.BufferDesc.RefreshRate.Denominator = 1;
-    scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scDesc.OutputWindow = hwnd;
-    scDesc.SampleDesc.Count = 1;
-    scDesc.SampleDesc.Quality = 0;
-    scDesc.Windowed = TRUE;
-    scDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD; // Windows 7 SP1+ compatible!
+    // --- Try flip-model (DirectComposition) first: works better for wallpaper
+    //     injection where the render window is a cross-process child of the
+    //     desktop (Progman / WorkerW). DWM composites flip-model swapchains
+    //     independently of the classic "visible top-level window" path. ---
+    {
+        ComPtr<IDXGIFactory2> dxgiFactory2;
+        ComPtr<IDXGIDevice> dxgiDevice;
+        ComPtr<IDXGIAdapter> dxgiAdapter;
+        if (SUCCEEDED(m_device.As(&dxgiDevice)) &&
+            SUCCEEDED(dxgiDevice->GetAdapter(&dxgiAdapter)) &&
+            SUCCEEDED(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory2)))) {
 
-    ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(m_device.As(&dxgiDevice))) return false;
+            DXGI_SWAP_CHAIN_DESC1 sd = {};
+            sd.Width = (UINT)width;
+            sd.Height = (UINT)height;
+            sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            sd.Stereo = FALSE;
+            sd.SampleDesc.Count = 1;
+            sd.SampleDesc.Quality = 0;
+            sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            sd.BufferCount = 3;
+            sd.Scaling = DXGI_SCALING_STRETCH;
+            sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+            sd.Flags = 0;
 
-    ComPtr<IDXGIAdapter> dxgiAdapter;
-    if (FAILED(dxgiDevice->GetAdapter(&dxgiAdapter))) return false;
-
-    ComPtr<IDXGIFactory> dxgiFactory;
-    if (FAILED(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory)))) return false;
-
-    if (FAILED(dxgiFactory->CreateSwapChain(m_device.Get(), &scDesc, &m_swapchain))) {
-        return false;
+            ComPtr<IDXGISwapChain1> sc1;
+            if (SUCCEEDED(dxgiFactory2->CreateSwapChainForHwnd(
+                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1))) {
+                m_swapchain = sc1;
+                dxgiFactory2->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+            }
+        }
     }
 
-    // Prevent DXGI from monitoring Alt+Enter key combinations
-    dxgiFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+    // --- Fallback: legacy blt-model swap chain (Windows 7 SP1+ compatible) ---
+    if (!m_swapchain) {
+        DXGI_SWAP_CHAIN_DESC scDesc = {};
+        scDesc.BufferCount = 2;
+        scDesc.BufferDesc.Width = width;
+        scDesc.BufferDesc.Height = height;
+        scDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        scDesc.BufferDesc.RefreshRate.Numerator = 60;
+        scDesc.BufferDesc.RefreshRate.Denominator = 1;
+        scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        scDesc.OutputWindow = hwnd;
+        scDesc.SampleDesc.Count = 1;
+        scDesc.SampleDesc.Quality = 0;
+        scDesc.Windowed = TRUE;
+        scDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+        ComPtr<IDXGIDevice> dxgiDevice;
+        if (FAILED(m_device.As(&dxgiDevice))) return false;
+
+        ComPtr<IDXGIAdapter> dxgiAdapter;
+        if (FAILED(dxgiDevice->GetAdapter(&dxgiAdapter))) return false;
+
+        ComPtr<IDXGIFactory> dxgiFactory;
+        if (FAILED(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory)))) return false;
+
+        if (FAILED(dxgiFactory->CreateSwapChain(m_device.Get(), &scDesc, &m_swapchain))) {
+            return false;
+        }
+        dxgiFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+    }
 
     // Create Render Target View
     ComPtr<ID3D11Texture2D> backBuffer;
@@ -344,10 +380,20 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     m_context->PSSetShaderResources(0, 2, null_srvs);
 }
 
-void D3D11Presenter::Present(UINT syncInterval) {
-    if (m_swapchain) {
-        m_swapchain->Present(syncInterval, 0);
+HRESULT D3D11Presenter::Present(UINT syncInterval) {
+    if (!m_swapchain) return E_POINTER;
+    HRESULT hr = m_swapchain->Present(syncInterval, 0);
+    if (FAILED(hr)) {
+        return hr;
     }
+    return S_OK;
+}
+
+void D3D11Presenter::ClearAndPresent(float r, float g, float b) {
+    if (!m_context || !m_rtv) return;
+    const float color[4] = { r, g, b, 1.0f };
+    m_context->ClearRenderTargetView(m_rtv.Get(), color);
+    Present(0);
 }
 
 void D3D11Presenter::Resize(int width, int height) {

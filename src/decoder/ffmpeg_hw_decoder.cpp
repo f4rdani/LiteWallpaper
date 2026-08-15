@@ -171,13 +171,8 @@ bool FFmpegHWDecoder::DecodeNextFrame(VideoFrame& frame) {
                 frame.pts = m_hw_frame->pts;
                 return true;
             }
-            // For other pixel formats, non-HW frame
-            frame.texture = nullptr;
-            frame.texture_index = 0;
-            frame.width = m_hw_frame->width;
-            frame.height = m_hw_frame->height;
-            frame.pts = m_hw_frame->pts;
-            return true;
+            // For other pixel formats, non-HW frame: convert & upload to GPU
+            return UploadSoftwareFrame(m_hw_frame, frame);
         }
 
         // Read next packet from stream
@@ -201,6 +196,94 @@ bool FFmpegHWDecoder::DecodeNextFrame(VideoFrame& frame) {
             av_packet_unref(m_packet);
         }
     }
+}
+
+bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
+    if (!src || !m_d3d_device || src->width <= 0 || src->height <= 0) {
+        return false;
+    }
+
+    int w = src->width;
+    int h = src->height;
+    AVPixelFormat srcFmt = static_cast<AVPixelFormat>(src->format);
+
+    // (Re)create swscale context when the source format/size changes
+    if (!m_sws_ctx || m_sw_width != w || m_sw_height != h || m_sw_src_format != srcFmt) {
+        if (m_sws_ctx) {
+            sws_freeContext(m_sws_ctx);
+            m_sws_ctx = nullptr;
+        }
+        m_sws_ctx = sws_getContext(w, h, srcFmt, w, h, AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        m_sw_width = w;
+        m_sw_height = h;
+        m_sw_src_format = srcFmt;
+        if (!m_sws_ctx) {
+            return false;
+        }
+    }
+
+    // CPU NV12 staging buffers
+    if (!m_sw_y || !m_sw_uv) {
+        m_sw_y = static_cast<uint8_t*>(av_malloc((size_t)w * h));
+        m_sw_uv = static_cast<uint8_t*>(av_malloc((size_t)w * h / 2));
+        if (!m_sw_y || !m_sw_uv) {
+            return false;
+        }
+    }
+
+    // Convert to NV12 (Y plane + interleaved UV plane)
+    uint8_t* dst[4] = { m_sw_y, m_sw_uv, nullptr, nullptr };
+    int dstStride[4] = { w, w, 0, 0 };
+    if (sws_scale(m_sws_ctx, src->data, src->linesize, 0, h, dst, dstStride) < 0) {
+        return false;
+    }
+
+    // (Re)create the GPU texture when dimensions change
+    if (!m_sw_texture || m_sw_width != w || m_sw_height != h) {
+        m_sw_texture.Reset();
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width = (UINT)w;
+        td.Height = (UINT)h;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_NV12;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DYNAMIC;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        if (FAILED(m_d3d_device->CreateTexture2D(&td, nullptr, &m_sw_texture))) {
+            return false;
+        }
+        m_sw_width = w;
+        m_sw_height = h;
+    }
+
+    // Upload Y and UV planes into the mapped NV12 texture
+    ID3D11DeviceContext* ctx = nullptr;
+    m_d3d_device->GetImmediateContext(&ctx);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (!ctx || FAILED(ctx->Map(m_sw_texture.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        if (ctx) ctx->Release();
+        return false;
+    }
+
+    BYTE* base = static_cast<BYTE*>(mapped.pData);
+    const UINT pitch = mapped.RowPitch;
+    for (int y = 0; y < h; y++) {
+        memcpy(base + (size_t)y * pitch, m_sw_y + (size_t)y * w, (size_t)w);
+    }
+    for (int y = 0; y < h / 2; y++) {
+        memcpy(base + (size_t)pitch * h + (size_t)y * pitch, m_sw_uv + (size_t)y * w, (size_t)w);
+    }
+    ctx->Unmap(m_sw_texture.Get(), 0);
+    ctx->Release();
+
+    frame.texture = m_sw_texture.Get();
+    frame.texture_index = 0;
+    frame.width = w;
+    frame.height = h;
+    frame.pts = src->pts;
+    return true;
 }
 
 void FFmpegHWDecoder::SeekToStart() {
@@ -255,6 +338,23 @@ int FFmpegHWDecoder::DecodeAudioSamples(float* buffer, int max_samples) {
 }
 
 void FFmpegHWDecoder::Close() {
+    if (m_sws_ctx) {
+        sws_freeContext(m_sws_ctx);
+        m_sws_ctx = nullptr;
+    }
+    if (m_sw_y) {
+        av_free(m_sw_y);
+        m_sw_y = nullptr;
+    }
+    if (m_sw_uv) {
+        av_free(m_sw_uv);
+        m_sw_uv = nullptr;
+    }
+    m_sw_texture.Reset();
+    m_sw_width = 0;
+    m_sw_height = 0;
+    m_sw_src_format = AV_PIX_FMT_NONE;
+
     if (m_hw_frame) {
         av_frame_free(&m_hw_frame);
         m_hw_frame = nullptr;

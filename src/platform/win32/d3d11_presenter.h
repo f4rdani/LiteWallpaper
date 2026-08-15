@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
@@ -19,7 +20,11 @@ public:
     void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0);
     
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
-    void Present(UINT syncInterval = 0);
+    HRESULT Present(UINT syncInterval = 0);
+
+    // Diagnostic: clear the swap chain to a solid color and present once.
+    // Used to verify that the render window is actually visible on the desktop.
+    void ClearAndPresent(float r, float g, float b);
     
     // Resize swap chain (when monitor resolution changes)
     void Resize(int width, int height);

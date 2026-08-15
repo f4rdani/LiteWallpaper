@@ -60,6 +60,10 @@ static int    g_daemonHeight = 0;
 static double g_daemonDuration = 0.0;
 static std::string g_daemonCodec = "";
 static size_t g_daemonRamMB = 0;
+static bool   g_daemonInjected = false;
+static bool   g_daemonHwDecode = false;
+static uint64_t g_daemonFramesRendered = 0;
+static std::string g_daemonLastError = "";
 static std::vector<float> g_ramHistory(60, 0.0f);
 static int    g_fetchCounter = 0;
 
@@ -250,6 +254,10 @@ static void FetchDaemonStatus() {
         g_daemonDuration = res.value("duration", 0.0);
         g_daemonCodec = res.value("codec", "unknown");
         g_daemonRamMB = res.value("ram_mb", 0);
+        g_daemonInjected = res.value("injected", false);
+        g_daemonHwDecode = res.value("hw_decode", false);
+        g_daemonFramesRendered = res.value("frames_rendered", (uint64_t)0);
+        g_daemonLastError = res.value("last_error", "");
 
         g_ramHistory.erase(g_ramHistory.begin());
         g_ramHistory.push_back(static_cast<float>(g_daemonRamMB));
@@ -537,6 +545,23 @@ static void RenderPerformancePanel() {
     ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
     ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
     ImGui::Text("Video Duration: %.1f seconds", g_daemonDuration);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CIRCLE_INFO "  Diagnostics");
+    ImGui::Text("Desktop Injection (WorkerW): %s", g_daemonInjected ? "OK" : "FAILED");
+    ImGui::Text("Decoder Mode: %s", g_daemonHwDecode ? "Hardware (D3D11VA)" : "Software (swscale fallback)");
+    ImGui::Text("Frames Rendered: %llu", (unsigned long long)g_daemonFramesRendered);
+    if (!g_daemonLastError.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Last Error: %s", g_daemonLastError.c_str());
+    } else {
+        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "Last Error: (none)");
+    }
+    if (ImGui::Button(ICON_FA_EXPAND "  Flash Render Window (Diagnostic)", ImVec2(280, 28))) {
+        g_ipcClient.SendRequest("{\"cmd\":\"test_render\"}");
+    }
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f),
+        "*If the desktop turns green after flashing, injection works. Log: %%APPDATA%%\\LiteWallpaper\\engine.log");
 
     ImGui::Spacing();
     ImGui::Separator();
