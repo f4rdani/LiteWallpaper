@@ -7,16 +7,12 @@ namespace litewp {
 struct ScalingData {
     float uv_scale[2];
     float uv_offset[2];
-    int   array_slice;
-    float padding[3];
 };
 
 static const char* g_vs_source = R"(
 cbuffer ScalingBuffer : register(b0) {
     float2 uv_scale;
     float2 uv_offset;
-    int    array_slice;
-    float3 padding;
 };
 
 struct VS_OUT {
@@ -34,20 +30,18 @@ VS_OUT main(uint vertexID : SV_VertexID) {
 )";
 
 static const char* g_ps_source = R"(
-Texture2DArray<float>  texY  : register(t0);
-Texture2DArray<float2> texUV : register(t1);
-SamplerState           samp  : register(s0);
+Texture2D<float>  texY  : register(t0);
+Texture2D<float2> texUV : register(t1);
+SamplerState      samp  : register(s0);
 
 cbuffer ScalingBuffer : register(b0) {
     float2 uv_scale;
     float2 uv_offset;
-    int    array_slice;
-    float3 padding;
 };
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-    float y = texY.Sample(samp, float3(uv, (float)array_slice));
-    float2 uv_val = texUV.Sample(samp, float3(uv, (float)array_slice));
+    float y = texY.Sample(samp, uv);
+    float2 uv_val = texUV.Sample(samp, uv);
     
     float u = uv_val.x - 0.5f;
     float v = uv_val.y - 0.5f;
@@ -258,7 +252,7 @@ bool D3D11Presenter::CreateShaders() {
     hr = m_device->CreateSamplerState(&sampDesc, &m_sampler);
     if (FAILED(hr)) return false;
 
-    // Create Constant Buffer for Aspect Ratio / UV Scaling & Array Slice
+    // Create Constant Buffer for Aspect Ratio / UV Scaling
     D3D11_BUFFER_DESC cbDesc = {};
     cbDesc.ByteWidth = sizeof(ScalingData);
     cbDesc.Usage = D3D11_USAGE_DYNAMIC;
@@ -275,80 +269,45 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
 
-    int target_slice = array_index;
+    // Create or resize intermediate GPU staging texture with BIND_SHADER_RESOURCE
+    if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
+        m_srv_texture.Reset();
+        m_srv_y.Reset();
+        m_srv_uv.Reset();
 
-    // Check if texture supports direct shader resource binding (ZERO-COPY PATH!)
-    if (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
-        if (!m_srv_y || m_cached_hw_tex != nv12_texture) {
-            m_srv_y.Reset();
-            m_srv_uv.Reset();
-            m_cached_hw_tex = nv12_texture;
+        D3D11_TEXTURE2D_DESC srvDesc = texDesc;
+        srvDesc.ArraySize = 1;
+        srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        srvDesc.MiscFlags = 0;
 
-            D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
-            yDesc.Format = DXGI_FORMAT_R8_UNORM;
-            yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-            yDesc.Texture2DArray.FirstArraySlice = 0;
-            yDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
-            yDesc.Texture2DArray.MipLevels = 1;
-
-            if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &yDesc, &m_srv_y))) {
-                return;
-            }
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
-            uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-            uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-            uvDesc.Texture2DArray.FirstArraySlice = 0;
-            uvDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
-            uvDesc.Texture2DArray.MipLevels = 1;
-
-            if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &uvDesc, &m_srv_uv))) {
-                return;
-            }
-        }
-    } else {
-        // Fallback staging copy path
-        if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
-            m_srv_texture.Reset();
-            m_srv_y.Reset();
-            m_srv_uv.Reset();
-
-            D3D11_TEXTURE2D_DESC srvDesc = texDesc;
-            srvDesc.ArraySize = 1;
-            srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            srvDesc.MiscFlags = 0;
-
-            if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_srv_texture))) {
-                return;
-            }
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
-            yDesc.Format = DXGI_FORMAT_R8_UNORM;
-            yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-            yDesc.Texture2DArray.FirstArraySlice = 0;
-            yDesc.Texture2DArray.ArraySize = 1;
-            yDesc.Texture2DArray.MipLevels = 1;
-            if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &yDesc, &m_srv_y))) {
-                return;
-            }
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
-            uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-            uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-            uvDesc.Texture2DArray.FirstArraySlice = 0;
-            uvDesc.Texture2DArray.ArraySize = 1;
-            uvDesc.Texture2DArray.MipLevels = 1;
-            if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &uvDesc, &m_srv_uv))) {
-                return;
-            }
-
-            m_srv_width = texDesc.Width;
-            m_srv_height = texDesc.Height;
+        if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_srv_texture))) {
+            return;
         }
 
-        m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
-        target_slice = 0;
+        D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
+        yDesc.Format = DXGI_FORMAT_R8_UNORM;
+        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        yDesc.Texture2D.MipLevels = 1;
+
+        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &yDesc, &m_srv_y))) {
+            return;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
+        uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        uvDesc.Texture2D.MipLevels = 1;
+
+        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &uvDesc, &m_srv_uv))) {
+            return;
+        }
+
+        m_srv_width = texDesc.Width;
+        m_srv_height = texDesc.Height;
     }
+
+    // Copy decoded slice into staging texture
+    m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
 
     // Calculate Aspect Ratio / Scaling Transformation
     float screenAspect = (m_height > 0) ? (static_cast<float>(m_width) / static_cast<float>(m_height)) : 1.0f;
@@ -364,11 +323,9 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     if (scaling_mode == 0) {
         // Mode 0: Auto Aspect Fill (Cover - Proportional Center Crop, No Black Bars on any display)
         if (screenAspect > videoAspect) {
-            // Screen is wider than video
             uvScaleY = videoAspect / screenAspect;
             uvOffsetY = (1.0f - uvScaleY) * 0.5f;
         } else {
-            // Screen is taller than video (e.g. Vertical Monitor / Portrait Mode)
             uvScaleX = screenAspect / videoAspect;
             uvOffsetX = (1.0f - uvScaleX) * 0.5f;
         }
@@ -384,12 +341,11 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
             vp.Height = vpHeight;
         }
 
-        // Clear render target background with black for letterbox margins
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         m_context->ClearRenderTargetView(m_rtv.Get(), black);
     }
 
-    // Update Constant Buffer with UV transform and Array Slice index
+    // Update Constant Buffer with UV transform
     if (m_scaling_cb) {
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (SUCCEEDED(m_context->Map(m_scaling_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -398,7 +354,6 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
             data->uv_scale[1] = uvScaleY;
             data->uv_offset[0] = uvOffsetX;
             data->uv_offset[1] = uvOffsetY;
-            data->array_slice = target_slice;
             m_context->Unmap(m_scaling_cb.Get(), 0);
         }
     }

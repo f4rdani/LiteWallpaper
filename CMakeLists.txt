@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(LiteWallpaper VERSION 1.0.0 LANGUAGES CXX)
+project(LiteWallpaper VERSION 1.0.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +38,7 @@ add_executable(LiteWallpaper WIN32
     src/platform/win32/lockscreen_manager.cpp
     src/platform/win32/tray_icon.cpp
     src/ui/settings_app.cpp
+    src/app.rc
 )
 
 target_include_directories(LiteWallpaper PRIVATE

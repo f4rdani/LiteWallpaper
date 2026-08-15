@@ -336,8 +336,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     }
     Logger::Info("Presenter init OK, swapchain size=", vw, "x", vh);
 
-    g_flash_until_us = g_clock.GetCurrentTimeMicros() + 1500000;
-    Logger::Info("Smoke test: flashing solid green for 1.5s");
+    g_flash_until_us = 0;
 
     // 5. Open video if available
     if (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty()) {
