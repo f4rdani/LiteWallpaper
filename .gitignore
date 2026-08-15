@@ -1,0 +1,28 @@
+# Build Directories
+build/
+bin/
+out/
+x64/
+x86/
+Debug/
+Release/
+
+# Visual Studio / IDE Files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+
+# vcpkg
+vcpkg_installed/
+
+# Large Third-Party Downloads (FFmpeg binary distributions)
+third_party/ffmpeg/
+
+# System / Temp Files
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

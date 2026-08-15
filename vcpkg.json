@@ -1,0 +1,16 @@
+{
+  "name": "litewallpaper",
+  "version": "1.0.0",
+  "dependencies": [
+    "nlohmann-json",
+    "mimalloc",
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "win32-binding",
+        "dx11-binding"
+      ]
+    }
+  ]
+}
