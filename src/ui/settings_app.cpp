@@ -165,7 +165,7 @@ static void CleanupDeviceD3D() {
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
 }
 
-static void ApplyAction(const std::string& utf8_path, const std::string& action) {
+static void ApplyAction(std::string utf8_path, std::string action) {
     if (utf8_path.empty()) return;
     g_settingsConfig.Get().AddToGallery(utf8_path);
     g_settingsConfig.Save();
@@ -313,16 +313,18 @@ static void RenderGalleryPanel() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    // Persistent Gallery History List Cards
-    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), ICON_FA_FILM "  Wallpaper Gallery (%d saved):", (int)cfg.gallery_history.size());
+    // Make a local snapshot copy of gallery history to prevent iterator invalidation
+    std::vector<std::string> currentGallery = cfg.gallery_history;
+
+    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), ICON_FA_FILM "  Wallpaper Gallery (%d saved):", (int)currentGallery.size());
 
     ImGui::BeginChild("GalleryHistoryList", ImVec2(0, 260), true);
-    if (cfg.gallery_history.empty()) {
+    if (currentGallery.empty()) {
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "No wallpapers in gallery yet. Drag & drop a video file or click Browse Video File!");
     } else {
         std::string toRemove = "";
-        for (size_t i = 0; i < cfg.gallery_history.size(); i++) {
-            const auto& file = cfg.gallery_history[i];
+        for (size_t i = 0; i < currentGallery.size(); i++) {
+            std::string file = currentGallery[i];
             if (file.empty()) continue;
 
             std::string filenameOnly = fs::path(file).filename().string();

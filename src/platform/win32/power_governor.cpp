@@ -21,31 +21,25 @@ bool PowerGovernor::Init(HWND messageHwnd) {
 }
 
 PowerState PowerGovernor::GetCurrentState() {
-    // Priority 1: Workstation Locked → Sleep (Immediate 0% CPU, no throttling)
+    // Priority 1: Workstation Locked → Sleep (Immediate 0% CPU)
     if (m_is_locked) {
         return PowerState::Sleeping;
     }
 
     uint64_t now = GetTickCount64();
-    // Throttle heavy Win32 window queries to once every 500ms
+    // Throttle Win32 window queries to once every 500ms
     if (now - m_last_check_tick < 500) {
         return m_cached_state;
     }
     m_last_check_tick = now;
 
-    // Priority 2: Fullscreen App / Game Running → Pause
+    // Priority 2: Fullscreen 3D Game / App Running → Pause
     if (IsFullscreenAppRunning()) {
         m_cached_state = PowerState::Paused;
         return m_cached_state;
     }
 
-    // Priority 3: Desktop Occluded → Pause
-    if (IsDesktopOccluded()) {
-        m_cached_state = PowerState::Paused;
-        return m_cached_state;
-    }
-
-    // Priority 4: On Battery → Reduced FPS
+    // Priority 3: On Battery → Reduced FPS
     if (IsOnBattery()) {
         m_cached_state = PowerState::Reduced;
         return m_cached_state;
@@ -77,32 +71,39 @@ void PowerGovernor::HandlePowerChange(WPARAM wParam) {
 }
 
 bool PowerGovernor::IsFullscreenAppRunning() {
-    // Method 1: SHQueryUserNotificationState (Windows Vista+)
+    HWND fg = GetForegroundWindow();
+    if (!fg || fg == GetDesktopWindow() || fg == GetShellWindow() || fg == m_hwnd) {
+        return false;
+    }
+
+    // Method 1: Check for true fullscreen 3D D3D games
     QUERY_USER_NOTIFICATION_STATE state;
     if (SUCCEEDED(SHQueryUserNotificationState(&state))) {
-        if (state == QUNS_RUNNING_D3D_FULL_SCREEN ||
-            state == QUNS_BUSY ||
-            state == QUNS_PRESENTATION_MODE) {
+        if (state == QUNS_RUNNING_D3D_FULL_SCREEN) {
             return true;
         }
     }
 
-    // Method 2: Foreground Window Bounds Check
-    HWND fg = GetForegroundWindow();
-    if (fg && fg != GetDesktopWindow() && fg != GetShellWindow()) {
-        wchar_t className[256];
-        if (GetClassNameW(fg, className, 256)) {
-            if (wcscmp(className, L"Progman") == 0 || wcscmp(className, L"WorkerW") == 0) {
-                return false;
-            }
+    // Method 2: Check foreground window class name
+    wchar_t className[256];
+    if (GetClassNameW(fg, className, 256)) {
+        if (wcscmp(className, L"Progman") == 0 || wcscmp(className, L"WorkerW") == 0 ||
+            wcscmp(className, L"Shell_TrayWnd") == 0 || wcscmp(className, L"LiteWallpaper_SettingsClass") == 0 ||
+            wcscmp(className, L"LiteWallpaper_Daemon") == 0) {
+            return false;
         }
+    }
 
-        RECT fgRect;
-        if (GetWindowRect(fg, &fgRect)) {
-            HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO mi = { sizeof(mi) };
-            if (GetMonitorInfoW(hmon, &mi)) {
-                RECT monRect = mi.rcMonitor;
+    // Method 3: Check if foreground window is truly frameless and covers the full monitor
+    RECT fgRect;
+    if (GetWindowRect(fg, &fgRect)) {
+        HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(hmon, &mi)) {
+            RECT monRect = mi.rcMonitor;
+            LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
+            // Must be frameless (no standard titlebar caption) to count as full-screen game
+            if ((style & WS_CAPTION) == 0 && (style & WS_CHILD) == 0) {
                 if (fgRect.left <= monRect.left && fgRect.top <= monRect.top &&
                     fgRect.right >= monRect.right && fgRect.bottom >= monRect.bottom) {
                     return true;
