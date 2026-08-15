@@ -23,7 +23,6 @@ public:
     HRESULT Present(UINT syncInterval = 0);
 
     // Diagnostic: clear the swap chain to a solid color and present once.
-    // Used to verify that the render window is actually visible on the desktop.
     void ClearAndPresent(float r, float g, float b);
     
     // Resize swap chain (when monitor resolution changes)
@@ -47,10 +46,13 @@ private:
     ComPtr<ID3D11SamplerState>       m_sampler;
     ComPtr<ID3D11Buffer>             m_scaling_cb;
 
-    // GPU Shader Resource Texture & Views for NV12 rendering
-    ComPtr<ID3D11Texture2D>          m_srv_texture;
+    // Direct GPU Shader Resource Views on decoded hardware texture array
+    ID3D11Texture2D*                 m_cached_hw_tex = nullptr;
     ComPtr<ID3D11ShaderResourceView> m_srv_y;
     ComPtr<ID3D11ShaderResourceView> m_srv_uv;
+
+    // Fallback staging texture (only used if HW decoder texture lacks SHADER_RESOURCE bind flag)
+    ComPtr<ID3D11Texture2D>          m_srv_texture;
     UINT                             m_srv_width = 0;
     UINT                             m_srv_height = 0;
     
