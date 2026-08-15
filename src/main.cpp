@@ -401,6 +401,56 @@ std::string OnIpcRequest(const std::string& request_json) {
             g_current_frame = VideoFrame{};
             g_decoder.Close();
             bool ok = g_decoder.Open(path.c_str(), g_presenter.GetDevice());
+            g_paused = false;
+            g_clock.Reset();
+            TrimWorkingSetMemory();
+            return nlohmann::json{{"ok", ok}}.dump();
+        }
+    } else if (cmd == "set_lockscreen") {
+        std::string path = req.value("path", "");
+        if (!path.empty()) {
+            auto& cfg = g_config.Get();
+            cfg.AddToGallery(path);
+            g_config.Save();
+
+            std::lock_guard<std::mutex> lock(g_decoder_mutex);
+            FFmpegHWDecoder tempDecoder;
+            if (tempDecoder.Open(path.c_str(), g_presenter.GetDevice())) {
+                VideoFrame f;
+                if (tempDecoder.DecodeNextFrame(f) && f.texture) {
+                    g_lockscreen.CaptureAndSetLockScreen(g_presenter.GetDevice(), g_presenter.GetContext(), f.texture, f.texture_index);
+                }
+            }
+            return "{\"ok\":true}";
+        }
+    } else if (cmd == "set_both") {
+        std::string path = req.value("path", "");
+        if (!path.empty()) {
+            auto& cfg = g_config.Get();
+            if (cfg.wallpapers.empty()) {
+                MonitorWallpaper mw;
+                mw.video_path = path;
+                cfg.wallpapers.push_back(mw);
+            } else {
+                cfg.wallpapers[0].video_path = path;
+            }
+            cfg.AddToGallery(path);
+            g_config.Save();
+
+            std::lock_guard<std::mutex> lock(g_decoder_mutex);
+            g_current_frame = VideoFrame{};
+            g_decoder.Close();
+            bool ok = g_decoder.Open(path.c_str(), g_presenter.GetDevice());
+            g_paused = false;
+            g_clock.Reset();
+
+            if (ok) {
+                if (g_decoder.DecodeNextFrame(g_current_frame) && g_current_frame.texture) {
+                    g_lockscreen.CaptureAndSetLockScreen(g_presenter.GetDevice(), g_presenter.GetContext(), g_current_frame.texture, g_current_frame.texture_index);
+                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode);
+                    g_presenter.Present(0);
+                }
+            }
             TrimWorkingSetMemory();
             return nlohmann::json{{"ok", ok}}.dump();
         }

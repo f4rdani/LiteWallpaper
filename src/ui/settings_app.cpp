@@ -165,13 +165,21 @@ static void CleanupDeviceD3D() {
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
 }
 
-static void ApplyWallpaper(const std::string& utf8_path) {
+static void ApplyAction(const std::string& utf8_path, const std::string& action) {
     if (utf8_path.empty()) return;
     g_settingsConfig.Get().AddToGallery(utf8_path);
     g_settingsConfig.Save();
 
-    nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
-    g_ipcClient.SendRequest(req.dump());
+    if (action == "wallpaper") {
+        nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
+        g_ipcClient.SendRequest(req.dump());
+    } else if (action == "lockscreen") {
+        nlohmann::json req{{"cmd", "set_lockscreen"}, {"path", utf8_path}};
+        g_ipcClient.SendRequest(req.dump());
+    } else if (action == "both") {
+        nlohmann::json req{{"cmd", "set_both"}, {"path", utf8_path}};
+        g_ipcClient.SendRequest(req.dump());
+    }
 }
 
 static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -202,7 +210,7 @@ static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
                     auto ext = fs::path(filePath).extension().string();
                     for (auto& c : ext) c = (char)::tolower(c);
                     if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov") {
-                        ApplyWallpaper(utf8_path);
+                        ApplyAction(utf8_path, "wallpaper");
                         break;
                     }
                 }
@@ -278,7 +286,7 @@ static void RenderGalleryPanel() {
             int size_needed = WideCharToMultiByte(CP_UTF8, 0, filename, -1, NULL, 0, NULL, NULL);
             std::string utf8_path(size_needed - 1, 0);
             WideCharToMultiByte(CP_UTF8, 0, filename, -1, &utf8_path[0], size_needed, NULL, NULL);
-            ApplyWallpaper(utf8_path);
+            ApplyAction(utf8_path, "wallpaper");
         }
     }
 
@@ -305,35 +313,68 @@ static void RenderGalleryPanel() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    // Persistent Gallery History List
-    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), ICON_FA_FILM "  Wallpaper Gallery & History (%d saved):", (int)cfg.gallery_history.size());
+    // Persistent Gallery History List Cards
+    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.00f), ICON_FA_FILM "  Wallpaper Gallery (%d saved):", (int)cfg.gallery_history.size());
 
-    ImGui::BeginChild("GalleryHistoryList", ImVec2(0, 180), true);
+    ImGui::BeginChild("GalleryHistoryList", ImVec2(0, 260), true);
     if (cfg.gallery_history.empty()) {
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "No wallpapers in gallery yet. Drag & drop a video file or click Browse Video File!");
     } else {
         std::string toRemove = "";
         for (size_t i = 0; i < cfg.gallery_history.size(); i++) {
             const auto& file = cfg.gallery_history[i];
+            if (file.empty()) continue;
+
             std::string filenameOnly = fs::path(file).filename().string();
+            if (filenameOnly.empty()) filenameOnly = file;
 
             ImGui::PushID((int)i);
-            if (ImGui::Button(ICON_FA_PLAY " Apply", ImVec2(78, 26))) {
-                ApplyWallpaper(file);
+            
+            // Render an individual interactive card container
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.14f, 0.15f, 0.20f, 0.90f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.38f, 0.60f));
+            ImGui::BeginChild("CardItem", ImVec2(0, 72), true);
+
+            // Card Header & Filename
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 1.00f, 1.00f), "%s  %s", ICON_FA_FILM, filenameOnly.c_str());
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.60f, 1.00f), "- %s", file.c_str());
+
+            ImGui::Spacing();
+
+            // 3 Apply Target Action Buttons
+            if (ImGui::Button(ICON_FA_PLAY "  Set Wallpaper", ImVec2(145, 26))) {
+                ApplyAction(file, "wallpaper");
             }
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.15f, 0.15f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
-            if (ImGui::Button(ICON_FA_TRASH, ImVec2(28, 26))) {
-                toRemove = file;
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.40f, 0.25f, 0.55f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.55f, 0.35f, 0.75f, 1.0f));
+            if (ImGui::Button(ICON_FA_IMAGE "  Set Lock Screen", ImVec2(155, 26))) {
+                ApplyAction(file, "lockscreen");
             }
             ImGui::PopStyleColor(2);
             ImGui::SameLine();
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
-            ImGui::Text("%s", filenameOnly.c_str());
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", file.c_str());
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.48f, 0.32f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.42f, 1.0f));
+            if (ImGui::Button(ICON_FA_CIRCLE_CHECK "  Apply Both", ImVec2(120, 26))) {
+                ApplyAction(file, "both");
             }
+            ImGui::PopStyleColor(2);
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.15f, 0.15f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
+            if (ImGui::Button(ICON_FA_TRASH, ImVec2(32, 26))) {
+                toRemove = file;
+            }
+            ImGui::PopStyleColor(2);
+
+            ImGui::EndChild();
+            ImGui::PopStyleColor(2);
+
+            ImGui::Spacing();
             ImGui::PopID();
         }
         if (!toRemove.empty()) {
@@ -350,7 +391,7 @@ static void RenderGalleryPanel() {
         for (const auto& file : scannedFiles) {
             std::string filenameOnly = fs::path(file).filename().string();
             if (ImGui::Button(filenameOnly.c_str(), ImVec2(-1, 26))) {
-                ApplyWallpaper(file);
+                ApplyAction(file, "wallpaper");
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", file.c_str());
@@ -482,7 +523,7 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         wc.lpszClassName,
         L"LiteWallpaper Control Panel",
         WS_OVERLAPPEDWINDOW,
-        150, 150, 760, 600,
+        150, 150, 780, 620,
         nullptr, nullptr, wc.hInstance, nullptr
     );
 

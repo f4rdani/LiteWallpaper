@@ -3,6 +3,7 @@
 #include <shlobj.h>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 
 namespace litewp {
 
@@ -65,17 +66,32 @@ bool Config::Load() {
 
     m_config = j.get<AppConfig>();
     m_config.config_path = GetConfigFilePath();
+
+    // Clean up any empty strings from gallery history
+    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), [](const std::string& s) {
+        return s.empty();
+    });
+    m_config.gallery_history.erase(it, m_config.gallery_history.end());
+
     return true;
 }
 
 bool Config::Save() {
-    std::string path = GetConfigFilePath();
-    m_config.config_path = path;
-    std::wstring wpath = Utf8ToWide(path);
+    m_config.config_path = GetConfigFilePath();
+    std::wstring wpath = Utf8ToWide(m_config.config_path);
+
+    // Clean up any empty strings before saving
+    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), [](const std::string& s) {
+        return s.empty();
+    });
+    m_config.gallery_history.erase(it, m_config.gallery_history.end());
+
+    std::ofstream file(wpath);
+    if (!file.is_open()) {
+        return false;
+    }
 
     nlohmann::json j = m_config;
-    std::ofstream file(wpath);
-    if (!file.is_open()) return false;
     file << j.dump(4);
     return true;
 }

@@ -10,23 +10,51 @@ DesktopInjector::~DesktopInjector() {
 
 HWND DesktopInjector::FindDesktopWorkerW() {
     // 1. Find Progman window
-    HWND progman = FindWindowW(L"Progman", nullptr);
+    HWND progman = FindWindowW(L"Progman", L"Program Manager");
+    if (!progman) {
+        progman = FindWindowW(L"Progman", nullptr);
+    }
+    if (!progman) {
+        progman = GetShellWindow();
+    }
     if (!progman) return nullptr;
 
-    // 2. Send undocumented message 0x052C to Progman to spawn WorkerW behind icons
+    // 2. Send message 0x052C to Progman to spawn WorkerW behind desktop icons
     DWORD_PTR result = 0;
-    SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000001, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000000, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
 
-    // 3. Find WorkerW behind SHELLDLL_DefView
+    // 3. Find the WorkerW sibling behind SHELLDLL_DefView
     HWND workerw = nullptr;
     EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
         HWND defview = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
         if (defview != nullptr) {
-            HWND* pResult = reinterpret_cast<HWND*>(lparam);
-            *pResult = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
+            // Find the WorkerW sibling immediately following the window containing SHELLDLL_DefView
+            HWND nextWorker = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
+            if (nextWorker != nullptr) {
+                *reinterpret_cast<HWND*>(lparam) = nextWorker;
+                return FALSE;
+            }
         }
         return TRUE;
     }, reinterpret_cast<LPARAM>(&workerw));
+
+    // Fallback: If no sibling WorkerW was found, attach directly to the DefView parent or Progman
+    if (!workerw) {
+        EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+            HWND defview = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
+            if (defview != nullptr) {
+                *reinterpret_cast<HWND*>(lparam) = hwnd;
+                return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&workerw));
+    }
+
+    if (!workerw) {
+        workerw = progman;
+    }
 
     return workerw;
 }
@@ -41,7 +69,7 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
 
     // Remove window decorations and make it a child window
     LONG_PTR style = GetWindowLongPtrW(renderHwnd, GWL_STYLE);
-    style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+    style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_POPUP);
     style |= WS_CHILD;
     SetWindowLongPtrW(renderHwnd, GWL_STYLE, style);
 
@@ -56,11 +84,13 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
 
     SetWindowPos(
         renderHwnd,
-        nullptr,
+        HWND_BOTTOM,
         x, y, cx, cy,
-        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        SWP_NOACTIVATE | SWP_SHOWWINDOW
     );
 
+    ShowWindow(renderHwnd, SW_SHOW);
+    UpdateWindow(renderHwnd);
     return true;
 }
 
