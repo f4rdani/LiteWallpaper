@@ -234,7 +234,7 @@ static void ResumeWallpaperFromFullscreen() {
     Logger::Info("Fullscreen app closed: wallpaper playback resumed");
 }
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int /*nCmdShow*/) {
     // Single-Instance Check
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LiteWallpaper_SingleInstance_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -330,8 +330,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     // 9. Start IPC Server
     g_ipc.Start(OnIpcRequest);
 
-    // 10. Open Settings UI on first startup
-    SettingsUI::Open(hInstance);
+    // 10. Open Settings UI on first manual launch (silent when launched by Windows boot via --startup)
+    bool is_silent_boot = (lpCmdLine && (wcsstr(lpCmdLine, L"--startup") != nullptr || wcsstr(lpCmdLine, L"-startup") != nullptr));
+    if (!is_silent_boot) {
+        SettingsUI::Open(hInstance);
+    }
 
     TrimWorkingSetMemory();
 

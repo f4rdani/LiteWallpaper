@@ -45,4 +45,10 @@ public:
     static std::vector<DisplayInfo> GetDisplayList();
 };
 
+class WindowsAutostart {
+public:
+    static bool IsEnabled();
+    static bool SetEnabled(bool enable);
+};
+
 } // namespace litewp

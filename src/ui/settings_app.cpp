@@ -802,6 +802,26 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DESKTOP "  Windows Startup & Automation");
+
+    static bool startup_inited = false;
+    static bool startup_enabled = false;
+    if (!startup_inited) {
+        startup_enabled = WindowsAutostart::IsEnabled();
+        startup_inited = true;
+    }
+
+    if (ImGui::Checkbox("Start LiteWallpaper automatically on Windows Boot", &startup_enabled)) {
+        WindowsAutostart::SetEnabled(startup_enabled);
+        cfg.run_on_startup = startup_enabled;
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Launches LiteWallpaper silently in the background when Windows starts, seamlessly resuming your wallpaper.");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
     ImGui::Spacing();
 

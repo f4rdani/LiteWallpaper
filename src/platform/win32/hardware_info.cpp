@@ -175,4 +175,36 @@ SystemHardwareInfo HardwareDetector::QuerySystemInfo() {
     return sys;
 }
 
+bool WindowsAutostart::IsEnabled() {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    wchar_t val[MAX_PATH] = {};
+    DWORD size = sizeof(val);
+    DWORD type = 0;
+    LSTATUS res = RegQueryValueExW(hKey, L"LiteWallpaper", nullptr, &type, reinterpret_cast<LPBYTE>(val), &size);
+    RegCloseKey(hKey);
+    return (res == ERROR_SUCCESS);
+}
+
+bool WindowsAutostart::SetEnabled(bool enable) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    LSTATUS res = ERROR_SUCCESS;
+    if (enable) {
+        wchar_t exePath[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring cmd = L"\"" + std::wstring(exePath) + L"\" --startup";
+        res = RegSetValueExW(hKey, L"LiteWallpaper", 0, REG_SZ, reinterpret_cast<const BYTE*>(cmd.c_str()), static_cast<DWORD>((cmd.length() + 1) * sizeof(wchar_t)));
+    } else {
+        res = RegDeleteValueW(hKey, L"LiteWallpaper");
+        if (res == ERROR_FILE_NOT_FOUND) res = ERROR_SUCCESS;
+    }
+    RegCloseKey(hKey);
+    return (res == ERROR_SUCCESS);
+}
+
 } // namespace litewp
