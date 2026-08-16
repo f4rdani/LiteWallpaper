@@ -68,10 +68,18 @@ bool Config::Load() {
     m_config = j.get<AppConfig>();
     m_config.config_path = GetConfigFilePath();
 
-    // Clean up any empty strings from gallery history
-    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), [](const std::string& s) {
-        return s.empty();
-    });
+    // Clean up empty strings and internal cache paths from gallery history
+    auto is_invalid = [](const std::string& s) {
+        if (s.empty()) return true;
+        if (s.find("\\LiteWallpaper\\optimized\\") != std::string::npos ||
+            s.find("/LiteWallpaper/optimized/") != std::string::npos ||
+            s.find("\\optimized\\") != std::string::npos ||
+            s.find("/optimized/") != std::string::npos) {
+            return true;
+        }
+        return false;
+    };
+    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), is_invalid);
     m_config.gallery_history.erase(it, m_config.gallery_history.end());
 
     return true;
@@ -81,10 +89,18 @@ bool Config::Save() {
     m_config.config_path = GetConfigFilePath();
     std::wstring wpath = Utf8ToWide(m_config.config_path);
 
-    // Clean up any empty strings before saving
-    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), [](const std::string& s) {
-        return s.empty();
-    });
+    // Clean up empty strings and internal cache paths before saving
+    auto is_invalid = [](const std::string& s) {
+        if (s.empty()) return true;
+        if (s.find("\\LiteWallpaper\\optimized\\") != std::string::npos ||
+            s.find("/LiteWallpaper/optimized/") != std::string::npos ||
+            s.find("\\optimized\\") != std::string::npos ||
+            s.find("/optimized/") != std::string::npos) {
+            return true;
+        }
+        return false;
+    };
+    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), is_invalid);
     m_config.gallery_history.erase(it, m_config.gallery_history.end());
 
     std::ofstream file(wpath);

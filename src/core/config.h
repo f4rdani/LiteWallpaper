@@ -31,6 +31,12 @@ struct AppConfig {
 
     void AddToGallery(const std::string& path) {
         if (path.empty()) return;
+        if (path.find("\\LiteWallpaper\\optimized\\") != std::string::npos ||
+            path.find("/LiteWallpaper/optimized/") != std::string::npos ||
+            path.find("\\optimized\\") != std::string::npos ||
+            path.find("/optimized/") != std::string::npos) {
+            return;
+        }
         auto it = std::find(gallery_history.begin(), gallery_history.end(), path);
         if (it != gallery_history.end()) {
             gallery_history.erase(it);
