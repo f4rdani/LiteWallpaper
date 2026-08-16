@@ -232,23 +232,8 @@ static bool OpenWallpaperVideo(const std::string& path) {
 static void SuspendWallpaperForFullscreen() {
     if (g_fullscreen_paused) return;
     g_fullscreen_paused = true;
-
-    {
-        std::lock_guard<std::mutex> lock(g_decoder_mutex);
-        g_current_frame = VideoFrame{};
-        g_decoder.Close();
-        g_decoder_hw = false;
-    }
     g_audio.Stop();
-    g_frames_decoded = 0;
-    g_frames_rendered = 0;
-    SetVideoPacing(0.0);
-
-    if (g_main_hwnd) {
-        PostMessageW(g_main_hwnd, WM_APP_DEATTACH, 0, 0);
-    }
-    TrimWorkingSetMemory();
-    Logger::Info("Fullscreen detected: wallpaper resources released (RAM freed)");
+    Logger::Info("Fullscreen app detected: wallpaper playback paused");
 }
 
 static void ResumeWallpaperFromFullscreen() {
@@ -256,19 +241,11 @@ static void ResumeWallpaperFromFullscreen() {
     g_fullscreen_paused = false;
 
     auto& cfg = g_config.Get();
-    if (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty()) {
-        OpenWallpaperVideo(cfg.wallpapers[0].video_path);
-        g_audio.SetVolume(cfg.wallpapers[0].volume);
-        g_audio.SetMuted(!cfg.wallpapers[0].audio_enabled);
-        if (cfg.wallpapers[0].audio_enabled && cfg.wallpapers[0].volume > 0.0f) {
-            g_audio.Init();
-        }
-        if (g_main_hwnd) {
-            PostMessageW(g_main_hwnd, WM_APP_ATTACH, 0, 0);
-        }
-        g_clock.Reset();
+    if (!cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && cfg.wallpapers[0].volume > 0.0f) {
+        g_audio.Init();
     }
-    Logger::Info("Fullscreen closed: wallpaper resources restored");
+    g_clock.Reset();
+    Logger::Info("Fullscreen app closed: wallpaper playback resumed");
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
@@ -406,7 +383,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
         static uint64_t last_inject_check_us = 0;
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
         if (!g_fullscreen_paused && g_main_hwnd &&
-            (now_us - last_inject_check_us >= 2000000)) { // Check every 2 seconds
+            (now_us - last_inject_check_us >= 500000)) { // Check every 500ms
             last_inject_check_us = now_us;
 
             if (!g_inject_ok) {
@@ -417,14 +394,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
                                  reinterpret_cast<size_t>(g_injector.GetWorkerW()));
                     g_last_error.clear();
                     ShowWindow(g_main_hwnd, SW_SHOW);
+                    // Resize swap chain to match desktop dimensions
+                    RECT rc;
+                    if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                        g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+                    }
                 }
             } else if (!g_injector.IsAttachedValid()) {
                 // Desktop hierarchy changed, re-attach
                 Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
                 g_injector.Reattach(g_main_hwnd);
                 g_inject_ok = g_injector.IsAttached();
-                if (g_main_hwnd) {
+                if (g_inject_ok && g_main_hwnd) {
                     ShowWindow(g_main_hwnd, SW_SHOW);
+                    RECT rc;
+                    if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                        g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+                    }
                 }
             }
         }

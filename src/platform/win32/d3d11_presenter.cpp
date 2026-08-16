@@ -1,5 +1,7 @@
 #include "d3d11_presenter.h"
 #include <d3dcompiler.h>
+#include <shlobj.h>
+#include <cstdio>
 #include <iostream>
 
 namespace litewp {
@@ -301,6 +303,28 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
 
+    // One-time diagnostic log
+    static bool s_logged = false;
+    if (!s_logged) {
+        s_logged = true;
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+            "RenderFrame diag: tex=%p W=%u H=%u ArraySize=%u Format=%u BindFlags=0x%X MiscFlags=0x%X Usage=%u idx=%d screen=%dx%d",
+            nv12_texture, texDesc.Width, texDesc.Height, texDesc.ArraySize,
+            texDesc.Format, texDesc.BindFlags, texDesc.MiscFlags, texDesc.Usage,
+            array_index, m_width, m_height);
+        OutputDebugStringA(buf);
+        OutputDebugStringA("\n");
+        // Also write to log file
+        FILE* f = nullptr;
+        char logpath[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, logpath))) {
+            strcat_s(logpath, "\\LiteWallpaper\\render_diag.log");
+            fopen_s(&f, logpath, "a");
+            if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+        }
+    }
+
     bool has_srv_flag = (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0;
     bool use_zero_copy = false;
 
@@ -341,6 +365,24 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
             }
         }
         use_zero_copy = (m_srv_y && m_srv_uv && m_zero_copy_tex == nv12_texture);
+    }
+
+    static bool s_logged_path = false;
+    if (!s_logged_path) {
+        s_logged_path = true;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "RenderFrame path: %s (srv_y=%p srv_uv=%p)",
+                 use_zero_copy ? "ZERO-COPY (Texture2DArray)" : "STAGING-COPY (Fallback Texture2D)",
+                 m_srv_y.Get(), m_srv_uv.Get());
+        OutputDebugStringA(buf);
+        OutputDebugStringA("\n");
+        FILE* f = nullptr;
+        char logpath[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, logpath))) {
+            strcat_s(logpath, "\\LiteWallpaper\\render_diag.log");
+            fopen_s(&f, logpath, "a");
+            if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+        }
     }
 
     if (!use_zero_copy) {

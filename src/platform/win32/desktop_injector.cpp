@@ -23,8 +23,9 @@ HWND DesktopInjector::FindDesktopWorkerW() {
     DWORD_PTR result = 0;
     SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000001, SMTO_NORMAL, 1000, &result);
     SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000000, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
 
-    // 3. Strategy A (classic, Win10): top-level WorkerW that is the sibling following
+    // 3. Strategy A (classic, Win10/11): top-level WorkerW that is the sibling following
     //    the window containing SHELLDLL_DefView (behind desktop icons).
     HWND workerw = nullptr;
     EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
@@ -63,7 +64,21 @@ HWND DesktopInjector::FindDesktopWorkerW() {
         if (bgWorkerW) return bgWorkerW;
     }
 
-    // 5. Fallback: attach directly to Progman (desktop icons hidden case)
+    // 5. Strategy C: Any top-level WorkerW that does NOT contain icons
+    HWND standaloneWorker = nullptr;
+    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+        wchar_t cls[256];
+        if (GetClassNameW(hwnd, cls, 256) && wcscmp(cls, L"WorkerW") == 0) {
+            if (FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) == nullptr) {
+                *reinterpret_cast<HWND*>(lparam) = hwnd;
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&standaloneWorker));
+    if (standaloneWorker) return standaloneWorker;
+
+    // 6. Fallback: attach directly to Progman (desktop icons hidden case)
     return progman;
 }
 
@@ -88,16 +103,21 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
     ShowWindow(m_workerw, SW_SHOW);
     UpdateWindow(m_workerw);
 
-    // Resize to cover entire virtual screen across all monitors
-    int x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    // Resize child to cover the parent WorkerW client area
+    RECT rc;
+    int w = 0, h = 0;
+    if (GetClientRect(m_workerw, &rc) && rc.right > 0 && rc.bottom > 0) {
+        w = rc.right - rc.left;
+        h = rc.bottom - rc.top;
+    } else {
+        w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    }
 
     SetWindowPos(
         renderHwnd,
         HWND_BOTTOM,
-        x, y, cx, cy,
+        0, 0, w, h,
         SWP_NOACTIVATE | SWP_SHOWWINDOW
     );
 
@@ -133,12 +153,9 @@ bool DesktopInjector::IsAttached() const {
 bool DesktopInjector::IsAttachedValid() const {
     if (!IsAttached()) return false;
     if (!IsWindow(m_workerw)) return false;
-    // The render window must still be a child of the WorkerW layer. When
-    // Windows shows the desktop it re-parents SHELLDLL_DefView between
-    // Progman and WorkerW, which invalidates (or destroys) our parent.
+    if (!IsWindow(m_render_hwnd)) return false;
     HWND parent = GetParent(m_render_hwnd);
-    if (parent != m_workerw) return false;
-    return IsWindowVisible(m_workerw);
+    return (parent == m_workerw);
 }
 
 HWND DesktopInjector::GetWorkerW() const {
