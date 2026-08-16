@@ -255,6 +255,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+    wc.hIconSm = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"LiteWallpaper_Daemon";
     RegisterClassExW(&wc);
 

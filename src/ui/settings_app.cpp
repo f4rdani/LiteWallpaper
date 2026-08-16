@@ -1070,7 +1070,7 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         SettingsWndProc,
         0L, 0L,
         hInstance,
-        LoadIconW(hInstance, MAKEINTRESOURCEW(101)),
+        LoadIconW(hInstance, MAKEINTRESOURCEW(1)),
         LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)), // IDC_ARROW
         nullptr, nullptr,
         L"LiteWallpaper_SettingsClass",

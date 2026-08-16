@@ -16,7 +16,10 @@ bool TrayIcon::Create(HWND hwnd, TrayCallback callback) {
     m_nid.uID = 1;
     m_nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     m_nid.uCallbackMessage = WM_APP + 1;
-    m_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101));
+    m_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    if (!m_nid.hIcon) {
+        m_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101));
+    }
     if (!m_nid.hIcon) {
         m_nid.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512)); // IDI_APPLICATION
     }
