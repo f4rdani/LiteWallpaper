@@ -521,7 +521,7 @@ static void RenderGalleryTab() {
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.22f, 0.24f, 0.30f, 1.00f));
         }
 
-        ImGui::BeginChild("Card", ImVec2(cardWidth, 144), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("Card", ImVec2(cardWidth, 185), true, ImGuiWindowFlags_NoScrollbar);
 
         if (is_current) {
             if (is_playing_opt) {
@@ -556,18 +556,18 @@ static void RenderGalleryTab() {
             if (switchW < 90.0f) switchW = 90.0f;
 
             if (g_daemonPaused) {
-                if (ImGui::Button(ICON_FA_PLAY " Resume", ImVec2(stopW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Resume", ImVec2(stopW, 28))) {
                     RequestApplyVideo(path, "resume");
                 }
             } else {
-                if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
+                if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 28))) {
                     RequestApplyVideo(path, "stop");
                 }
             }
 
             ImGui::SameLine();
             if (is_playing_opt) {
-                if (ImGui::Button(ICON_FA_PLAY " Play Original", ImVec2(switchW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Play Original", ImVec2(switchW, 28))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
@@ -575,14 +575,14 @@ static void RenderGalleryTab() {
                 }
             } else {
                 if (has_opt) {
-                    if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(switchW, 26))) {
+                    if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(switchW, 28))) {
                         ApplyAction(opt_path, "wallpaper");
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Switch playback to 1080p optimized version");
                     }
                 } else {
-                    if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 26))) {
+                    if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 28))) {
                         StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
                     }
                 }
@@ -590,14 +590,14 @@ static void RenderGalleryTab() {
         } else {
             if (has_opt) {
                 float halfW = (innerW - itemPad) * 0.5f;
-                if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(halfW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(halfW, 28))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Play lightweight 1080p version (Saves VRAM & GPU load)");
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 28))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
@@ -606,11 +606,11 @@ static void RenderGalleryTab() {
             } else {
                 float playW = (innerW - itemPad) * 0.65f;
                 float optW = innerW - playW - itemPad;
-                if (ImGui::Button(ICON_FA_PLAY " Play Wallpaper", ImVec2(playW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Play Wallpaper", ImVec2(playW, 28))) {
                     RequestApplyVideo(path, "wallpaper");
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 26))) {
+                if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 28))) {
                     StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
@@ -619,14 +619,16 @@ static void RenderGalleryTab() {
             }
         }
 
+        ImGui::Spacing();
+
         // Row 2: Target Desktop/Lock & Delete Management
-        float delW = 32.0f;
+        float delW = 34.0f;
         float actW = (innerW - delW - (2 * itemPad)) * 0.5f;
         if (actW < 50.0f) actW = 50.0f;
 
         std::string target_apply_path = (is_current && is_playing_opt) ? opt_path : (has_opt ? opt_path : path);
 
-        if (ImGui::Button(ICON_FA_LOCK " Lock", ImVec2(actW, 24))) {
+        if (ImGui::Button(ICON_FA_LOCK " Lock", ImVec2(actW, 26))) {
             ApplyAction(target_apply_path, "lockscreen");
         }
         if (ImGui::IsItemHovered()) {
@@ -634,7 +636,7 @@ static void RenderGalleryTab() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_IMAGES " Both", ImVec2(actW, 24))) {
+        if (ImGui::Button(ICON_FA_IMAGES " Both", ImVec2(actW, 26))) {
             ApplyAction(target_apply_path, "both");
         }
         if (ImGui::IsItemHovered()) {
@@ -642,7 +644,7 @@ static void RenderGalleryTab() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 24))) {
+        if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 26))) {
             cfg.RemoveFromGallery(path);
             g_config.Save();
         }
