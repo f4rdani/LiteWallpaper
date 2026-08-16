@@ -800,13 +800,10 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (ImGui::Button(ICON_FA_FLOPPY_DISK "  Save Configuration", ImVec2(190, 34))) {
-        g_config.Save();
-        SendIpcAsync("{\"cmd\":\"reload_config\"}");
-    }
+    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
+    ImGui::Spacing();
 
-    ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_EYE_SLASH "  Hide Window to Tray", ImVec2(190, 34))) {
+    if (ImGui::Button(ICON_FA_EYE_SLASH "  Hide Window to Tray", ImVec2(200, 34))) {
         SettingsUI::Close();
     }
 }
