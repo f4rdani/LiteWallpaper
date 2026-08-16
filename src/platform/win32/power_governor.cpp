@@ -112,11 +112,7 @@ bool PowerGovernor::IsFullscreenAppRunning() {
     // A true fullscreen app covers the ENTIRE monitor (rcMonitor, including taskbar)
     if (rc.left <= mi.rcMonitor.left && rc.top <= mi.rcMonitor.top &&
         rc.right >= mi.rcMonitor.right && rc.bottom >= mi.rcMonitor.bottom) {
-        // Also ensure it is NOT a standard window with standard caption
-        LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
-        if ((style & WS_CAPTION) == 0 || (style & WS_POPUP) != 0) {
-            return true;
-        }
+        return true;
     }
 
     return false;
