@@ -24,10 +24,9 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
                     int h = ctx->coded_height > 0 ? ctx->coded_height : (ctx->height > 0 ? ctx->height : 1080);
                     frames_ctx->width = FFALIGN(w, 16);
                     frames_ctx->height = FFALIGN(h, 16);
-                    // Pool must be large enough for codec reference frames + decode-in-progress surfaces.
-                    // Too small = FFmpeg ignores our pool and allocates its own (20+ frames, no SHADER_RESOURCE flag).
-                    int ref_frames = ctx->refs > 0 ? ctx->refs : 4;
-                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 4, 8, 16);
+                    // Optimize pool size to minimal safe bounds for reference frames + 2 working surfaces
+                    int ref_frames = ctx->refs > 0 ? ctx->refs : 2;
+                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 2, 4, 6);
 
                     auto* d3d11_frames = reinterpret_cast<AVD3D11VAFramesContext*>(frames_ctx->hwctx);
                     d3d11_frames->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
