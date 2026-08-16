@@ -844,7 +844,7 @@ static void RenderPerformancePanel() {
     ImGui::Text("Process CPU Usage: %.1f %%", g_daemonCpuPercent);
     ImGui::PlotLines("CPU (%)", g_cpuHistory.data(), (int)g_cpuHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
 
-    ImGui::Text("Process RAM (Working Set): %zu MB (Target: < 45 MB)", g_daemonRamMB);
+    ImGui::Text("Process RAM (Working Set): %zu MB", g_daemonRamMB);
     ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
 
     std::string monitoredGpuName = "Default Adapter";
