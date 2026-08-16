@@ -60,11 +60,11 @@ private:
     ComPtr<ID3D11SamplerState>       m_sampler;
     ComPtr<ID3D11Buffer>             m_scaling_cb;
 
-    // Shader Resource Views on single NV12 planar texture
+    // Shader Resource Views on staging texture
     ComPtr<ID3D11ShaderResourceView> m_srv_y;
     ComPtr<ID3D11ShaderResourceView> m_srv_uv;
 
-    // Single-slice NV12 GPU staging texture with BIND_SHADER_RESOURCE
+    // GPU staging texture (single slice NV12 with SHADER_RESOURCE bind flag)
     ComPtr<ID3D11Texture2D>          m_srv_texture;
     UINT                             m_srv_width = 0;
     UINT                             m_srv_height = 0;

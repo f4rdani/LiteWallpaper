@@ -302,7 +302,7 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
 
-    // Create or resize intermediate single-slice GPU staging texture with BIND_SHADER_RESOURCE
+    // Create or resize intermediate GPU staging texture with BIND_SHADER_RESOURCE
     if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
         m_srv_texture.Reset();
         m_srv_y.Reset();

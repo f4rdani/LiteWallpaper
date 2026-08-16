@@ -27,8 +27,8 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
                     int h = ctx->coded_height > 0 ? ctx->coded_height : (ctx->height > 0 ? ctx->height : 1080);
                     frames_ctx->width = FFALIGN(w, 16);
                     frames_ctx->height = FFALIGN(h, 16);
-                    // Optimize pool size to minimal safe bounds (3 frames = ~9MB VRAM)
-                    int ref_frames = ctx->refs > 0 ? ctx->refs : 2;
+                    // Ultra-compact surface pool: 3 surfaces minimum (saves ~15-20MB VRAM)
+                    int ref_frames = (ctx->refs > 0 && ctx->refs <= 3) ? ctx->refs : 2;
                     frames_ctx->initial_pool_size = std::clamp(ref_frames + 1, 3, 4);
 
                     auto* d3d11_frames = reinterpret_cast<AVD3D11VAFramesContext*>(frames_ctx->hwctx);
