@@ -9,7 +9,9 @@
 #include <vector>
 #include <filesystem>
 #include <iostream>
+#include <algorithm>
 #include <thread>
+#include <cmath>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -18,6 +20,7 @@
 #include "core/config.h"
 #include "core/ipc_server.h"
 #include "core/engine_state.h"
+#include "core/video_optimizer.h"
 #include "icons_fontawesome6.h"
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -63,59 +66,85 @@ static bool   g_daemonHwDecode = false;
 static uint64_t g_daemonFramesRendered = 0;
 static std::string g_daemonLastError = "";
 
-static std::vector<float> g_ramHistory(60, 0.0f);
 static std::vector<float> g_cpuHistory(60, 0.0f);
+static std::vector<float> g_ramHistory(60, 0.0f);
 static std::vector<float> g_vramHistory(60, 0.0f);
+
+// Modal state for video optimization prompt
+static bool g_showOptimizeModal = false;
+static std::string g_pendingOptimizePath;
+static std::string g_pendingOptimizeAction;
+static int g_pendingSourceW = 0;
+static int g_pendingSourceH = 0;
+static int g_pendingTargetW = 1920;
+static int g_pendingTargetH = 1080;
+static bool g_rememberDownscaleChoice = false;
 
 static void SetupImGuiStyle() {
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 6.0f;
-    style.ChildRounding = 6.0f;
-    style.FrameRounding = 4.0f;
-    style.PopupRounding = 4.0f;
-    style.ScrollbarRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    style.TabRounding = 5.0f;
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 1.0f;
-    style.ItemSpacing = ImVec2(10, 8);
-    style.FramePadding = ImVec2(8, 6);
-
     ImVec4* colors = style.Colors;
-    colors[ImGuiCol_WindowBg]             = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
-    colors[ImGuiCol_ChildBg]              = ImVec4(0.11f, 0.11f, 0.14f, 1.00f);
-    colors[ImGuiCol_PopupBg]              = ImVec4(0.12f, 0.12f, 0.15f, 1.00f);
-    colors[ImGuiCol_Border]               = ImVec4(0.20f, 0.22f, 0.28f, 0.80f);
-    colors[ImGuiCol_FrameBg]              = ImVec4(0.15f, 0.16f, 0.20f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered]       = ImVec4(0.22f, 0.24f, 0.30f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]        = ImVec4(0.28f, 0.30f, 0.38f, 1.00f);
-    colors[ImGuiCol_TitleBg]              = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
-    colors[ImGuiCol_TitleBgActive]        = ImVec4(0.12f, 0.12f, 0.15f, 1.00f);
-    colors[ImGuiCol_Button]               = ImVec4(0.16f, 0.32f, 0.54f, 1.00f);
-    colors[ImGuiCol_ButtonHovered]        = ImVec4(0.22f, 0.44f, 0.72f, 1.00f);
-    colors[ImGuiCol_ButtonActive]         = ImVec4(0.13f, 0.26f, 0.46f, 1.00f);
-    colors[ImGuiCol_Header]               = ImVec4(0.16f, 0.32f, 0.54f, 0.80f);
-    colors[ImGuiCol_HeaderHovered]        = ImVec4(0.22f, 0.44f, 0.72f, 0.80f);
-    colors[ImGuiCol_HeaderActive]         = ImVec4(0.13f, 0.26f, 0.46f, 1.00f);
-    colors[ImGuiCol_Tab]                  = ImVec4(0.12f, 0.13f, 0.17f, 1.00f);
-    colors[ImGuiCol_TabHovered]           = ImVec4(0.22f, 0.44f, 0.72f, 1.00f);
-    colors[ImGuiCol_TabActive]            = ImVec4(0.18f, 0.36f, 0.60f, 1.00f);
-    colors[ImGuiCol_TabUnfocused]         = ImVec4(0.10f, 0.11f, 0.14f, 1.00f);
-    colors[ImGuiCol_TabUnfocusedActive]  = ImVec4(0.14f, 0.18f, 0.26f, 1.00f);
-    colors[ImGuiCol_CheckMark]            = ImVec4(0.35f, 0.70f, 1.00f, 1.00f);
-    colors[ImGuiCol_SliderGrab]           = ImVec4(0.28f, 0.55f, 0.88f, 1.00f);
-    colors[ImGuiCol_SliderGrabActive]     = ImVec4(0.38f, 0.68f, 1.00f, 1.00f);
-    colors[ImGuiCol_Text]                 = ImVec4(0.92f, 0.93f, 0.96f, 1.00f);
-    colors[ImGuiCol_TextDisabled]         = ImVec4(0.50f, 0.52f, 0.58f, 1.00f);
-    colors[ImGuiCol_PlotLines]            = ImVec4(0.35f, 0.70f, 1.00f, 1.00f);
-    colors[ImGuiCol_PlotLinesHovered]     = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
+
+    style.WindowRounding    = 8.0f;
+    style.ChildRounding     = 6.0f;
+    style.FrameRounding     = 5.0f;
+    style.PopupRounding     = 6.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.GrabRounding      = 4.0f;
+    style.TabRounding       = 6.0f;
+
+    style.WindowBorderSize  = 1.0f;
+    style.FrameBorderSize   = 1.0f;
+    style.PopupBorderSize   = 1.0f;
+
+    style.WindowPadding     = ImVec2(16.0f, 16.0f);
+    style.FramePadding      = ImVec2(8.0f, 6.0f);
+    style.ItemSpacing       = ImVec2(10.0f, 8.0f);
+    style.ItemInnerSpacing  = ImVec2(6.0f, 6.0f);
+
+    colors[ImGuiCol_Text]                  = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
+    colors[ImGuiCol_TextDisabled]          = ImVec4(0.50f, 0.52f, 0.58f, 1.00f);
+    colors[ImGuiCol_WindowBg]              = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+    colors[ImGuiCol_ChildBg]               = ImVec4(0.11f, 0.11f, 0.14f, 1.00f);
+    colors[ImGuiCol_PopupBg]               = ImVec4(0.12f, 0.12f, 0.16f, 0.98f);
+    colors[ImGuiCol_Border]                = ImVec4(0.18f, 0.20f, 0.25f, 1.00f);
+    colors[ImGuiCol_BorderShadow]          = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+    colors[ImGuiCol_FrameBg]               = ImVec4(0.14f, 0.15f, 0.19f, 1.00f);
+    colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.20f, 0.22f, 0.28f, 1.00f);
+    colors[ImGuiCol_FrameBgActive]         = ImVec4(0.24f, 0.27f, 0.35f, 1.00f);
+    colors[ImGuiCol_TitleBg]               = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+    colors[ImGuiCol_TitleBgActive]         = ImVec4(0.10f, 0.10f, 0.13f, 1.00f);
+    colors[ImGuiCol_MenuBarBg]             = ImVec4(0.11f, 0.11f, 0.14f, 1.00f);
+    colors[ImGuiCol_ScrollbarBg]           = ImVec4(0.08f, 0.08f, 0.10f, 0.60f);
+    colors[ImGuiCol_ScrollbarGrab]         = ImVec4(0.24f, 0.26f, 0.32f, 1.00f);
+    colors[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.32f, 0.35f, 0.42f, 1.00f);
+    colors[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.40f, 0.44f, 0.52f, 1.00f);
+    colors[ImGuiCol_CheckMark]             = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_SliderGrab]            = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.36f, 0.69f, 1.00f, 1.00f);
+    colors[ImGuiCol_Button]                = ImVec4(0.16f, 0.18f, 0.23f, 1.00f);
+    colors[ImGuiCol_ButtonHovered]         = ImVec4(0.22f, 0.26f, 0.34f, 1.00f);
+    colors[ImGuiCol_ButtonActive]          = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_Header]                = ImVec4(0.16f, 0.18f, 0.23f, 1.00f);
+    colors[ImGuiCol_HeaderHovered]         = ImVec4(0.22f, 0.26f, 0.34f, 1.00f);
+    colors[ImGuiCol_HeaderActive]          = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_Separator]             = ImVec4(0.18f, 0.20f, 0.25f, 1.00f);
+    colors[ImGuiCol_SeparatorHovered]      = ImVec4(0.26f, 0.59f, 0.98f, 0.78f);
+    colors[ImGuiCol_SeparatorActive]       = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_Tab]                   = ImVec4(0.11f, 0.11f, 0.14f, 1.00f);
+    colors[ImGuiCol_TabHovered]            = ImVec4(0.20f, 0.24f, 0.32f, 1.00f);
+    colors[ImGuiCol_TabActive]             = ImVec4(0.16f, 0.19f, 0.26f, 1.00f);
+    colors[ImGuiCol_TabUnfocused]          = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
+    colors[ImGuiCol_TabUnfocusedActive]    = ImVec4(0.11f, 0.11f, 0.14f, 1.00f);
+    colors[ImGuiCol_PlotLines]             = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_PlotLinesHovered]      = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
 }
 
 static void CreateRenderTarget() {
-    ID3D11Texture2D* pBackBuffer;
-    g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-    g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
-    pBackBuffer->Release();
+    ID3D11Texture2D* pBackBuffer = nullptr;
+    if (g_pSwapChain && SUCCEEDED(g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer)))) {
+        g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
+        pBackBuffer->Release();
+    }
 }
 
 static void CleanupRenderTarget() {
@@ -144,6 +173,7 @@ static bool CreateDeviceD3D(HWND hWnd) {
     UINT createDeviceFlags = 0;
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
+
     HRESULT res = D3D11CreateDeviceAndSwapChain(
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
@@ -172,7 +202,6 @@ static void CleanupDeviceD3D() {
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
 }
 
-// Asynchronous non-blocking IPC command sender to ensure UI NEVER hangs
 static void SendIpcAsync(const std::string& request_json) {
     std::thread([request_json]() {
         IpcClient client;
@@ -199,6 +228,61 @@ static void ApplyAction(std::string utf8_path, std::string action) {
     } else if (action == "resume") {
         SendIpcAsync("{\"cmd\":\"resume\"}");
     }
+}
+
+static void StartVideoOptimization(const std::string& input_path, int target_w, int target_h, const std::string& action) {
+    g_video_optimizer.StartOptimizeAsync(
+        input_path,
+        target_w,
+        target_h,
+        nullptr,
+        [action](bool success, const std::string& output_path) {
+            if (success && !output_path.empty()) {
+                ApplyAction(output_path, action);
+            }
+        }
+    );
+}
+
+static void RequestApplyVideo(std::string utf8_path, std::string action) {
+    if (utf8_path.empty()) return;
+    if (action == "stop" || action == "resume") {
+        ApplyAction(utf8_path, action);
+        return;
+    }
+
+    auto& cfg = g_settingsConfig.Get();
+    int screen_w = GetSystemMetrics(SM_CXSCREEN);
+    int screen_h = GetSystemMetrics(SM_CYSCREEN);
+    if (screen_w <= 0) screen_w = 1920;
+    if (screen_h <= 0) screen_h = 1080;
+
+    // Check if optimized version already exists in cache
+    if (VideoOptimizer::HasOptimizedCache(utf8_path, screen_w, screen_h)) {
+        std::string opt_path = VideoOptimizer::GetOptimizedPath(utf8_path, screen_w, screen_h);
+        ApplyAction(opt_path, action);
+        return;
+    }
+
+    // Probe source video dimensions
+    auto probe = VideoOptimizer::Probe(utf8_path);
+    if (probe.valid && (probe.width > screen_w || probe.height > screen_h)) {
+        if (cfg.prompt_downscale) {
+            g_pendingOptimizePath = utf8_path;
+            g_pendingOptimizeAction = action;
+            g_pendingSourceW = probe.width;
+            g_pendingSourceH = probe.height;
+            g_pendingTargetW = screen_w;
+            g_pendingTargetH = screen_h;
+            g_showOptimizeModal = true;
+            return;
+        } else if (cfg.auto_downscale_highres) {
+            StartVideoOptimization(utf8_path, screen_w, screen_h, action);
+            return;
+        }
+    }
+
+    ApplyAction(utf8_path, action);
 }
 
 static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -229,7 +313,7 @@ static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
                     auto ext = fs::path(filePath).extension().string();
                     for (auto& c : ext) c = (char)::tolower(c);
                     if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov") {
-                        ApplyAction(utf8_path, "wallpaper");
+                        RequestApplyVideo(utf8_path, "wallpaper");
                         break;
                     }
                 }
@@ -249,7 +333,6 @@ static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-// Lock-Free Fast In-Memory Status Update (0 Nanoseconds Blocking!)
 static void FetchDaemonStatus() {
     g_daemonConnected = g_shared_engine_state.connected.load();
     g_daemonPlaying = g_shared_engine_state.playing.load();
@@ -283,13 +366,11 @@ static void RenderGalleryTab() {
     auto& cfg = g_settingsConfig.Get();
     auto galleryCopy = cfg.gallery_history;
 
-    // Header & Actions
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FOLDER_OPEN "  Video Gallery & Management");
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(Drag & drop any video file directly here)");
     ImGui::Spacing();
 
-    // Top action bar
     if (ImGui::Button(ICON_FA_PLUS "  Add Video File...", ImVec2(170, 32))) {
         wchar_t filename[MAX_PATH] = L"";
         OPENFILENAMEW ofn = {};
@@ -328,7 +409,6 @@ static void RenderGalleryTab() {
         return;
     }
 
-    // Render Gallery Cards in a Grid
     ImGui::BeginChild("GalleryGrid", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     
     float cardWidth = 340.0f;
@@ -354,7 +434,6 @@ static void RenderGalleryTab() {
 
         ImGui::BeginChild("Card", ImVec2(cardWidth, 140), true, ImGuiWindowFlags_NoScrollbar);
 
-        // Filename & Status Badge
         if (is_current) {
             ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ RUNNING / PLAYING ]");
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", filename.c_str());
@@ -371,31 +450,30 @@ static void RenderGalleryTab() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Action Buttons
         if (is_current) {
             if (g_daemonPaused) {
                 if (ImGui::Button(ICON_FA_PLAY "  Resume", ImVec2(100, 26))) {
-                    ApplyAction(path, "resume");
+                    RequestApplyVideo(path, "resume");
                 }
             } else {
                 if (ImGui::Button(ICON_FA_STOP "  Stop", ImVec2(100, 26))) {
-                    ApplyAction(path, "stop");
+                    RequestApplyVideo(path, "stop");
                 }
             }
         } else {
             if (ImGui::Button(ICON_FA_DESKTOP "  Wallpaper", ImVec2(95, 26))) {
-                ApplyAction(path, "wallpaper");
+                RequestApplyVideo(path, "wallpaper");
             }
         }
 
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_LOCK "  Lock Screen", ImVec2(105, 26))) {
-            ApplyAction(path, "lockscreen");
+            RequestApplyVideo(path, "lockscreen");
         }
 
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_LAYER_GROUP "  Both", ImVec2(55, 26))) {
-            ApplyAction(path, "both");
+            RequestApplyVideo(path, "both");
         }
 
         ImGui::SameLine();
@@ -408,7 +486,6 @@ static void RenderGalleryTab() {
         ImGui::PopStyleColor(2);
         ImGui::PopID();
 
-        // Layout into columns
         float lastButtonX2 = ImGui::GetItemRectMax().x;
         float nextButtonX2 = lastButtonX2 + ImGui::GetStyle().ItemSpacing.x + cardWidth;
         if (i + 1 < galleryCopy.size() && nextButtonX2 < windowVisibleX2) {
@@ -425,7 +502,6 @@ static void RenderSettingsPanel() {
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_SLIDERS "  Display & Performance Settings");
     ImGui::Separator();
 
-    // Auto Aspect Ratio & Scaling Mode
     static const char* scalingModes[] = {
         "Auto Aspect Fill (Cover - Smart Crop, No Black Bars)",
         "Aspect Fit (Letterbox - Full Frame with Black Bars)",
@@ -454,6 +530,15 @@ static void RenderSettingsPanel() {
 
     ImGui::Checkbox("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen);
     ImGui::Checkbox("Auto-Pause on Battery Power", &cfg.pause_on_battery);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Auto-Downscale & Resolution Optimization");
+    ImGui::Checkbox("Auto-downscale 4K/high-res videos to match display resolution", &cfg.auto_downscale_highres);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Transcodes videos larger than monitor resolution to match display size.\nSaves ~75%% GPU Video Decode & ~50MB VRAM.");
+    }
+    ImGui::Checkbox("Ask before optimizing high-resolution videos", &cfg.prompt_downscale);
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -531,17 +616,101 @@ static void RenderPerformancePanel() {
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CHART_LINE "  Resource Telemetry");
 
-    // Real-time CPU Usage
     ImGui::Text("Process CPU Usage: %.1f %%", g_daemonCpuPercent);
     ImGui::PlotLines("CPU (%)", g_cpuHistory.data(), (int)g_cpuHistory.size());
 
-    // Real-time RAM Usage
     ImGui::Text("Process RAM (Working Set): %zu MB (Target: < 45 MB)", g_daemonRamMB);
     ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size());
 
-    // Real-time GPU VRAM
-    ImGui::Text("Dedicated GPU VRAM: %zu MB (4-Frame Minimal Pool)", g_daemonVramMB);
+    ImGui::Text("Dedicated GPU VRAM: %zu MB (Minimal Pool)", g_daemonVramMB);
     ImGui::PlotLines("VRAM (MB)", g_vramHistory.data(), (int)g_vramHistory.size());
+}
+
+static void RenderOptimizeModal() {
+    if (g_showOptimizeModal) {
+        ImGui::OpenPopup("Optimize Video for Display?");
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(530, 240));
+
+    if (ImGui::BeginPopupModal("Optimize Video for Display?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  High-Resolution Video Detected");
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Text("Source Video Resolution : %dx%d (4K / Ultra-HD)", g_pendingSourceW, g_pendingSourceH);
+        ImGui::Text("Desktop Screen Resolution: %dx%d (%s)", g_pendingTargetW, g_pendingTargetH,
+                    (g_pendingTargetW == 1920 && g_pendingTargetH == 1080) ? "1080p Full HD" : "Display Native");
+        
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
+            "*Downscaling to match your screen resolution will save ~75%% GPU Decode & ~50MB VRAM!");
+        
+        ImGui::Spacing();
+        ImGui::Checkbox("Remember my choice (Auto-downscale in the future)", &g_rememberDownscaleChoice);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize for Display (Recommended)", ImVec2(260, 32))) {
+            if (g_rememberDownscaleChoice) {
+                auto& cfg = g_settingsConfig.Get();
+                cfg.auto_downscale_highres = true;
+                cfg.prompt_downscale = false;
+                g_settingsConfig.Save();
+            }
+            g_showOptimizeModal = false;
+            ImGui::CloseCurrentPopup();
+            StartVideoOptimization(g_pendingOptimizePath, g_pendingTargetW, g_pendingTargetH, g_pendingOptimizeAction);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Play Original 4K", ImVec2(130, 32))) {
+            if (g_rememberDownscaleChoice) {
+                auto& cfg = g_settingsConfig.Get();
+                cfg.auto_downscale_highres = false;
+                cfg.prompt_downscale = false;
+                g_settingsConfig.Save();
+            }
+            g_showOptimizeModal = false;
+            ImGui::CloseCurrentPopup();
+            ApplyAction(g_pendingOptimizePath, g_pendingOptimizeAction);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(90, 32))) {
+            g_showOptimizeModal = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+static void RenderOptimizationProgress() {
+    if (!g_video_optimizer.IsRunning()) return;
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.18f, 0.28f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.30f, 0.70f, 1.00f, 1.00f));
+    ImGui::BeginChild("OptProgressBanner", ImVec2(0, 52), true, ImGuiWindowFlags_NoScrollbar);
+
+    float prog = g_video_optimizer.GetProgress();
+    std::string status = g_video_optimizer.GetCurrentStatus();
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_ROTATE "  %s", status.c_str());
+    ImGui::SameLine(ImGui::GetWindowWidth() - 95);
+    if (ImGui::Button("Cancel", ImVec2(80, 20))) {
+        g_video_optimizer.Cancel();
+    }
+
+    ImGui::ProgressBar(prog, ImVec2(-1, 14), "");
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+    ImGui::Spacing();
 }
 
 bool SettingsUI::Open(HINSTANCE hInstance) {
@@ -584,26 +753,22 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         return false;
     }
 
-    // Apply Windows 10/11 Dark Title Bar & matching caption color
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(g_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
     COLORREF captionColor = RGB(20, 20, 26);
     DwmSetWindowAttribute(g_hWnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
 
-    // Enable Drag and Drop
     DragAcceptFiles(g_hWnd, TRUE);
 
     ShowWindow(g_hWnd, SW_SHOW);
     UpdateWindow(g_hWnd);
 
-    // Setup ImGui Context & Custom Dark Theme
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     (void)io;
     SetupImGuiStyle();
 
-    // 1. Load Segoe UI font if available on Windows
     ImFont* mainFont = nullptr;
     if (fs::exists("C:\\Windows\\Fonts\\segoeui.ttf")) {
         mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f);
@@ -612,7 +777,6 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         io.Fonts->AddFontDefault();
     }
 
-    // 2. Merge FontAwesome 6 Icon Font
     static const ImWchar icons_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
     ImFontConfig icons_config;
     icons_config.MergeMode = true;
@@ -638,7 +802,6 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
 void SettingsUI::RenderFrame() {
     if (!g_isOpen || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
 
-    // Instant Lock-Free Status Fetch
     FetchDaemonStatus();
 
     ImGui_ImplDX11_NewFrame();
@@ -661,6 +824,8 @@ void SettingsUI::RenderFrame() {
 
     ImGui::Begin("LiteWallpaper Control Panel", nullptr, flags);
 
+    RenderOptimizationProgress();
+
     if (ImGui::BeginTabBar("MainTabs", ImGuiTabBarFlags_None)) {
         if (ImGui::BeginTabItem(ICON_FA_IMAGES "  Wallpaper Gallery")) {
             RenderGalleryTab();
@@ -676,6 +841,8 @@ void SettingsUI::RenderFrame() {
         }
         ImGui::EndTabBar();
     }
+
+    RenderOptimizeModal();
 
     ImGui::End();
 

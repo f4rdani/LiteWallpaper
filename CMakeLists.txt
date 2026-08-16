@@ -30,6 +30,7 @@ add_executable(LiteWallpaper WIN32
     src/core/playback_clock.cpp
     src/core/ipc_server.cpp
     src/core/engine_state.cpp
+    src/core/video_optimizer.cpp
     src/decoder/ffmpeg_hw_decoder.cpp
     src/decoder/audio_player.cpp
     src/platform/win32/desktop_injector.cpp

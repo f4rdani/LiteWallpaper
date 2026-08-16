@@ -19,11 +19,13 @@ struct AppConfig {
     int scaling_mode = 0;        // 0 = Auto / Aspect Fill (Cover), 1 = Aspect Fit (Letterbox), 2 = Stretch
     int target_fps = 30;         // Display cap. Video always plays at native speed;
                                 // if target < video fps, frames are skipped (not slowed).
+    int battery_fps = 15;        // Frame rate limit when running on battery power
     bool pause_on_fullscreen = true;
     bool pause_on_battery = false; // true = pause, false = reduce FPS
-    int battery_fps = 15;
     bool pause_on_lock = true;
     bool update_lockscreen = true; // Capture frame for lock screen
+    bool auto_downscale_highres = true; // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
+    bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
     bool run_on_startup = false;
     std::string config_path;     // Path to this config file
 
@@ -96,6 +98,8 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"battery_fps", c.battery_fps},
         {"pause_on_lock", c.pause_on_lock},
         {"update_lockscreen", c.update_lockscreen},
+        {"auto_downscale_highres", c.auto_downscale_highres},
+        {"prompt_downscale", c.prompt_downscale},
         {"run_on_startup", c.run_on_startup}
     };
 }
@@ -110,6 +114,8 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("battery_fps")) j.at("battery_fps").get_to(c.battery_fps);
     if (j.contains("pause_on_lock")) j.at("pause_on_lock").get_to(c.pause_on_lock);
     if (j.contains("update_lockscreen")) j.at("update_lockscreen").get_to(c.update_lockscreen);
+    if (j.contains("auto_downscale_highres")) j.at("auto_downscale_highres").get_to(c.auto_downscale_highres);
+    if (j.contains("prompt_downscale")) j.at("prompt_downscale").get_to(c.prompt_downscale);
     if (j.contains("run_on_startup")) j.at("run_on_startup").get_to(c.run_on_startup);
 }
 
