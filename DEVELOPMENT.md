@@ -11,47 +11,48 @@ Welcome to the **LiteWallpaper** codebase! This guide is written for developers 
 4. [Prerequisites & Environment Setup](#-prerequisites--environment-setup)
 5. [Building from Source](#-building-from-source)
 6. [Packaging Portable Distribution](#-packaging-portable-distribution)
-7. [IPC Protocol Specification](#-ipc-protocol-specification)
-8. [Critical Engineering Rules (Performance & Compatibility)](#-critical-engineering-rules)
-9. [Future Roadmap & Porting Guide](#-future-roadmap--porting-guide)
+7. [IPC & Engine Command Protocol](#-ipc--engine-command-protocol)
+8. [Critical Engineering Rules](#-critical-engineering-rules)
+9. [Hardware Acceleration & Dual-GPU Pipeline](#-hardware-acceleration--dual-gpu-pipeline)
 
 ---
 
 ## 🎯 Core Philosophy & Constraints
 
-LiteWallpaper is engineered with extreme performance constraints that differentiate it from other wallpaper engines:
+LiteWallpaper is engineered with extreme performance constraints that differentiate it from existing wallpaper engines:
 
 | Constraint | Target / Rule | Rationale |
 |:---|:---|:---|
-| **CPU Usage** | **< 1.0%** (0.0% when gaming/locked) | No background CPU polling, zero software video decoding |
-| **RAM Usage** | **< 30 MB** (typically 12–18 MB) | Decoupled UI; video frames stay 100% in GPU VRAM |
-| **Compatibility** | **Windows 7 SP1+ → Windows 11** | DXGI 1.0/1.1 DISCARD swapchain, no C++/WinRT requirements |
-| **Process Model** | **Dual-Process Architecture** | UI engine never stays loaded in background |
+| **CPU Usage** | **< 1.0%** (0.0% when idle/locked) | Adaptive QPC frame pacing; hardware-accelerated video decoding |
+| **RAM Usage** | **< 15 MB** (typically 4.4–12 MB) | Native C++20 + mimalloc; zero web runtime overhead (no Electron/Chromium/WPF) |
+| **GPU Power Saving**| **Deep Sleep for dGPU (0% NVIDIA load)** | Automatic smart routing to Integrated GPU (Intel UHD / AMD APU) |
+| **Compatibility** | **Windows 7 SP1+ → Windows 11** | Direct3D 11 with FLIP_DISCARD on Win10/11 and DISCARD fallback on Win7 |
+| **Process Model** | **Unified Single-Executable Architecture** | Zero IPC latency; UI resources freed on hide-to-tray |
 
 ---
 
 ## 🏗️ High-Level Architecture
 
-LiteWallpaper is split into two independent executables communicating over Windows Named Pipes:
+LiteWallpaper is built as a unified native binary (`LiteWallpaper.exe`) combining an ultra-low-overhead resident render loop and an on-demand Dear ImGui control panel:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 litewp_daemon.exe (Resident)                │
-│  - Memory: ~12 MB - 25 MB RAM | CPU: < 0.7%                 │
-│  - Injects into desktop canvas (WorkerW 0x052C)             │
-│  - Zero-Copy D3D11VA Hardware Video Decoding                │
-│  - Low-overhead WASAPI Audio Streamer                       │
-│  - Power Governor (Auto-pauses on game / lock / battery)    │
-│  - Tray Icon & Named Pipe IPC Server                        │
-└──────────────────────────────▲──────────────────────────────┘
-                               │ IPC (JSON-RPC over Named Pipe)
-                               │ \\.\pipe\LiteWallpaper
-┌──────────────────────────────▼──────────────────────────────┐
-│                litewp_settings.exe (On-Demand)              │
-│  - Memory: 0 MB when closed | Runs only when opened         │
-│  - Dear ImGui (Docking) + DirectX 11 backend                │
-│  - Real-time performance graphing (FPS, CPU, RAM)           │
-│  - Video file picker, volume, and power sliders             │
+│                    LiteWallpaper.exe                        │
+├─────────────────────────────────────────────────────────────┤
+│  1. Background Desktop Renderer Loop                        │
+│     - Memory: ~4.4 MB - 12 MB RAM | CPU: < 1.0%             │
+│     - Injects into desktop canvas (WorkerW 0x052C)          │
+│     - D3D11VA Hardware Accelerated Video Decoding           │
+│     - Low-overhead WASAPI Shared Audio Output               │
+│     - Power Governor (Auto-pauses on game / lock / battery) │
+│     - System Tray Icon & Local Pipe IPC Server              │
+│                                                             │
+│  2. Integrated Control Panel (On-Demand)                    │
+│     - Dear ImGui (Dark Modern UI) with FontAwesome icons    │
+│     - Real-Time Hardware & Telemetry Monitor                │
+│     - Fluid Responsive Video Gallery & Multi-Monitor Target │
+│     - Built-in 1080p GPU Video Optimizer & Downscaler       │
+│     - Instantaneous (0ms) Tray Hide / Restore Lifecycle     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -61,28 +62,33 @@ LiteWallpaper is split into two independent executables communicating over Windo
 
 ```
 src/
-├── main.cpp                         # Daemon main loop & message dispatcher
+├── main.cpp                         # Daemon main loop, window class, & message dispatcher
+├── app.rc                           # Windows resource script (Embedded multi-res icon)
 │
 ├── core/                            # Platform-agnostic core logic
 │   ├── config.h / .cpp              # JSON configuration load/save (nlohmann_json)
+│   ├── engine_state.h / .cpp        # Thread-safe atomic shared engine state
 │   ├── playback_clock.h / .cpp      # QPC-driven adaptive frame pacing clock
-│   ├── ipc_server.h / .cpp          # Windows Named Pipe server & client
-│   └── ring_buffer.h                # Lock-free SPSC packet ring buffer
+│   ├── ipc_server.h / .cpp          # Windows Named Pipe server & async client
+│   ├── ring_buffer.h                # Lock-free SPSC packet ring buffer
+│   └── video_optimizer.h / .cpp     # Multi-threaded GPU video pre-scaler / downscaler
 │
 ├── decoder/                         # Media playback & hardware acceleration
 │   ├── video_decoder.h              # Abstract video decoder interface
-│   ├── ffmpeg_hw_decoder.h / .cpp   # FFmpeg D3D11VA zero-copy hardware decoder
-│   └── audio_player.h / .cpp        # Low-latency WASAPI shared audio output
+│   ├── ffmpeg_hw_decoder.h / .cpp   # FFmpeg D3D11VA hardware video decoder
+│   └── audio_player.h / .cpp        # Low-latency WASAPI shared audio streamer
 │
 ├── platform/win32/                  # Windows OS integration layer
 │   ├── desktop_injector.h / .cpp    # WorkerW desktop canvas injector (0x052C)
 │   ├── d3d11_presenter.h / .cpp     # Direct3D 11 device, swapchain & NV12 shaders
 │   ├── power_governor.h / .cpp      # Auto-pause heuristics (fullscreen/lock/battery)
 │   ├── lockscreen_manager.h / .cpp  # Lock screen snapshot capture & staging
-│   └── tray_icon.h / .cpp           # Shell_NotifyIconW & popup menu
+│   ├── hardware_info.h / .cpp       # Multi-GPU / multi-monitor hardware detector
+│   └── tray_icon.h / .cpp           # Shell_NotifyIconW & tray popup menu
 │
 ├── ui/                              # User Interface
-│   ├── settings_app.h / .cpp        # Dear ImGui settings application
+│   ├── settings_app.h / .cpp        # Responsive Dear ImGui settings application
+│   └── IconsFontAwesome6.h          # FontAwesome 6 icon glyph definitions
 │
 └── shaders/                         # Embedded HLSL Shader files
     ├── fullscreen_quad.hlsl         # 3-vertex fullscreen triangle vertex shader
@@ -99,9 +105,9 @@ src/
 3. **CMake**: Version 3.20 or newer.
 4. **vcpkg**: Microsoft C++ package manager.
 5. **FFmpeg Developer Shared Libraries (64-bit)**:
-   - Header files (`include/libavcodec`, `include/libavformat`, etc.)
-   - Import libraries (`lib/avcodec.lib`, `lib/avformat.lib`, etc.)
-   - Runtime DLLs (`bin/avcodec-*.dll`, etc.)
+   - Header files in `third_party/ffmpeg/include`
+   - Import libraries in `third_party/ffmpeg/lib`
+   - Runtime DLLs in `third_party/ffmpeg/bin`
 
 ---
 
@@ -111,8 +117,8 @@ src/
 In the project root directory (manifest mode will read `vcpkg.json` automatically):
 
 ```powershell
-# If using a local vcpkg instance (e.g. C:\tools\vcpkg):
-C:\tools\vcpkg\vcpkg.exe install --triplet x64-windows
+# Using vcpkg instance:
+vcpkg install nlohmann-json:x64-windows mimalloc:x64-windows imgui[docking-experimental,win32-binding,dx11-binding]:x64-windows
 ```
 
 ### Step 2: Set Up FFmpeg Developer Files
@@ -142,29 +148,27 @@ third_party/ffmpeg/
 ### Step 3: Configure and Build
 ```powershell
 # Configure CMake with vcpkg toolchain
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="C:/tools/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
 
 # Build in Release configuration
 cmake --build build --config Release
 ```
 
-Output executables will be located in:
-- `build/Release/litewp_daemon.exe`
-- `build/Release/litewp_settings.exe`
+Output executable will be located at:
+- `build/Release/LiteWallpaper.exe`
 
 ---
 
 ## 📦 Packaging Portable Distribution
 
-To bundle executables, runtime DLLs, assets, and shaders for release:
+To bundle the executable, runtime DLLs, assets, and shaders for release:
 
 ```powershell
 $dist = "dist/LiteWallpaper-Portable"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 New-Item -ItemType Directory -Force -Path "$dist/assets" | Out-Null
 
-Copy-Item "build/Release/litewp_daemon.exe" -Destination $dist
-Copy-Item "build/Release/litewp_settings.exe" -Destination $dist
+Copy-Item "build/Release/LiteWallpaper.exe" -Destination $dist
 Copy-Item "third_party/ffmpeg/bin/*.dll" -Destination $dist
 Copy-Item "build/vcpkg_installed/x64-windows/bin/*.dll" -Destination $dist
 Copy-Item "assets/*" -Destination "$dist/assets"
@@ -177,89 +181,53 @@ Compress-Archive -Path "$dist/*" -DestinationPath "dist/LiteWallpaper-Portable-w
 
 ---
 
-## 🔌 IPC Protocol Specification
+## 🔌 IPC & Engine Command Protocol
 
-The daemon and settings app communicate via Windows Named Pipe:
+The engine provides a local Windows Named Pipe interface for single-instance activation and IPC control:
 - **Pipe Address**: `\\.\pipe\LiteWallpaper`
 - **Format**: JSON-RPC over message pipe (`PIPE_TYPE_MESSAGE`)
 
 ### Supported Commands
 
-#### 1. Set Wallpaper
-```json
-// Request
-{ "cmd": "set_wallpaper", "path": "C:/path/to/video.mp4", "monitor": "\\\\.\\DISPLAY1" }
+| Command | Payload | Description |
+| :--- | :--- | :--- |
+| `open_settings` | `{ "cmd": "open_settings" }` | Restores and brings Control Panel window to front |
+| `set_wallpaper` | `{ "cmd": "set_wallpaper", "path": "...", "action": "wallpaper" }` | Applies video as desktop wallpaper |
+| `set_render_device` | `{ "cmd": "set_render_device", "gpu_index": 1 }` | Switches rendering between GPU 1, GPU 2, or CPU (-1) |
+| `set_target_displays`| `{ "cmd": "set_target_displays", "displays": [0, 1] }` | Directs wallpaper rendering to specific monitors |
+| `set_scaling` | `{ "cmd": "set_scaling", "mode": 0 }` | Sets scaling mode (0=Cover, 1=Fit, 2=Stretch) |
+| `set_fps` | `{ "cmd": "set_fps", "fps": 30 }` | Sets target render frame rate |
+| `set_volume` | `{ "cmd": "set_volume", "volume": 0.5 }` | Adjusts master playback volume |
+| `pause` / `resume` / `stop` | `{ "cmd": "pause" }` | Controls playback state and restores native desktop on stop |
 
-// Response
-{ "ok": true }
-```
+---
 
-#### 2. Get Engine Status
-```json
-// Request
-{ "cmd": "get_status" }
+## ⚡ Hardware Acceleration & Dual-GPU Pipeline
 
-// Response
-{
-  "ok": true,
-  "playing": true,
-  "paused": false,
-  "fps": 30,
-  "ram_mb": 14,
-  "power_state": "Active",
-  "wallpaper": "C:/path/to/video.mp4",
-  "volume": 0.5,
-  "muted": true
-}
-```
+LiteWallpaper employs a specialized DirectX 11 rendering pipeline designed for minimal power and memory consumption:
 
-#### 3. Playback Controls
-```json
-{ "cmd": "pause" }
-{ "cmd": "resume" }
-{ "cmd": "set_fps", "fps": 60 }
-{ "cmd": "set_volume", "volume": 0.8 }
-{ "cmd": "reload_config" }
-```
+1. **Integrated GPU (iGPU) Preference**:
+   * When multiple GPUs are detected (e.g. Intel UHD Graphics + NVIDIA RTX), the default hardware device routes to the iGPU (`gpu_index = 1`).
+   * This allows discrete gaming GPUs to remain in **0% power-saving sleep state** while the desktop wallpaper animates smoothly.
+2. **Zero-Copy NV12 D3D11VA Decoding**:
+   * Decoded video frames remain as hardware texture surfaces in GPU memory.
+   * Pixel shaders perform color space conversion (BT.709 YUV $\rightarrow$ RGB) on the GPU without intermediate CPU memory copying.
+3. **Double-Buffered Swapchain**:
+   * Uses `DXGI_SWAP_EFFECT_FLIP_DISCARD` on Windows 10/11 and `DXGI_SWAP_EFFECT_DISCARD` on Windows 7/8.
 
 ---
 
 ## ⚠️ Critical Engineering Rules
 
-When modifying or contributing code to LiteWallpaper, **always follow these rules**:
+When contributing code to LiteWallpaper, **always adhere to these principles**:
 
-### 1. Zero-Copy Video Pipeline
-- **NEVER** decode video into host CPU RAM buffers. Decoded frames from `FFmpegHWDecoder` **must** remain inside `ID3D11Texture2D` in GPU VRAM (NV12 format).
-- Use `Texture2DArray` HLSL sampling in pixel shaders (`shaders/nv12_to_rgb.hlsl`).
-
-### 2. Concurrency & Thread Safety
-- The media decoder (`g_decoder`) is shared between the main render loop and background IPC/dialog worker threads.
-- Always protect decoder operations (`Close()`, `Open()`, `DecodeNextFrame()`, `DecodeAudioSamples()`) using `g_decoder_mutex`.
-- D3D11 multithread protection (`ID3D10Multithread::SetMultithreadProtected(TRUE)`) must remain enabled.
-
-### 3. Windows 7 Compatibility
-- **DO NOT** use `DXGI_SWAP_EFFECT_FLIP_DISCARD` or `IDXGISwapChain1` (Windows 10+ only). Always use `IDXGISwapChain` and `DXGI_SWAP_EFFECT_DISCARD`.
-- **DO NOT** use `winrt::` / C++/WinRT in core background components.
-- Keep C++ exceptions disabled (`/GR-`, exception-free JSON parsing via `json::parse(..., nullptr, false)`).
-
-### 4. Audio Pacing & Buffering
-- `AudioPlayer` uses shared-mode WASAPI.
-- When muted (`m_muted == true`), WASAPI streams are kept idle to conserve memory and CPU wakeups.
-
----
-
-## 🗺️ Future Roadmap & Porting Guide
-
-1. **Linux Port**:
-   - Replace `WorkerW` injector with `wlr-layer-shell` protocol for Wayland (`ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND`) and `_NET_WM_WINDOW_TYPE_DESKTOP` for X11.
-   - Replace D3D11VA with FFmpeg `VA-API` / `VDPAU`.
-2. **macOS Port**:
-   - Attach borderless `NSWindow` with `level = kCGDesktopWindowLevel - 1`.
-   - Use `VideoToolbox` hardware acceleration and Metal render pipelines.
-3. **Live2D / 2D Mesh Engine**:
-   - Optional modular plugin architecture for rendering Cubism Core / Inochi2D puppet models with sub-step physics limits.
+1. **Preserve Ultra-Low RAM Footprint**: Never introduce heavy libraries, web runtimes, or unmanaged thread pools into hot render loops.
+2. **Thread Safety**: All state shared between the daemon render loop and the UI thread must use `std::atomic` or `g_decoder_mutex` protection.
+3. **Non-Destructive UI Hiding**: Control Panel hiding must preserve smooth state without memory leaks.
+4. **Desktop Cleanup on Stop**: Detaching the wallpaper must trigger desktop refresh (`SystemParametersInfoW(SPI_SETDESKWALLPAPER, ...)` + `InvalidateRect`) to restore native Windows wallpaper cleanly.
 
 ---
 
 ## 📄 License
-This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**. See [LICENSE](LICENSE) for details.
+
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
