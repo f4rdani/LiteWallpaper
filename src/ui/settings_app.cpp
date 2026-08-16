@@ -1095,6 +1095,9 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         return false;
     }
 
+    SendMessageW(g_hWnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
+    SendMessageW(g_hWnd, WM_SETICON, ICON_SMALL, (LPARAM)wc.hIcon);
+
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(g_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
     COLORREF captionColor = RGB(20, 20, 26);

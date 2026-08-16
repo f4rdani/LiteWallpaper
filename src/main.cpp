@@ -280,6 +280,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
         return 1;
     }
 
+    SendMessageW(g_main_hwnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
+    SendMessageW(g_main_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)wc.hIconSm);
+
     // 3. Inject window behind desktop icons (WorkerW) BEFORE DXGI initialization
     g_inject_ok = g_injector.Attach(g_main_hwnd);
     g_injector.RegisterExplorerRestart(g_main_hwnd);
