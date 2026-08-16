@@ -531,7 +531,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     }
 
     // Cleanup
-    SettingsUI::Close();
+    SettingsUI::Shutdown();
     g_ipc.Stop();
     g_tray.Destroy();
     g_audio.Stop();

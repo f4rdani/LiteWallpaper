@@ -14,8 +14,11 @@ public:
     // Check if the Settings window is currently open
     static bool IsOpen();
 
-    // Close and completely destroy the Settings window & reclaim memory
+    // Hide the Settings window to tray
     static void Close();
+
+    // Shutdown and destroy the Settings window & resources on app exit
+    static void Shutdown();
 
     // Get HWND of Settings window
     static HWND GetHwnd();

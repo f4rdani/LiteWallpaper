@@ -956,7 +956,7 @@ static void RenderOptimizeModal() {
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(530, 240));
+    ImGui::SetNextWindowSize(ImVec2(620, 310));
 
     if (ImGui::BeginPopupModal("Optimize Video for Display?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
         ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  High-Resolution Video Detected");
@@ -978,7 +978,7 @@ static void RenderOptimizeModal() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize for Display (Recommended)", ImVec2(260, 32))) {
+        if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize for Display (Recommended)", ImVec2(270, 36))) {
             if (g_rememberDownscaleChoice) {
                 auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = true;
@@ -991,7 +991,7 @@ static void RenderOptimizeModal() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Play Original 4K", ImVec2(130, 32))) {
+        if (ImGui::Button("Play Original 4K", ImVec2(140, 36))) {
             if (g_rememberDownscaleChoice) {
                 auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = false;
@@ -1004,7 +1004,7 @@ static void RenderOptimizeModal() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(90, 32))) {
+        if (ImGui::Button("Cancel", ImVec2(100, 36))) {
             g_showOptimizeModal = false;
             ImGui::CloseCurrentPopup();
         }
@@ -1037,9 +1037,11 @@ static void RenderOptimizationProgress() {
 }
 
 bool SettingsUI::Open(HINSTANCE hInstance) {
-    if (g_isOpen && g_hWnd) {
+    if (g_hWnd) {
         ShowWindow(g_hWnd, SW_RESTORE);
+        ShowWindow(g_hWnd, SW_SHOW);
         SetForegroundWindow(g_hWnd);
+        g_isOpen = true;
         return true;
     }
 
@@ -1123,7 +1125,7 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
 }
 
 void SettingsUI::RenderFrame() {
-    if (!g_isOpen || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
+    if (!g_isOpen || !g_hWnd || !IsWindowVisible(g_hWnd) || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
 
     FetchDaemonStatus();
 
@@ -1179,11 +1181,20 @@ void SettingsUI::RenderFrame() {
 }
 
 bool SettingsUI::IsOpen() {
-    return g_isOpen;
+    return g_isOpen && g_hWnd && IsWindowVisible(g_hWnd);
 }
 
 void SettingsUI::Close() {
-    if (!g_isOpen) return;
+    if (g_hWnd) {
+        ShowWindow(g_hWnd, SW_HIDE);
+    }
+    g_isOpen = false;
+}
+
+void SettingsUI::Shutdown() {
+    if (!g_hWnd) return;
+
+    g_isOpen = false;
 
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -1196,8 +1207,6 @@ void SettingsUI::Close() {
         UnregisterClassW(L"LiteWallpaper_SettingsClass", g_hInstance);
         g_hWnd = nullptr;
     }
-
-    g_isOpen = false;
 }
 
 HWND SettingsUI::GetHwnd() {
