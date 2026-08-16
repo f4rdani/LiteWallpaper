@@ -36,6 +36,7 @@ public:
     bool IsHWAccelerated() const { return m_is_hw_accelerated; }
 
     void SetAudioEnabled(bool enabled) { m_audio_enabled = enabled; }
+    void SetForceSoftware(bool force_sw) { m_force_software = force_sw; }
 
 private:
     AVFormatContext* m_fmt_ctx = nullptr;
@@ -52,6 +53,7 @@ private:
 
     ID3D11Device* m_d3d_device = nullptr;
     bool m_is_hw_accelerated = false;
+    bool m_force_software = false;
     bool m_audio_enabled = false;
     int  m_max_width = 0;
     int  m_max_height = 0;

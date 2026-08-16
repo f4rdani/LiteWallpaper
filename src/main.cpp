@@ -205,6 +205,7 @@ static bool OpenWallpaperVideo(const std::string& path) {
     g_current_frame = VideoFrame{};
     g_decoder.Close();
     g_decoder.SetAudioEnabled(audio_on);
+    g_decoder.SetForceSoftware(cfg.gpu_device_index == -1);
     int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     bool ok = g_decoder.Open(path.c_str(), g_presenter.GetDevice(), vw, vh);
@@ -302,14 +303,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
     }
 
     // 4. Initialize Direct3D 11 Presenter
-    if (!g_presenter.Init(g_main_hwnd, vw, vh)) {
+    if (!g_presenter.Init(g_main_hwnd, vw, vh, cfg.gpu_device_index)) {
         g_last_error = "D3D11 presenter init failed";
         Logger::Info(g_last_error);
         timeEndPeriod(1);
         if (hMutex) { ReleaseMutex(hMutex); CloseHandle(hMutex); }
         return 1;
     }
-    Logger::Info("Presenter init OK, swapchain size=", vw, "x", vh);
+    g_shared_engine_state.active_gpu_index.store(cfg.gpu_device_index);
+    Logger::Info("Presenter init OK (gpu_index=", cfg.gpu_device_index, "), swapchain size=", vw, "x", vh);
 
     g_flash_until_us = 0;
 
@@ -786,6 +788,36 @@ std::string OnIpcRequest(const std::string& request_json) {
         g_config.Get().target_fps = fps;
         g_clock.SetTargetFPS(fps);
         g_config.Save();
+        return "{\"ok\":true}";
+    } else if (cmd == "set_render_device") {
+        int gpu_idx = req.value("gpu_index", 0);
+        auto& cfg = g_config.Get();
+        cfg.gpu_device_index = gpu_idx;
+        g_config.Save();
+
+        std::string current_video = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+
+        {
+            std::lock_guard<std::mutex> lock(g_decoder_mutex);
+            g_decoder.Close();
+            g_current_frame = VideoFrame{};
+
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            g_presenter.Cleanup();
+            g_presenter.Init(g_main_hwnd, vw, vh, gpu_idx);
+
+            g_decoder.SetForceSoftware(gpu_idx == -1);
+            if (!current_video.empty()) {
+                bool audio_on = !cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && (cfg.wallpapers[0].volume > 0.0f);
+                g_decoder.SetAudioEnabled(audio_on);
+                g_decoder.Open(current_video.c_str(), g_presenter.GetDevice(), vw, vh);
+                g_decoder_hw = g_decoder.IsHWAccelerated();
+                g_clock.Reset();
+            }
+            g_shared_engine_state.active_gpu_index.store(gpu_idx);
+            g_shared_engine_state.hw_decode.store(g_decoder_hw);
+        }
         return "{\"ok\":true}";
     } else if (cmd == "reload_config") {
         g_config.Load();

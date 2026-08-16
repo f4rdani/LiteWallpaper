@@ -139,10 +139,13 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device, int max_w
     m_video_codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
     m_video_codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
 
-    if (InitHWDecoder(d3d_device)) {
+    if (!m_force_software && InitHWDecoder(d3d_device)) {
         m_video_codec_ctx->hw_device_ctx = av_buffer_ref(m_hw_device_ctx);
         m_video_codec_ctx->get_format = GetHWFormat;
         m_is_hw_accelerated = true;
+    } else {
+        m_is_hw_accelerated = false;
+        m_video_codec_ctx->thread_count = 2; // Allocate 2 threads for CPU software decoding
     }
 
     if (avcodec_open2(m_video_codec_ctx, video_codec, nullptr) < 0) {

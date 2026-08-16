@@ -13,8 +13,8 @@ public:
     D3D11Presenter();
     ~D3D11Presenter();
 
-    // Initialize D3D11 device and swap chain on target HWND
-    bool Init(HWND hwnd, int width, int height);
+    // Initialize D3D11 device and swap chain on target HWND (gpu_index: -1=CPU/Default, 0=GPU 1, 1=GPU 2, etc.)
+    bool Init(HWND hwnd, int width, int height, int gpu_index = 0);
     
     // Render NV12 texture to swap chain with scaling mode (0=Fill/Cover, 1=Fit/Letterbox, 2=Stretch)
     void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0);

@@ -66,6 +66,7 @@ static size_t g_daemonVramMB = 0;
 static double g_daemonCpuPercent = 0.0;
 static bool   g_daemonInjected = false;
 static bool   g_daemonHwDecode = false;
+static int    g_daemonActiveGpuIndex = 0;
 static uint64_t g_daemonFramesRendered = 0;
 static std::string g_daemonLastError = "";
 
@@ -365,6 +366,7 @@ static void FetchDaemonStatus() {
     g_daemonCpuPercent = g_shared_engine_state.cpu_percent.load();
     g_daemonInjected = g_shared_engine_state.injected.load();
     g_daemonHwDecode = g_shared_engine_state.hw_decode.load();
+    g_daemonActiveGpuIndex = g_shared_engine_state.active_gpu_index.load();
     g_daemonFramesRendered = g_shared_engine_state.frames_rendered.load();
     g_daemonLastError = g_shared_engine_state.GetLastError();
 
@@ -631,6 +633,47 @@ static void RenderSettingsPanel() {
         ImGui::SetTooltip("Changes how video fits the screen.\n*Note: Effect is visible when video aspect ratio differs from display\n (e.g. 4:3, 21:9 ultrawide, or vertical video on 16:9 screen).");
     }
 
+    // Dynamic Hardware / Rendering Device Selector
+    if (!g_hardwareInfoInit) {
+        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
+        g_hardwareInfoInit = true;
+    }
+
+    std::vector<std::string> deviceNames;
+    std::vector<int> deviceValues;
+
+    for (size_t g = 0; g < g_hardwareInfo.gpus.size(); ++g) {
+        std::string label = "GPU " + std::to_string(g + 1) + ": " + g_hardwareInfo.gpus[g].name + " (DirectX 11 HW)";
+        deviceNames.push_back(label);
+        deviceValues.push_back(static_cast<int>(g));
+    }
+    deviceNames.push_back("CPU: Software Processor Decode (swscale)");
+    deviceValues.push_back(-1);
+
+    int currentDeviceCombo = 0;
+    for (size_t i = 0; i < deviceValues.size(); ++i) {
+        if (deviceValues[i] == cfg.gpu_device_index) {
+            currentDeviceCombo = static_cast<int>(i);
+            break;
+        }
+    }
+
+    std::vector<const char*> comboItems;
+    for (const auto& name : deviceNames) {
+        comboItems.push_back(name.c_str());
+    }
+
+    ImGui::SetNextItemWidth(380);
+    if (ImGui::Combo("Video Rendering Engine", &currentDeviceCombo, comboItems.data(), static_cast<int>(comboItems.size()))) {
+        cfg.gpu_device_index = deviceValues[currentDeviceCombo];
+        g_config.Save();
+        nlohmann::json req{{"cmd", "set_render_device"}, {"gpu_index", cfg.gpu_device_index}};
+        SendIpcAsync(req.dump());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Choose whether video decoding & rendering runs on GPU 1, GPU 2, or CPU Software.");
+    }
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GAUGE_HIGH "  Frame Rate & Resource Control");
@@ -764,7 +807,13 @@ static void RenderPerformancePanel() {
     }
 
     // CPU info
-    ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.00f), "• Processor (CPU): %s", g_hardwareInfo.cpu.model_name.c_str());
+    if (g_daemonActiveGpuIndex == -1) {
+        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
+            "• Processor (CPU): %s [ACTIVE RENDERING ENGINE (SOFTWARE CPU)]", g_hardwareInfo.cpu.model_name.c_str());
+    } else {
+        ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.00f),
+            "• Processor (CPU): %s", g_hardwareInfo.cpu.model_name.c_str());
+    }
     ImGui::Text("   Cores / Topology: %d Physical Cores, %d Logical Threads",
                 g_hardwareInfo.cpu.physical_cores, g_hardwareInfo.cpu.logical_cores);
 
@@ -774,7 +823,8 @@ static void RenderPerformancePanel() {
     } else {
         for (size_t g_idx = 0; g_idx < g_hardwareInfo.gpus.size(); ++g_idx) {
             const auto& gpu = g_hardwareInfo.gpus[g_idx];
-            if (gpu.is_active_device) {
+            bool is_this_gpu_active = (g_daemonActiveGpuIndex == static_cast<int>(g_idx));
+            if (is_this_gpu_active) {
                 ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
                     "• GPU %zu: %s (%s) [ACTIVE D3D11 RENDERER]",
                     g_idx + 1, gpu.name.c_str(), gpu.is_discrete ? "Discrete GPU" : "Integrated iGPU");
@@ -793,7 +843,15 @@ static void RenderPerformancePanel() {
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CIRCLE_INFO "  Diagnostics & Injection");
     ImGui::Text("Desktop Injection (WorkerW): %s", g_daemonInjected ? "OK" : "FAILED");
-    ImGui::Text("Decoder Mode: %s", g_daemonHwDecode ? "Hardware D3D11VA (Zero-Copy GPU Active)" : "Software (swscale fallback)");
+    if (g_daemonActiveGpuIndex == -1 || !g_daemonHwDecode) {
+        ImGui::Text("Decoder Mode: Software (CPU / swscale mode)");
+    } else {
+        std::string gpu_name = "GPU";
+        if (g_daemonActiveGpuIndex >= 0 && g_daemonActiveGpuIndex < static_cast<int>(g_hardwareInfo.gpus.size())) {
+            gpu_name = "GPU " + std::to_string(g_daemonActiveGpuIndex + 1) + ": " + g_hardwareInfo.gpus[g_daemonActiveGpuIndex].name;
+        }
+        ImGui::Text("Decoder Mode: Hardware D3D11VA (%s Active)", gpu_name.c_str());
+    }
     ImGui::Text("Frames Rendered: %llu", (unsigned long long)g_daemonFramesRendered);
     if (!g_daemonLastError.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Last Error: %s", g_daemonLastError.c_str());

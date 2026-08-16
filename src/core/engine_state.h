@@ -24,12 +24,14 @@ struct EngineState {
     std::atomic<uint64_t> frames_rendered{0};
     std::atomic<uint64_t> frames_decoded{0};
     std::atomic<int>      frame_skip{1};
+    std::atomic<int>      active_gpu_index{0}; // -1 = CPU (Software), 0 = GPU 1, 1 = GPU 2, etc.
 
     // Thread-safe string fields (protected by str_mutex)
     mutable std::mutex str_mutex;
     char current_video[512] = {};
     char codec[64] = {};
     char last_error[256] = {};
+    char active_renderer_name[128] = {};
 
     void SetCurrentVideo(const std::string& path) {
         std::lock_guard<std::mutex> lock(str_mutex);
@@ -43,6 +45,10 @@ struct EngineState {
         std::lock_guard<std::mutex> lock(str_mutex);
         strncpy_s(last_error, err.c_str(), sizeof(last_error) - 1);
     }
+    void SetActiveRendererName(const std::string& name) {
+        std::lock_guard<std::mutex> lock(str_mutex);
+        strncpy_s(active_renderer_name, name.c_str(), sizeof(active_renderer_name) - 1);
+    }
     std::string GetCurrentVideo() const {
         std::lock_guard<std::mutex> lock(str_mutex);
         return std::string(current_video);
@@ -54,6 +60,10 @@ struct EngineState {
     std::string GetLastError() const {
         std::lock_guard<std::mutex> lock(str_mutex);
         return std::string(last_error);
+    }
+    std::string GetActiveRendererName() const {
+        std::lock_guard<std::mutex> lock(str_mutex);
+        return std::string(active_renderer_name);
     }
 };
 

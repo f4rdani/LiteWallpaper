@@ -20,6 +20,7 @@ struct AppConfig {
     int target_fps = 30;         // Display cap. Video always plays at native speed;
                                 // if target < video fps, frames are skipped (not slowed).
     int battery_fps = 15;        // Frame rate limit when running on battery power
+    int gpu_device_index = 0;    // -1 = CPU (Software), 0 = GPU 1 (Primary), 1 = GPU 2, etc.
     bool pause_on_fullscreen = true;
     bool pause_on_battery = false; // true = pause, false = reduce FPS
     bool pause_on_lock = true;
@@ -106,6 +107,7 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"gallery_history", c.gallery_history},
         {"scaling_mode", c.scaling_mode},
         {"target_fps", c.target_fps},
+        {"gpu_device_index", c.gpu_device_index},
         {"pause_on_fullscreen", c.pause_on_fullscreen},
         {"pause_on_battery", c.pause_on_battery},
         {"battery_fps", c.battery_fps},
@@ -122,6 +124,7 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("gallery_history")) j.at("gallery_history").get_to(c.gallery_history);
     if (j.contains("scaling_mode")) j.at("scaling_mode").get_to(c.scaling_mode);
     if (j.contains("target_fps")) j.at("target_fps").get_to(c.target_fps);
+    if (j.contains("gpu_device_index")) j.at("gpu_device_index").get_to(c.gpu_device_index);
     if (j.contains("pause_on_fullscreen")) j.at("pause_on_fullscreen").get_to(c.pause_on_fullscreen);
     if (j.contains("pause_on_battery")) j.at("pause_on_battery").get_to(c.pause_on_battery);
     if (j.contains("battery_fps")) j.at("battery_fps").get_to(c.battery_fps);

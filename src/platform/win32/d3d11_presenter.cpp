@@ -56,7 +56,7 @@ D3D11Presenter::~D3D11Presenter() {
     Cleanup();
 }
 
-bool D3D11Presenter::Init(HWND hwnd, int width, int height) {
+bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
     m_hwnd = hwnd;
     m_width = width;
     m_height = height;
@@ -73,10 +73,34 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height) {
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
+    ComPtr<IDXGIAdapter> targetAdapter;
+    D3D_DRIVER_TYPE driverType = D3D_DRIVER_TYPE_HARDWARE;
+
+    if (gpu_index >= 0) {
+        ComPtr<IDXGIFactory1> factory;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
+            IDXGIAdapter1* adapter1 = nullptr;
+            int match_idx = 0;
+            for (UINT i = 0; factory->EnumAdapters1(i, &adapter1) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC1 desc = {};
+                adapter1->GetDesc1(&desc);
+                if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+                    if (match_idx == gpu_index) {
+                        targetAdapter = adapter1;
+                        driverType = D3D_DRIVER_TYPE_UNKNOWN;
+                        break;
+                    }
+                    match_idx++;
+                }
+                adapter1->Release();
+            }
+        }
+    }
+
     D3D_FEATURE_LEVEL actualFeatureLevel;
     HRESULT hr = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
+        targetAdapter.Get(),
+        driverType,
         nullptr,
         flags,
         featureLevels,
@@ -86,6 +110,22 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height) {
         &actualFeatureLevel,
         &m_context
     );
+
+    if (FAILED(hr) && targetAdapter) {
+        // Fallback to default adapter
+        hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            flags,
+            featureLevels,
+            ARRAYSIZE(featureLevels),
+            D3D11_SDK_VERSION,
+            &m_device,
+            &actualFeatureLevel,
+            &m_context
+        );
+    }
 
     if (FAILED(hr)) {
         return false;
