@@ -845,8 +845,17 @@ static void RenderPerformancePanel() {
     ImGui::Text("Process RAM (Working Set): %zu MB (Target: < 45 MB)", g_daemonRamMB);
     ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size());
 
-    ImGui::Text("Dedicated GPU VRAM: %zu MB (Minimal Pool)", g_daemonVramMB);
-    ImGui::PlotLines("VRAM (MB)", g_vramHistory.data(), (int)g_vramHistory.size());
+    std::string monitoredGpuName = "Default Adapter";
+    if (g_daemonActiveGpuIndex == -1) {
+        monitoredGpuName = "CPU Software Mode (iGPU Presenter)";
+    } else if (g_daemonActiveGpuIndex >= 0 && g_daemonActiveGpuIndex < static_cast<int>(g_hardwareInfo.gpus.size())) {
+        const auto& gpu = g_hardwareInfo.gpus[g_daemonActiveGpuIndex];
+        monitoredGpuName = "GPU " + std::to_string(g_daemonActiveGpuIndex + 1) + ": " + gpu.name + (gpu.is_discrete ? " [dGPU]" : " [iGPU]");
+    }
+
+    ImGui::Text("Process Video Memory (%s): %zu MB", monitoredGpuName.c_str(), g_daemonVramMB);
+    std::string plotVramLabel = "VRAM: " + monitoredGpuName + " (MB)";
+    ImGui::PlotLines(plotVramLabel.c_str(), g_vramHistory.data(), (int)g_vramHistory.size());
 
     ImGui::Spacing();
     ImGui::Separator();
