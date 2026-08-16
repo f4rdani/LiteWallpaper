@@ -149,7 +149,8 @@ void AudioPlayer::AudioThread() {
         }
 
         BYTE* pData = nullptr;
-        hr = render_client->GetBuffer(numAvailableFrames, &pData);
+        UINT32 framesToRequest = std::min(numAvailableFrames, static_cast<UINT32>(4800));
+        hr = render_client->GetBuffer(framesToRequest, &pData);
         if (FAILED(hr) || !pData) {
             Sleep(10);
             continue;
@@ -158,17 +159,19 @@ void AudioPlayer::AudioThread() {
         float current_vol = m_muted.load() ? 0.0f : m_volume.load();
         int channels = mix_format->nChannels;
 
-        // Pop stereo frame pairs (L, R) from buffer
-        std::vector<float> stereoPairs(numAvailableFrames * 2, 0.0f);
+        // Pop stereo frame pairs using stack buffer (zero heap allocations)
+        static constexpr size_t STACK_BUF_FRAMES = 4800; // 100ms @ 48kHz
+        float stereoPairs[STACK_BUF_FRAMES * 2] = {};
+        UINT32 framesToProcess = std::min(numAvailableFrames, static_cast<UINT32>(STACK_BUF_FRAMES));
         {
             std::lock_guard<std::mutex> lock(m_buffer_mutex);
             size_t availableFloats = m_sample_buffer.size();
             size_t availableStereoPairs = availableFloats / 2;
-            size_t pairsToCopy = std::min(static_cast<size_t>(numAvailableFrames), availableStereoPairs);
+            size_t pairsToCopy = std::min(static_cast<size_t>(framesToProcess), availableStereoPairs);
             
             if (pairsToCopy > 0) {
                 size_t floatsToCopy = pairsToCopy * 2;
-                std::copy(m_sample_buffer.begin(), m_sample_buffer.begin() + floatsToCopy, stereoPairs.begin());
+                std::copy(m_sample_buffer.begin(), m_sample_buffer.begin() + floatsToCopy, stereoPairs);
                 m_sample_buffer.erase(m_sample_buffer.begin(), m_sample_buffer.begin() + floatsToCopy);
             }
         }
@@ -180,7 +183,7 @@ void AudioPlayer::AudioThread() {
 
         if (isFloat) {
             float* out = reinterpret_cast<float*>(pData);
-            for (UINT32 i = 0; i < numAvailableFrames; ++i) {
+            for (UINT32 i = 0; i < framesToProcess; ++i) {
                 float l = stereoPairs[i * 2 + 0] * current_vol;
                 float r = stereoPairs[i * 2 + 1] * current_vol;
 
@@ -200,7 +203,7 @@ void AudioPlayer::AudioThread() {
             }
         } else if (mix_format->wBitsPerSample == 16) {
             int16_t* out = reinterpret_cast<int16_t*>(pData);
-            for (UINT32 i = 0; i < numAvailableFrames; ++i) {
+            for (UINT32 i = 0; i < framesToProcess; ++i) {
                 float l = std::clamp(stereoPairs[i * 2 + 0] * current_vol, -1.0f, 1.0f);
                 float r = std::clamp(stereoPairs[i * 2 + 1] * current_vol, -1.0f, 1.0f);
 
@@ -218,10 +221,10 @@ void AudioPlayer::AudioThread() {
                 }
             }
         } else {
-            std::memset(pData, 0, numAvailableFrames * mix_format->nBlockAlign);
+            std::memset(pData, 0, framesToProcess * mix_format->nBlockAlign);
         }
 
-        render_client->ReleaseBuffer(numAvailableFrames, 0);
+        render_client->ReleaseBuffer(framesToProcess, 0);
         Sleep(10);
     }
 

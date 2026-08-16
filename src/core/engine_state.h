@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <mutex>
 
 namespace litewp {
 
@@ -24,18 +25,35 @@ struct EngineState {
     std::atomic<uint64_t> frames_decoded{0};
     std::atomic<int>      frame_skip{1};
 
+    // Thread-safe string fields (protected by str_mutex)
+    mutable std::mutex str_mutex;
     char current_video[512] = {};
     char codec[64] = {};
     char last_error[256] = {};
 
     void SetCurrentVideo(const std::string& path) {
+        std::lock_guard<std::mutex> lock(str_mutex);
         strncpy_s(current_video, path.c_str(), sizeof(current_video) - 1);
     }
     void SetCodec(const std::string& c) {
+        std::lock_guard<std::mutex> lock(str_mutex);
         strncpy_s(codec, c.c_str(), sizeof(codec) - 1);
     }
     void SetLastError(const std::string& err) {
+        std::lock_guard<std::mutex> lock(str_mutex);
         strncpy_s(last_error, err.c_str(), sizeof(last_error) - 1);
+    }
+    std::string GetCurrentVideo() const {
+        std::lock_guard<std::mutex> lock(str_mutex);
+        return std::string(current_video);
+    }
+    std::string GetCodec() const {
+        std::lock_guard<std::mutex> lock(str_mutex);
+        return std::string(codec);
+    }
+    std::string GetLastError() const {
+        std::lock_guard<std::mutex> lock(str_mutex);
+        return std::string(last_error);
     }
 };
 

@@ -254,20 +254,20 @@ static void FetchDaemonStatus() {
     g_daemonConnected = g_shared_engine_state.connected.load();
     g_daemonPlaying = g_shared_engine_state.playing.load();
     g_daemonPaused = g_shared_engine_state.paused.load();
-    g_daemonCurrentVideo = g_shared_engine_state.current_video;
+    g_daemonCurrentVideo = g_shared_engine_state.GetCurrentVideo();
     g_daemonFps = g_shared_engine_state.fps.load();
     g_daemonVideoFps = g_shared_engine_state.video_fps.load();
     g_daemonWidth = g_shared_engine_state.width.load();
     g_daemonHeight = g_shared_engine_state.height.load();
     g_daemonDuration = g_shared_engine_state.duration.load();
-    g_daemonCodec = g_shared_engine_state.codec;
+    g_daemonCodec = g_shared_engine_state.GetCodec();
     g_daemonRamMB = g_shared_engine_state.ram_mb.load();
     g_daemonVramMB = g_shared_engine_state.vram_mb.load();
     g_daemonCpuPercent = g_shared_engine_state.cpu_percent.load();
     g_daemonInjected = g_shared_engine_state.injected.load();
     g_daemonHwDecode = g_shared_engine_state.hw_decode.load();
     g_daemonFramesRendered = g_shared_engine_state.frames_rendered.load();
-    g_daemonLastError = g_shared_engine_state.last_error;
+    g_daemonLastError = g_shared_engine_state.GetLastError();
 
     g_ramHistory.erase(g_ramHistory.begin());
     g_ramHistory.push_back(static_cast<float>(g_daemonRamMB));

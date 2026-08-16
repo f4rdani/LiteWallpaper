@@ -46,7 +46,9 @@ uint32_t PlaybackClock::GetSleepDurationMs() const {
         return 0;
     }
     int64_t remaining_us = m_frame_interval_us - elapsed;
-    return static_cast<uint32_t>(remaining_us / 1000);
+    // Avoid busy-spin: if remaining > 0 but < 1ms, sleep at least 1ms
+    uint32_t ms = static_cast<uint32_t>(remaining_us / 1000);
+    return (ms == 0 && remaining_us > 0) ? 1 : ms;
 }
 
 int64_t PlaybackClock::GetCurrentTimeMicros() {

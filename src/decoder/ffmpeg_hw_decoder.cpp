@@ -24,7 +24,10 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
                     int h = ctx->coded_height > 0 ? ctx->coded_height : (ctx->height > 0 ? ctx->height : 1080);
                     frames_ctx->width = FFALIGN(w, 16);
                     frames_ctx->height = FFALIGN(h, 16);
-                    frames_ctx->initial_pool_size = 4; // Minimal surface pool in VRAM!
+                    // Pool must be large enough for codec reference frames + decode-in-progress surfaces.
+                    // Too small = FFmpeg ignores our pool and allocates its own (20+ frames, no SHADER_RESOURCE flag).
+                    int ref_frames = ctx->refs > 0 ? ctx->refs : 4;
+                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 4, 8, 16);
 
                     auto* d3d11_frames = reinterpret_cast<AVD3D11VAFramesContext*>(frames_ctx->hwctx);
                     d3d11_frames->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
@@ -179,7 +182,7 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device, int max_w
                         &m_swr_ctx,
                         &out_ch_layout,
                         AV_SAMPLE_FMT_FLT,
-                        44100,
+                        48000, // Match WASAPI default mix format
                         &m_audio_codec_ctx->ch_layout,
                         m_audio_codec_ctx->sample_fmt,
                         m_audio_codec_ctx->sample_rate,
@@ -278,16 +281,16 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
             m_sws_ctx = nullptr;
         }
         m_sws_ctx = sws_getContext(src_w, src_h, srcFmt, target_w, target_h, AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
-        m_sw_width = target_w;
-        m_sw_height = target_h;
         m_sw_src_format = srcFmt;
         if (!m_sws_ctx) {
             return false;
         }
     }
 
-    // CPU NV12 staging buffers
-    if (!m_sw_y || !m_sw_uv) {
+    // CPU NV12 staging buffers (reallocate on dimension change)
+    if (!m_sw_y || !m_sw_uv || m_sw_width != target_w || m_sw_height != target_h) {
+        if (m_sw_y) { av_free(m_sw_y); m_sw_y = nullptr; }
+        if (m_sw_uv) { av_free(m_sw_uv); m_sw_uv = nullptr; }
         m_sw_y = static_cast<uint8_t*>(av_malloc((size_t)target_w * target_h));
         m_sw_uv = static_cast<uint8_t*>(av_malloc((size_t)target_w * target_h / 2));
         if (!m_sw_y || !m_sw_uv) {
@@ -320,6 +323,10 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
         }
     }
 
+    // Update tracked dimensions after all checks
+    m_sw_width = target_w;
+    m_sw_height = target_h;
+
     // Upload Y and UV planes into the mapped NV12 texture
     ID3D11DeviceContext* ctx = nullptr;
     m_d3d_device->GetImmediateContext(&ctx);
@@ -350,6 +357,10 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
 
 void FFmpegHWDecoder::SeekToStart() {
     if (!m_fmt_ctx || m_video_stream_idx < 0) return;
+
+    // Release VRAM slice held by last decoded frame before flushing
+    if (m_hw_frame) av_frame_unref(m_hw_frame);
+    if (m_audio_frame) av_frame_unref(m_audio_frame);
 
     av_seek_frame(m_fmt_ctx, m_video_stream_idx, 0, AVSEEK_FLAG_BACKWARD);
     if (m_video_codec_ctx) {
@@ -418,10 +429,12 @@ void FFmpegHWDecoder::Close() {
     m_sw_src_format = AV_PIX_FMT_NONE;
 
     if (m_hw_frame) {
+        av_frame_unref(m_hw_frame);
         av_frame_free(&m_hw_frame);
         m_hw_frame = nullptr;
     }
     if (m_audio_frame) {
+        av_frame_unref(m_audio_frame);
         av_frame_free(&m_audio_frame);
         m_audio_frame = nullptr;
     }
