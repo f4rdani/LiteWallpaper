@@ -431,7 +431,7 @@ static void RenderGalleryTab() {
 
     ImGui::BeginChild("GalleryGrid", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     
-    float cardWidth = 390.0f;
+    float cardWidth = 440.0f;
     float windowVisibleX2 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
 
     for (size_t i = 0; i < galleryCopy.size(); ++i) {
@@ -497,23 +497,29 @@ static void RenderGalleryTab() {
 
             ImGui::SameLine();
             if (is_playing_opt) {
-                if (ImGui::Button("Play Ori", ImVec2(75, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY "  Play Original", ImVec2(125, 26))) {
                     ApplyAction(path, "wallpaper");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Switch playback to the original high-resolution video");
                 }
             } else {
                 if (has_opt) {
-                    if (ImGui::Button("Play 1080p", ImVec2(85, 26))) {
+                    if (ImGui::Button(ICON_FA_PLAY "  Play 1080p", ImVec2(110, 26))) {
                         ApplyAction(opt_path, "wallpaper");
                     }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Switch playback to the 1080p optimized version");
+                    }
                 } else {
-                    if (ImGui::Button("Optimize", ImVec2(75, 26))) {
+                    if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize", ImVec2(90, 26))) {
                         StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
                     }
                 }
             }
 
             ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(60, 26))) {
+            if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(65, 26))) {
                 ApplyAction(is_playing_opt ? opt_path : path, "lockscreen");
             }
 
@@ -523,34 +529,50 @@ static void RenderGalleryTab() {
             }
 
             ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_TRASH, ImVec2(28, 26))) {
+            if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
                 cfg.RemoveFromGallery(path);
                 g_config.Save();
             }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Remove video from gallery");
+            }
         } else {
             if (has_opt) {
-                if (ImGui::Button(ICON_FA_COMPACT_DISC " 1080p", ImVec2(90, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY "  Play 1080p", ImVec2(110, 26))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Play lightweight 1080p downscaled version (Saves VRAM & GPU load)");
+                }
+
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_FILM " Ori", ImVec2(65, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY "  Play Original", ImVec2(125, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Play original high-resolution video file");
+                }
+
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_LOCK " Lock", ImVec2(65, 26))) {
+                if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(65, 26))) {
                     ApplyAction(opt_path, "lockscreen");
                 }
+
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_IMAGES " Both", ImVec2(65, 26))) {
+                if (ImGui::Button(ICON_FA_IMAGES "  Both", ImVec2(65, 26))) {
                     ApplyAction(opt_path, "both");
                 }
+
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_TRASH, ImVec2(28, 26))) {
+                if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
                     cfg.RemoveFromGallery(path);
                     g_config.Save();
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Remove video from gallery");
+                }
             } else {
-                if (ImGui::Button(ICON_FA_DESKTOP "  Wallpaper", ImVec2(100, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY "  Play Wallpaper", ImVec2(135, 26))) {
                     RequestApplyVideo(path, "wallpaper");
                 }
                 ImGui::SameLine();
@@ -565,6 +587,9 @@ static void RenderGalleryTab() {
                 if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
                     cfg.RemoveFromGallery(path);
                     g_config.Save();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Remove video from gallery");
                 }
             }
         }

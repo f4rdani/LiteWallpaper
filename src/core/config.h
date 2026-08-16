@@ -48,10 +48,17 @@ struct AppConfig {
     }
 
     void RemoveFromGallery(const std::string& path) {
-        auto it = std::find(gallery_history.begin(), gallery_history.end(), path);
-        if (it != gallery_history.end()) {
-            gallery_history.erase(it);
-        }
+        if (path.empty()) return;
+        auto normalize = [](std::string s) {
+            std::replace(s.begin(), s.end(), '/', '\\');
+            for (auto& c : s) c = (char)::tolower(c);
+            return s;
+        };
+        std::string target = normalize(path);
+        auto it = std::remove_if(gallery_history.begin(), gallery_history.end(), [&](const std::string& item) {
+            return normalize(item) == target || item == path;
+        });
+        gallery_history.erase(it, gallery_history.end());
     }
 };
 
