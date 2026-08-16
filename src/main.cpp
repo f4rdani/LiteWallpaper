@@ -76,11 +76,10 @@ static int ComputeFrameSkip(double video_fps, int display_fps) {
 
 static void SetVideoPacing(double video_fps) {
     g_video_fps = video_fps;
-    if (video_fps > 0.0) {
-        int native = static_cast<int>(video_fps + 0.5);
-        if (native < 1) native = 1;
-        g_clock.SetTargetFPS(native);
-    }
+    auto& cfg = g_config.Get();
+    int fps = (cfg.target_fps > 0) ? cfg.target_fps : ((video_fps > 0.0) ? static_cast<int>(video_fps + 0.5) : 30);
+    if (fps < 1) fps = 1;
+    g_clock.SetTargetFPS(fps);
     g_frames_decoded = 0;
 }
 
@@ -367,8 +366,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
 
         PowerState power = g_governor.GetCurrentState();
         bool fullscreen_active = (power == PowerState::Paused && cfg.pause_on_fullscreen);
+        bool battery_pause_active = (power == PowerState::Reduced && cfg.pause_on_battery);
+        bool lock_pause_active = (power == PowerState::Sleeping && cfg.pause_on_lock);
 
-        if (fullscreen_active) {
+        if (fullscreen_active || battery_pause_active || lock_pause_active) {
             if (!g_fullscreen_paused) {
                 SuspendWallpaperForFullscreen();
             }
@@ -376,6 +377,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             continue;
         } else if (g_fullscreen_paused) {
             ResumeWallpaperFromFullscreen();
+        }
+
+        // Apply battery vs AC FPS throttling
+        if (power == PowerState::Reduced && cfg.battery_fps > 0) {
+            if (g_clock.GetTargetFPS() != static_cast<uint32_t>(cfg.battery_fps)) {
+                g_clock.SetTargetFPS(cfg.battery_fps);
+            }
+        } else if (power == PowerState::Active && cfg.target_fps > 0) {
+            if (g_clock.GetTargetFPS() != static_cast<uint32_t>(cfg.target_fps)) {
+                g_clock.SetTargetFPS(cfg.target_fps);
+            }
         }
 
         // Re-attach if desktop was rebuilt, or retry injection if it initially failed
@@ -772,10 +784,20 @@ std::string OnIpcRequest(const std::string& request_json) {
         int fps = req.value("fps", 30);
         if (fps < 1) fps = 1;
         g_config.Get().target_fps = fps;
+        g_clock.SetTargetFPS(fps);
         g_config.Save();
         return "{\"ok\":true}";
     } else if (cmd == "reload_config") {
         g_config.Load();
+        auto& cfg = g_config.Get();
+        if (cfg.target_fps > 0) {
+            g_clock.SetTargetFPS(cfg.target_fps);
+        }
+        if (!cfg.wallpapers.empty()) {
+            float vol = cfg.wallpapers[0].volume;
+            g_audio.SetVolume(vol);
+            g_decoder.SetAudioEnabled(vol > 0.0f && !g_audio.IsMuted());
+        }
         return "{\"ok\":true}";
     }
 

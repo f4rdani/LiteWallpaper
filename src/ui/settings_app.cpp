@@ -593,8 +593,12 @@ static void RenderSettingsPanel() {
     ImGui::SetNextItemWidth(380);
     if (ImGui::Combo("Display Scaling Mode", &currentMode, scalingModes, IM_ARRAYSIZE(scalingModes))) {
         cfg.scaling_mode = currentMode;
+        g_config.Save();
         nlohmann::json req{{"cmd", "set_scaling"}, {"mode", currentMode}};
         SendIpcAsync(req.dump());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Changes how video fits the screen.\n*Note: Effect is visible when video aspect ratio differs from display\n (e.g. 4:3, 21:9 ultrawide, or vertical video on 16:9 screen).");
     }
 
     ImGui::Spacing();
@@ -603,24 +607,37 @@ static void RenderSettingsPanel() {
 
     ImGui::SetNextItemWidth(250);
     if (ImGui::SliderInt("Target Render FPS", &cfg.target_fps, 15, 60)) {
+        g_config.Save();
         nlohmann::json req{{"cmd", "set_fps"}, {"fps", cfg.target_fps}};
         SendIpcAsync(req.dump());
     }
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "(Active: %d FPS)", g_daemonFps);
 
     ImGui::SetNextItemWidth(250);
-    ImGui::SliderInt("Battery Saver FPS", &cfg.battery_fps, 10, 30);
+    if (ImGui::SliderInt("Battery Saver FPS", &cfg.battery_fps, 10, 30)) {
+        g_config.Save();
+    }
 
-    ImGui::Checkbox("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen);
-    ImGui::Checkbox("Auto-Pause on Battery Power", &cfg.pause_on_battery);
+    if (ImGui::Checkbox("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen)) {
+        g_config.Save();
+    }
+    if (ImGui::Checkbox("Auto-Pause on Battery Power", &cfg.pause_on_battery)) {
+        g_config.Save();
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Auto-Downscale & Resolution Optimization");
-    ImGui::Checkbox("Auto-downscale 4K/high-res videos to match display resolution", &cfg.auto_downscale_highres);
+    if (ImGui::Checkbox("Auto-downscale 4K/high-res videos to match display resolution", &cfg.auto_downscale_highres)) {
+        g_config.Save();
+    }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Transcodes videos larger than monitor resolution to match display size.\nSaves ~75%% GPU Video Decode & ~50MB VRAM.");
     }
-    ImGui::Checkbox("Ask before optimizing high-resolution videos", &cfg.prompt_downscale);
+    if (ImGui::Checkbox("Ask before optimizing high-resolution videos", &cfg.prompt_downscale)) {
+        g_config.Save();
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -638,6 +655,7 @@ static void RenderSettingsPanel() {
         if (!cfg.wallpapers.empty()) {
             cfg.wallpapers[0].volume = volume;
         }
+        g_config.Save();
         nlohmann::json req{{"cmd", "set_volume"}, {"volume", volume}};
         SendIpcAsync(req.dump());
     }
