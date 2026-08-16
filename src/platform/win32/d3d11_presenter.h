@@ -2,6 +2,9 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
+#if __has_include(<dxgi1_4.h>)
+#include <dxgi1_4.h>
+#endif
 #include <vector>
 #include <wrl/client.h>
 
@@ -29,6 +32,9 @@ public:
     
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     HRESULT Present(UINT syncInterval = 0);
+
+    // Query live dedicated/shared video memory used by this process on the active adapter (in MB)
+    size_t GetVramUsageMB() const;
 
     // Diagnostic: clear the swap chain to a solid color and present once.
     void ClearAndPresent(float r, float g, float b);

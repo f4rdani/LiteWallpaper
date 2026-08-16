@@ -436,7 +436,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             auto info = g_decoder.GetInfo();
             size_t ram = GetProcessMemoryUsageMB();
             double cpu = GetProcessCpuUsagePercent();
-            size_t vram = GetProcessVramUsageMB(info.width, info.height, vw, vh, g_decoder_hw);
+            size_t vram = g_presenter.GetVramUsageMB();
+            if (vram == 0 && g_decoder_hw) {
+                vram = GetProcessVramUsageMB(info.width, info.height, vw, vh, g_decoder_hw);
+            }
 
             g_shared_engine_state.connected.store(true);
             g_shared_engine_state.playing.store(!g_paused && !cur_vid.empty() && !g_fullscreen_paused);

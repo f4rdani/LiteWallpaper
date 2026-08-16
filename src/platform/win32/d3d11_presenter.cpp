@@ -95,6 +95,27 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
                 adapter1->Release();
             }
         }
+    } else {
+        // CPU Software Mode (gpu_index == -1):
+        // Automatically route presentation to the Integrated GPU (iGPU - Intel/AMD APU)
+        // so the discrete high-power GPU (NVIDIA) stays completely powered down / 0% usage!
+        ComPtr<IDXGIFactory1> factory;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
+            IDXGIAdapter1* adapter1 = nullptr;
+            for (UINT i = 0; factory->EnumAdapters1(i, &adapter1) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC1 desc = {};
+                adapter1->GetDesc1(&desc);
+                if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+                    // Intel (0x8086) or AMD APU (0x1002 with dedicated VRAM <= 512MB)
+                    if (desc.VendorId == 0x8086 || (desc.VendorId == 0x1002 && desc.DedicatedVideoMemory <= 512 * 1024 * 1024)) {
+                        targetAdapter = adapter1;
+                        driverType = D3D_DRIVER_TYPE_UNKNOWN;
+                        break;
+                    }
+                }
+                adapter1->Release();
+            }
+        }
     }
 
     D3D_FEATURE_LEVEL actualFeatureLevel;
@@ -440,6 +461,32 @@ ID3D11Device* D3D11Presenter::GetDevice() const {
 
 ID3D11DeviceContext* D3D11Presenter::GetContext() const {
     return m_context.Get();
+}
+
+size_t D3D11Presenter::GetVramUsageMB() const {
+    if (!m_device) return 0;
+    
+    ComPtr<IDXGIDevice> dxgiDevice;
+    if (SUCCEEDED(m_device.As(&dxgiDevice))) {
+        ComPtr<IDXGIAdapter> adapter;
+        if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+#if __has_include(<dxgi1_4.h>)
+            ComPtr<IDXGIAdapter3> adapter3;
+            if (SUCCEEDED(adapter.As(&adapter3))) {
+                DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
+                if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo))) {
+                    size_t vram_mb = static_cast<size_t>(memInfo.CurrentUsage / (1024 * 1024));
+                    if (vram_mb > 0) return vram_mb;
+                }
+                if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &memInfo))) {
+                    size_t shared_mb = static_cast<size_t>(memInfo.CurrentUsage / (1024 * 1024));
+                    if (shared_mb > 0) return shared_mb;
+                }
+            }
+#endif
+        }
+    }
+    return 0;
 }
 
 void D3D11Presenter::Cleanup() {
