@@ -88,6 +88,7 @@ static void SetVideoPacing(double video_fps) {
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void OnTrayAction(TrayAction action);
 std::string OnIpcRequest(const std::string& json);
+static bool OpenWallpaperVideo(const std::string& path);
 
 static size_t GetProcessMemoryUsageMB() {
     PROCESS_MEMORY_COUNTERS_EX pmc;
@@ -178,22 +179,7 @@ static void OpenWallpaperDialog() {
         cfg.AddToGallery(utf8_path);
         g_config.Save();
 
-        // Thread-safe decoder reload
-        {
-            std::lock_guard<std::mutex> lock(g_decoder_mutex);
-            g_current_frame = VideoFrame{};
-            g_decoder.Close();
-            bool audio_on = !cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && (cfg.wallpapers[0].volume > 0.0f);
-            g_decoder.SetAudioEnabled(audio_on);
-            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            if (g_decoder.Open(utf8_path.c_str(), g_presenter.GetDevice(), vw, vh)) {
-                SetVideoPacing(g_decoder.GetInfo().fps);
-            }
-            g_paused = false;
-            g_clock.Reset();
-        }
-
+        OpenWallpaperVideo(utf8_path);
         TrimWorkingSetMemory();
     }
 }

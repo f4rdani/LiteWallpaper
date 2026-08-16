@@ -4,6 +4,9 @@
 #include "ffmpeg_hw_decoder.h"
 #include <iostream>
 #include <algorithm>
+#include <wrl/client.h>
+
+using Microsoft::WRL::ComPtr;
 
 namespace litewp {
 
@@ -330,11 +333,10 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
     m_sw_height = target_h;
 
     // Upload Y and UV planes into the mapped NV12 texture
-    ID3D11DeviceContext* ctx = nullptr;
+    ComPtr<ID3D11DeviceContext> ctx;
     m_d3d_device->GetImmediateContext(&ctx);
-    D3D11_MAPPED_SUBRESOURCE mapped;
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
     if (!ctx || FAILED(ctx->Map(m_sw_texture.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-        if (ctx) ctx->Release();
         return false;
     }
 
@@ -347,7 +349,6 @@ bool FFmpegHWDecoder::UploadSoftwareFrame(AVFrame* src, VideoFrame& frame) {
         memcpy(base + (size_t)pitch * target_h + (size_t)y * pitch, m_sw_uv + (size_t)y * target_w, (size_t)target_w);
     }
     ctx->Unmap(m_sw_texture.Get(), 0);
-    ctx->Release();
 
     frame.texture = m_sw_texture.Get();
     frame.texture_index = 0;

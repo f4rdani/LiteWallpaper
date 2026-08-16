@@ -108,7 +108,7 @@ std::vector<GpuInfo> HardwareDetector::GetGpuList() {
                     gpu.is_discrete = (gpu.dedicated_vram_mb > 1024);
                 }
 
-                gpu.is_active_device = (i == 0); // Primary default rendering adapter
+                gpu.is_active_device = gpus.empty(); // First enumerated hardware adapter is default active
                 gpus.push_back(gpu);
             }
         }
