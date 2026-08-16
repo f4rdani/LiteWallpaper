@@ -27,9 +27,9 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
                     int h = ctx->coded_height > 0 ? ctx->coded_height : (ctx->height > 0 ? ctx->height : 1080);
                     frames_ctx->width = FFALIGN(w, 16);
                     frames_ctx->height = FFALIGN(h, 16);
-                    // Ultra-compact surface pool: 3 surfaces minimum (saves ~15-20MB VRAM)
-                    int ref_frames = (ctx->refs > 0 && ctx->refs <= 3) ? ctx->refs : 2;
-                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 1, 3, 4);
+                    // Stable surface pool size for buttery smooth 30/60 FPS hardware decoding
+                    int ref_frames = ctx->refs > 0 ? ctx->refs : 4;
+                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 4, 8, 16);
 
                     auto* d3d11_frames = reinterpret_cast<AVD3D11VAFramesContext*>(frames_ctx->hwctx);
                     d3d11_frames->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;

@@ -1055,12 +1055,6 @@ static void RenderOptimizationProgress() {
 
 bool SettingsUI::Open(HINSTANCE hInstance) {
     if (g_hWnd) {
-        if (!g_pd3dDevice) {
-            if (!CreateDeviceD3D(g_hWnd)) {
-                return false;
-            }
-            ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
-        }
         ShowWindow(g_hWnd, SW_RESTORE);
         ShowWindow(g_hWnd, SW_SHOW);
         SetForegroundWindow(g_hWnd);
@@ -1212,10 +1206,6 @@ void SettingsUI::Close() {
         ShowWindow(g_hWnd, SW_HIDE);
     }
     g_isOpen = false;
-
-    // Release UI D3D11 swapchain & context while idling in tray to reclaim ~20MB VRAM
-    ImGui_ImplDX11_Shutdown();
-    CleanupDeviceD3D();
 }
 
 void SettingsUI::Shutdown() {
