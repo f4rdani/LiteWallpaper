@@ -119,4 +119,6 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("run_on_startup")) j.at("run_on_startup").get_to(c.run_on_startup);
 }
 
+extern Config g_config;
+
 } // namespace litewp

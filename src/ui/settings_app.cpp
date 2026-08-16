@@ -45,8 +45,6 @@ static IDXGISwapChain*          g_pSwapChain = nullptr;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
 static bool                     g_isOpen = false;
 
-static Config                   g_settingsConfig;
-
 // Performance metrics cache
 static bool   g_daemonConnected = false;
 static bool   g_daemonPlaying = false;
@@ -211,8 +209,8 @@ static void SendIpcAsync(const std::string& request_json) {
 
 static void ApplyAction(std::string utf8_path, std::string action) {
     if (utf8_path.empty()) return;
-    g_settingsConfig.Get().AddToGallery(utf8_path);
-    g_settingsConfig.Save();
+    g_config.Get().AddToGallery(utf8_path);
+    g_config.Save();
 
     if (action == "wallpaper") {
         nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
@@ -231,6 +229,10 @@ static void ApplyAction(std::string utf8_path, std::string action) {
 }
 
 static void StartVideoOptimization(const std::string& input_path, int target_w, int target_h, const std::string& action) {
+    // Add source path to gallery immediately so user sees card right away
+    g_config.Get().AddToGallery(input_path);
+    g_config.Save();
+
     g_video_optimizer.StartOptimizeAsync(
         input_path,
         target_w,
@@ -251,7 +253,11 @@ static void RequestApplyVideo(std::string utf8_path, std::string action) {
         return;
     }
 
-    auto& cfg = g_settingsConfig.Get();
+    // Always ensure source path is in gallery
+    g_config.Get().AddToGallery(utf8_path);
+    g_config.Save();
+
+    auto& cfg = g_config.Get();
     int screen_w = GetSystemMetrics(SM_CXSCREEN);
     int screen_h = GetSystemMetrics(SM_CYSCREEN);
     if (screen_w <= 0) screen_w = 1920;
@@ -363,8 +369,13 @@ static void FetchDaemonStatus() {
 }
 
 static void RenderGalleryTab() {
-    auto& cfg = g_settingsConfig.Get();
+    auto& cfg = g_config.Get();
     auto galleryCopy = cfg.gallery_history;
+
+    int screen_w = GetSystemMetrics(SM_CXSCREEN);
+    int screen_h = GetSystemMetrics(SM_CYSCREEN);
+    if (screen_w <= 0) screen_w = 1920;
+    if (screen_h <= 0) screen_h = 1080;
 
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FOLDER_OPEN "  Video Gallery & Management");
     ImGui::SameLine();
@@ -385,20 +396,19 @@ static void RenderGalleryTab() {
             int size_needed = WideCharToMultiByte(CP_UTF8, 0, filename, -1, NULL, 0, NULL, NULL);
             std::string utf8_path(size_needed - 1, 0);
             WideCharToMultiByte(CP_UTF8, 0, filename, -1, &utf8_path[0], size_needed, NULL, NULL);
-            cfg.AddToGallery(utf8_path);
-            g_settingsConfig.Save();
+            RequestApplyVideo(utf8_path, "wallpaper");
         }
     }
 
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_ROTATE "  Refresh Gallery", ImVec2(150, 32))) {
-        g_settingsConfig.Load();
+        g_config.Load();
     }
 
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_TRASH_CAN "  Clear All", ImVec2(120, 32))) {
         cfg.gallery_history.clear();
-        g_settingsConfig.Save();
+        g_config.Save();
     }
 
     ImGui::Separator();
@@ -411,7 +421,7 @@ static void RenderGalleryTab() {
 
     ImGui::BeginChild("GalleryGrid", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     
-    float cardWidth = 340.0f;
+    float cardWidth = 350.0f;
     float windowVisibleX2 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
 
     for (size_t i = 0; i < galleryCopy.size(); ++i) {
@@ -420,7 +430,12 @@ static void RenderGalleryTab() {
         std::string filename = p.filename().string();
         if (filename.empty()) filename = path;
 
-        bool is_current = (!cfg.wallpapers.empty() && cfg.wallpapers[0].video_path == path);
+        std::string opt_path = VideoOptimizer::GetOptimizedPath(path, screen_w, screen_h);
+        bool has_opt = VideoOptimizer::HasOptimizedCache(path, screen_w, screen_h);
+
+        bool is_playing_opt = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == opt_path);
+        bool is_current = (!g_daemonCurrentVideo.empty() && (g_daemonCurrentVideo == path || g_daemonCurrentVideo == opt_path)) ||
+                          (!cfg.wallpapers.empty() && (cfg.wallpapers[0].video_path == path || cfg.wallpapers[0].video_path == opt_path));
 
         ImGui::PushID(static_cast<int>(i));
 
@@ -435,10 +450,18 @@ static void RenderGalleryTab() {
         ImGui::BeginChild("Card", ImVec2(cardWidth, 140), true, ImGuiWindowFlags_NoScrollbar);
 
         if (is_current) {
-            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ RUNNING / PLAYING ]");
+            if (is_playing_opt) {
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ PLAYING (1080p Optimized) ]");
+            } else {
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ RUNNING / PLAYING ]");
+            }
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", filename.c_str());
         } else {
-            ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM "  Video File");
+            if (has_opt) {
+                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Video File [ 1080p Ready ]");
+            } else {
+                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM "  Video File");
+            }
             ImGui::Text("%s", filename.c_str());
         }
 
@@ -467,19 +490,19 @@ static void RenderGalleryTab() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_LOCK "  Lock Screen", ImVec2(105, 26))) {
+        if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(70, 26))) {
             RequestApplyVideo(path, "lockscreen");
         }
 
         ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_LAYER_GROUP "  Both", ImVec2(55, 26))) {
+        if (ImGui::Button(ICON_FA_IMAGES "  Both", ImVec2(75, 26))) {
             RequestApplyVideo(path, "both");
         }
 
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
             cfg.RemoveFromGallery(path);
-            g_settingsConfig.Save();
+            g_config.Save();
         }
 
         ImGui::EndChild();
@@ -497,7 +520,7 @@ static void RenderGalleryTab() {
 }
 
 static void RenderSettingsPanel() {
-    auto& cfg = g_settingsConfig.Get();
+    auto& cfg = g_config.Get();
 
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_SLIDERS "  Display & Performance Settings");
     ImGui::Separator();
@@ -563,7 +586,7 @@ static void RenderSettingsPanel() {
     ImGui::Spacing();
     ImGui::Separator();
     if (ImGui::Button(ICON_FA_FLOPPY_DISK "  Save Configuration", ImVec2(190, 34))) {
-        g_settingsConfig.Save();
+        g_config.Save();
         SendIpcAsync("{\"cmd\":\"reload_config\"}");
     }
 
@@ -657,10 +680,10 @@ static void RenderOptimizeModal() {
 
         if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize for Display (Recommended)", ImVec2(260, 32))) {
             if (g_rememberDownscaleChoice) {
-                auto& cfg = g_settingsConfig.Get();
+                auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = true;
                 cfg.prompt_downscale = false;
-                g_settingsConfig.Save();
+                g_config.Save();
             }
             g_showOptimizeModal = false;
             ImGui::CloseCurrentPopup();
@@ -670,10 +693,10 @@ static void RenderOptimizeModal() {
         ImGui::SameLine();
         if (ImGui::Button("Play Original 4K", ImVec2(130, 32))) {
             if (g_rememberDownscaleChoice) {
-                auto& cfg = g_settingsConfig.Get();
+                auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = false;
                 cfg.prompt_downscale = false;
-                g_settingsConfig.Save();
+                g_config.Save();
             }
             g_showOptimizeModal = false;
             ImGui::CloseCurrentPopup();
@@ -794,7 +817,7 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
     ImGui_ImplWin32_Init(g_hWnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    g_settingsConfig.Load();
+    g_config.Load();
     g_isOpen = true;
     return true;
 }

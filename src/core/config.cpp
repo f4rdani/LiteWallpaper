@@ -7,6 +7,8 @@
 
 namespace litewp {
 
+Config g_config;
+
 static std::wstring Utf8ToWide(const std::string& str) {
     if (str.empty()) return std::wstring();
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);

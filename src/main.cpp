@@ -36,7 +36,6 @@
 using namespace litewp;
 
 // Global engine state
-static Config            g_config;
 static PlaybackClock     g_clock;
 static DesktopInjector   g_injector;
 static D3D11Presenter    g_presenter;
