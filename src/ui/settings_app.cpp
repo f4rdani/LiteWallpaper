@@ -658,68 +658,6 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Auto-Downscale & Resolution Telemetry");
-    if (ImGui::Checkbox("Auto-downscale 4K/high-res videos to match display resolution", &cfg.auto_downscale_highres)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Transcodes videos larger than monitor resolution to match display size.\nSaves ~75%% GPU Video Decode & ~50MB VRAM.");
-    }
-    if (ImGui::Checkbox("Ask before optimizing high-resolution videos", &cfg.prompt_downscale)) {
-        g_config.Save();
-    }
-
-    // Dynamic Video Resolution Information Box
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.14f, 0.18f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.25f, 0.35f, 1.00f));
-    ImGui::BeginChild("ResInfoBox", ImVec2(0, 96), true, ImGuiWindowFlags_NoScrollbar);
-
-    int screen_w = GetSystemMetrics(SM_CXSCREEN);
-    int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    if (screen_w <= 0) screen_w = 1920;
-    if (screen_h <= 0) screen_h = 1080;
-
-    if (g_daemonPlaying && !g_daemonCurrentVideo.empty()) {
-        bool is_opt_active = (g_daemonCurrentVideo.find("\\optimized\\") != std::string::npos ||
-                              g_daemonCurrentVideo.find("/optimized/") != std::string::npos);
-
-        // Find original source resolution
-        int orig_w = g_daemonWidth;
-        int orig_h = g_daemonHeight;
-        if (is_opt_active && !cfg.gallery_history.empty()) {
-            auto probe = VideoOptimizer::Probe(cfg.gallery_history[0]);
-            if (probe.valid) {
-                orig_w = probe.width;
-                orig_h = probe.height;
-            }
-        }
-
-        ImGui::Text("• Video Source Resolution : %d x %d %s", orig_w, orig_h,
-                    (orig_w >= 3840 || orig_h >= 2160) ? "(4K UHD)" :
-                    (orig_w >= 2560 || orig_h >= 1440) ? "(2K QHD)" :
-                    (orig_w >= 1920 || orig_h >= 1080) ? "(1080p FHD)" : "");
-
-        ImGui::Text("• Active Playback Resolution: %d x %d %s", g_daemonWidth, g_daemonHeight,
-                    is_opt_active ? "(Downscaled to Display Native)" : "(Original Resolution)");
-
-        if (is_opt_active && (orig_w > g_daemonWidth || orig_h > g_daemonHeight)) {
-            float ratio = (static_cast<float>(g_daemonWidth * g_daemonHeight) / static_cast<float>(orig_w * orig_h)) * 100.0f;
-            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
-                "• Optimization Status    : Active (-%.0f%% Pixel Load, ~36MB VRAM Saved)", 100.0f - ratio);
-        } else {
-            ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f),
-                "• Optimization Status    : Native Playback (No Downscaling)");
-        }
-    } else {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "• No video is currently running. Start a wallpaper to see resolution telemetry.");
-        ImGui::Text("• Desktop Screen Resolution: %d x %d (Native)", screen_w, screen_h);
-    }
-
-    ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-
-    ImGui::Spacing();
-    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_VOLUME_HIGH "  Audio Configuration");
 
     static float volume = 0.0f;
