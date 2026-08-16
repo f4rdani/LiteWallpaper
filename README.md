@@ -61,7 +61,6 @@ LiteWallpaper is engineered in native **C++20** and **DirectX 11 (D3D11VA)** fro
   - **Workstation Lock Detection**: Instantly sleeps when Windows is locked (`Win + L`) to preserve power.
 - ⚡ **Integrated 1080p Video Optimizer**: Built-in GPU pre-scaler that converts heavy 4K/high-bitrate videos into lightweight 1080p NV12 hardware streams, saving up to ~75% GPU load.
 - 🖥️ **Multi-Monitor & Desktop Selection**: Choose whether wallpapers play across all monitors or selectively target specific screens.
-- 🔒 **One-Click Lock Screen Sync**: Capture and apply high-quality wallpaper frames directly to the Windows Lock Screen (`Win + L`).
 - 🎨 **Adaptive Responsive Control Panel**: Fully responsive Dear ImGui dark-themed control center with real-time hardware telemetry and 0ms instantaneous tray restoration.
 
 ---
