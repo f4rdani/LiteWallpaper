@@ -52,6 +52,9 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_srv_y;
     ComPtr<ID3D11ShaderResourceView> m_srv_uv;
 
+    // Zero-copy path: cached source texture pointer for SRV reuse
+    ID3D11Texture2D*                 m_zero_copy_tex = nullptr;
+
     // Fallback staging texture (only used when HW texture lacks SHADER_RESOURCE bind flag)
     ComPtr<ID3D11Texture2D>          m_srv_texture;
     UINT                             m_srv_width = 0;

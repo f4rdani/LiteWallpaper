@@ -322,8 +322,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
                  " workerw=0x", reinterpret_cast<size_t>(g_injector.GetWorkerW()),
                  " visible=", IsWindowVisible(g_main_hwnd) ? "yes" : "no");
     if (!g_inject_ok) {
-        g_last_error = "Desktop injection failed (WorkerW not found). Desktop icons hidden?";
-        Logger::Info(g_last_error);
+        // Show the window as a hidden popup; injection will be retried in the main loop
+        Logger::Info("Desktop injection failed, will retry periodically");
     }
 
     // 4. Initialize Direct3D 11 Presenter
@@ -402,21 +402,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
             ResumeWallpaperFromFullscreen();
         }
 
-        // Re-attach if desktop was rebuilt
+        // Re-attach if desktop was rebuilt, or retry injection if it initially failed
         static uint64_t last_inject_check_us = 0;
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
-        if (!g_fullscreen_paused && g_inject_ok && g_main_hwnd &&
-            (now_us - last_inject_check_us >= 1000000) &&
-            !g_injector.IsAttachedValid()) {
+        if (!g_fullscreen_paused && g_main_hwnd &&
+            (now_us - last_inject_check_us >= 2000000)) { // Check every 2 seconds
             last_inject_check_us = now_us;
-            Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
-            g_injector.Reattach(g_main_hwnd);
-            g_inject_ok = g_injector.IsAttached();
-            if (g_main_hwnd) {
-                ShowWindow(g_main_hwnd, SW_SHOW);
+
+            if (!g_inject_ok) {
+                // Retry initial injection
+                g_inject_ok = g_injector.Attach(g_main_hwnd);
+                if (g_inject_ok) {
+                    Logger::Info("Injection retry succeeded, workerw=0x",
+                                 reinterpret_cast<size_t>(g_injector.GetWorkerW()));
+                    g_last_error.clear();
+                    ShowWindow(g_main_hwnd, SW_SHOW);
+                }
+            } else if (!g_injector.IsAttachedValid()) {
+                // Desktop hierarchy changed, re-attach
+                Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
+                g_injector.Reattach(g_main_hwnd);
+                g_inject_ok = g_injector.IsAttached();
+                if (g_main_hwnd) {
+                    ShowWindow(g_main_hwnd, SW_SHOW);
+                }
             }
-        } else {
-            last_inject_check_us = now_us;
         }
 
         // Update Shared Engine State for instant zero-latency UI reads

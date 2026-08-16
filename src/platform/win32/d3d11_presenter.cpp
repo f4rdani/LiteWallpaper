@@ -301,52 +301,68 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
 
-    bool use_zero_copy = (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0;
+    bool has_srv_flag = (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0;
+    bool use_zero_copy = false;
 
-    if (use_zero_copy) {
+    if (has_srv_flag && texDesc.ArraySize > 1) {
         // === ZERO-COPY PATH ===
-        // Create per-frame SRVs directly from the texture array slice
-        // No staging texture, no CopySubresourceRegion!
-        m_srv_y.Reset();
-        m_srv_uv.Reset();
+        // Cache SRVs: only recreate when the source texture pointer or dimensions change
+        if (nv12_texture != m_zero_copy_tex || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
+            m_srv_y.Reset();
+            m_srv_uv.Reset();
 
-        D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
-        yDesc.Format = DXGI_FORMAT_R8_UNORM;
-        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-        yDesc.Texture2DArray.FirstArraySlice = 0;
-        yDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
-        yDesc.Texture2DArray.MipLevels = 1;
+            D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
+            yDesc.Format = DXGI_FORMAT_R8_UNORM;
+            yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+            yDesc.Texture2DArray.FirstArraySlice = 0;
+            yDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
+            yDesc.Texture2DArray.MipLevels = 1;
 
-        if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &yDesc, &m_srv_y))) {
-            // Fall back to staging copy
-            use_zero_copy = false;
-        } else {
-            D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
-            uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-            uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-            uvDesc.Texture2DArray.FirstArraySlice = 0;
-            uvDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
-            uvDesc.Texture2DArray.MipLevels = 1;
+            HRESULT hr = m_device->CreateShaderResourceView(nv12_texture, &yDesc, &m_srv_y);
+            if (SUCCEEDED(hr)) {
+                D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
+                uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+                uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+                uvDesc.Texture2DArray.FirstArraySlice = 0;
+                uvDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
+                uvDesc.Texture2DArray.MipLevels = 1;
 
-            if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &uvDesc, &m_srv_uv))) {
-                m_srv_y.Reset();
-                use_zero_copy = false;
+                hr = m_device->CreateShaderResourceView(nv12_texture, &uvDesc, &m_srv_uv);
+                if (SUCCEEDED(hr)) {
+                    m_zero_copy_tex = nv12_texture;
+                    m_srv_width = texDesc.Width;
+                    m_srv_height = texDesc.Height;
+                    // Clear staging texture since we don't need it
+                    m_srv_texture.Reset();
+                } else {
+                    m_srv_y.Reset();
+                    m_srv_uv.Reset();
+                }
             }
         }
+        use_zero_copy = (m_srv_y && m_srv_uv && m_zero_copy_tex == nv12_texture);
     }
-    
+
     if (!use_zero_copy) {
         // === STAGING COPY PATH (fallback) ===
+        m_zero_copy_tex = nullptr;
+
         // Create or resize intermediate GPU staging texture with BIND_SHADER_RESOURCE
         if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
             m_srv_texture.Reset();
             m_srv_y.Reset();
             m_srv_uv.Reset();
 
-            D3D11_TEXTURE2D_DESC srvDesc = texDesc;
+            // Build fresh desc - do NOT copy texDesc which may have incompatible flags
+            D3D11_TEXTURE2D_DESC srvDesc = {};
+            srvDesc.Width = texDesc.Width;
+            srvDesc.Height = texDesc.Height;
+            srvDesc.MipLevels = 1;
             srvDesc.ArraySize = 1;
+            srvDesc.Format = DXGI_FORMAT_NV12;
+            srvDesc.SampleDesc.Count = 1;
+            srvDesc.Usage = D3D11_USAGE_DEFAULT;
             srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            srvDesc.MiscFlags = 0;
 
             if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_srv_texture))) {
                 return;
@@ -374,8 +390,10 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
             m_srv_height = texDesc.Height;
         }
 
-        // Copy decoded slice into staging texture
-        m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
+        // Copy the specific slice from the decoded texture array into the single-slice staging texture
+        // Source subresource = D3D11CalcSubresource(0, array_index, texDesc.MipLevels)
+        UINT srcSubresource = D3D11CalcSubresource(0, (UINT)array_index, texDesc.MipLevels);
+        m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, srcSubresource, nullptr);
     }
 
     // Calculate Aspect Ratio / Scaling Transformation
@@ -509,6 +527,7 @@ void D3D11Presenter::Cleanup() {
     m_srv_uv.Reset();
     m_srv_y.Reset();
     m_srv_texture.Reset();
+    m_zero_copy_tex = nullptr;
     m_srv_width = 0;
     m_srv_height = 0;
     m_slice_cb.Reset();
