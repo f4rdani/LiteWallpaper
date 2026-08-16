@@ -107,7 +107,7 @@ The compiled portable binary will be generated at `build/Release/LiteWallpaper.e
 
 ## 📖 Architecture & Documentation
 
-For in-depth architectural details, DirectX 11 presentation pipeline, IPC protocol specifications, and contributing guidelines, please refer to **[DEVELOPMENT.md](DEVELOPMENT.md)** and **[BLUEPRINT.md](BLUEPRINT.md)**.
+For in-depth architectural details, DirectX 11 presentation pipeline, IPC protocol specifications, and contributing guidelines, please refer to **[DEVELOPMENT.md](DEVELOPMENT.md)**.
 
 ---
 

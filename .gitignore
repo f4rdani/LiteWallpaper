@@ -30,3 +30,6 @@ Thumbs.db
 
 # ImGui Runtime State
 imgui.ini
+
+# Internal Planning Documents
+BLUEPRINT.md
