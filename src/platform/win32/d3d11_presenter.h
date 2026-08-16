@@ -59,15 +59,12 @@ private:
     ComPtr<ID3D11VertexShader>       m_fullscreen_vs;
     ComPtr<ID3D11SamplerState>       m_sampler;
     ComPtr<ID3D11Buffer>             m_scaling_cb;
+    ComPtr<ID3D11Buffer>             m_slice_cb;
 
-    // Shader Resource Views on staging texture
+    // Direct Zero-Copy Shader Resource Views on decoded hardware texture array
     ComPtr<ID3D11ShaderResourceView> m_srv_y;
     ComPtr<ID3D11ShaderResourceView> m_srv_uv;
-
-    // GPU staging texture (single slice NV12 with SHADER_RESOURCE bind flag)
-    ComPtr<ID3D11Texture2D>          m_srv_texture;
-    UINT                             m_srv_width = 0;
-    UINT                             m_srv_height = 0;
+    ID3D11Texture2D*                 m_cached_input_tex = nullptr;
     
     HWND m_hwnd = nullptr;
     int m_width = 0;

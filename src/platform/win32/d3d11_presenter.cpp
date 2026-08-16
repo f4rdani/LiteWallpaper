@@ -30,13 +30,18 @@ VS_OUT main(uint vertexID : SV_VertexID) {
 )";
 
 static const char* g_ps_source = R"(
-Texture2D<float>  texY  : register(t0);
-Texture2D<float2> texUV : register(t1);
-SamplerState      samp  : register(s0);
+Texture2DArray<float>  texY  : register(t0);
+Texture2DArray<float2> texUV : register(t1);
+SamplerState           samp  : register(s0);
+
+cbuffer SliceBuffer : register(b1) {
+    uint g_slice_index;
+    float3 g_slice_padding;
+};
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-    float y = texY.Sample(samp, uv);
-    float2 uv_val = texUV.Sample(samp, uv);
+    float y = texY.Sample(samp, float3(uv, (float)g_slice_index));
+    float2 uv_val = texUV.Sample(samp, float3(uv, (float)g_slice_index));
     
     float u = uv_val.x - 0.5f;
     float v = uv_val.y - 0.5f;
@@ -293,6 +298,16 @@ bool D3D11Presenter::CreateShaders() {
     cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
     hr = m_device->CreateBuffer(&cbDesc, nullptr, &m_scaling_cb);
+    if (FAILED(hr)) return false;
+
+    // Create Constant Buffer for Slice Index (16 bytes aligned)
+    D3D11_BUFFER_DESC sliceDesc = {};
+    sliceDesc.ByteWidth = 16;
+    sliceDesc.Usage = D3D11_USAGE_DYNAMIC;
+    sliceDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    sliceDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = m_device->CreateBuffer(&sliceDesc, nullptr, &m_slice_cb);
     return SUCCEEDED(hr);
 }
 
@@ -302,45 +317,49 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
 
-    // Create or resize intermediate GPU staging texture with BIND_SHADER_RESOURCE
-    if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
-        m_srv_texture.Reset();
+    // Direct Zero-Copy SRV creation on hardware decoded texture array
+    if (!m_srv_y || !m_srv_uv || m_cached_input_tex != nv12_texture) {
         m_srv_y.Reset();
         m_srv_uv.Reset();
-
-        D3D11_TEXTURE2D_DESC srvDesc = texDesc;
-        srvDesc.ArraySize = 1;
-        srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        srvDesc.MiscFlags = 0;
-
-        if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_srv_texture))) {
-            return;
-        }
+        m_cached_input_tex = nv12_texture;
 
         D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
         yDesc.Format = DXGI_FORMAT_R8_UNORM;
-        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        yDesc.Texture2D.MipLevels = 1;
+        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+        yDesc.Texture2DArray.MipLevels = 1;
+        yDesc.Texture2DArray.MostDetailedMip = 0;
+        yDesc.Texture2DArray.FirstArraySlice = 0;
+        yDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
 
-        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &yDesc, &m_srv_y))) {
+        if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &yDesc, &m_srv_y))) {
             return;
         }
 
         D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
         uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        uvDesc.Texture2D.MipLevels = 1;
+        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+        uvDesc.Texture2DArray.MipLevels = 1;
+        uvDesc.Texture2DArray.MostDetailedMip = 0;
+        uvDesc.Texture2DArray.FirstArraySlice = 0;
+        uvDesc.Texture2DArray.ArraySize = texDesc.ArraySize;
 
-        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &uvDesc, &m_srv_uv))) {
+        if (FAILED(m_device->CreateShaderResourceView(nv12_texture, &uvDesc, &m_srv_uv))) {
             return;
         }
-
-        m_srv_width = texDesc.Width;
-        m_srv_height = texDesc.Height;
     }
 
-    // Copy decoded slice into staging texture
-    m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
+    // Update slice index in constant buffer
+    if (m_slice_cb) {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (SUCCEEDED(m_context->Map(m_slice_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            uint32_t* data = static_cast<uint32_t*>(mapped.pData);
+            data[0] = static_cast<uint32_t>(array_index);
+            data[1] = 0;
+            data[2] = 0;
+            data[3] = 0;
+            m_context->Unmap(m_slice_cb.Get(), 0);
+        }
+    }
 
     // Determine target viewports
     std::vector<DisplayViewport> vps = target_viewports;
@@ -358,7 +377,8 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     m_context->VSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
 
     m_context->PSSetShader(m_nv12_ps.Get(), nullptr, 0);
-    m_context->PSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
+    ID3D11Buffer* psCbs[] = { m_scaling_cb.Get(), m_slice_cb.Get() };
+    m_context->PSSetConstantBuffers(0, 2, psCbs);
 
     ID3D11ShaderResourceView* srvs[] = { m_srv_y.Get(), m_srv_uv.Get() };
     m_context->PSSetShaderResources(0, 2, srvs);
@@ -492,9 +512,8 @@ size_t D3D11Presenter::GetVramUsageMB() const {
 void D3D11Presenter::Cleanup() {
     m_srv_uv.Reset();
     m_srv_y.Reset();
-    m_srv_texture.Reset();
-    m_srv_width = 0;
-    m_srv_height = 0;
+    m_cached_input_tex = nullptr;
+    m_slice_cb.Reset();
     m_scaling_cb.Reset();
     m_sampler.Reset();
     m_nv12_ps.Reset();
