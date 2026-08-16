@@ -41,21 +41,16 @@ private:
     ComPtr<ID3D11RenderTargetView>   m_rtv;
     
     // NV12 -> RGB conversion resources
-    ComPtr<ID3D11PixelShader>        m_nv12_ps;       // Texture2D path
-    ComPtr<ID3D11PixelShader>        m_nv12_array_ps; // Texture2DArray zero-copy path
+    ComPtr<ID3D11PixelShader>        m_nv12_ps;
     ComPtr<ID3D11VertexShader>       m_fullscreen_vs;
     ComPtr<ID3D11SamplerState>       m_sampler;
     ComPtr<ID3D11Buffer>             m_scaling_cb;
-    ComPtr<ID3D11Buffer>             m_slice_cb;      // Array slice index for zero-copy
 
-    // Shader Resource Views (shared between both paths)
+    // Shader Resource Views on staging texture
     ComPtr<ID3D11ShaderResourceView> m_srv_y;
     ComPtr<ID3D11ShaderResourceView> m_srv_uv;
 
-    // Zero-copy path: cached source texture pointer for SRV reuse
-    ID3D11Texture2D*                 m_zero_copy_tex = nullptr;
-
-    // Fallback staging texture (only used when HW texture lacks SHADER_RESOURCE bind flag)
+    // GPU staging texture (single slice NV12 with SHADER_RESOURCE bind flag)
     ComPtr<ID3D11Texture2D>          m_srv_texture;
     UINT                             m_srv_width = 0;
     UINT                             m_srv_height = 0;
