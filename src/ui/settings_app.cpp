@@ -230,12 +230,6 @@ static void ApplyAction(std::string utf8_path, std::string action) {
     if (action == "wallpaper") {
         nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
         SendIpcAsync(req.dump());
-    } else if (action == "lockscreen") {
-        nlohmann::json req{{"cmd", "set_lockscreen"}, {"path", utf8_path}};
-        SendIpcAsync(req.dump());
-    } else if (action == "both") {
-        nlohmann::json req{{"cmd", "set_both"}, {"path", utf8_path}};
-        SendIpcAsync(req.dump());
     } else if (action == "stop") {
         SendIpcAsync("{\"cmd\":\"stop\"}");
     } else if (action == "resume") {

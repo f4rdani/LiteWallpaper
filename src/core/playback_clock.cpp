@@ -60,7 +60,11 @@ int64_t PlaybackClock::GetCurrentTimeMicros() {
 
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
-    return (counter.QuadPart * 1000000LL) / frequency.QuadPart;
+    // Use quotient/remainder decomposition to avoid int64 overflow
+    // (counter * 1000000) would overflow after ~10.6 days of uptime on 10MHz QPC
+    uint64_t counts = static_cast<uint64_t>(counter.QuadPart);
+    uint64_t freq = static_cast<uint64_t>(frequency.QuadPart);
+    return static_cast<int64_t>((counts / freq) * 1000000ULL + ((counts % freq) * 1000000ULL) / freq);
 }
 
 } // namespace litewp

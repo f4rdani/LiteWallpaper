@@ -35,19 +35,19 @@ struct EngineState {
 
     void SetCurrentVideo(const std::string& path) {
         std::lock_guard<std::mutex> lock(str_mutex);
-        strncpy_s(current_video, path.c_str(), sizeof(current_video) - 1);
+        strncpy_s(current_video, sizeof(current_video), path.c_str(), _TRUNCATE);
     }
     void SetCodec(const std::string& c) {
         std::lock_guard<std::mutex> lock(str_mutex);
-        strncpy_s(codec, c.c_str(), sizeof(codec) - 1);
+        strncpy_s(codec, sizeof(codec), c.c_str(), _TRUNCATE);
     }
     void SetLastError(const std::string& err) {
         std::lock_guard<std::mutex> lock(str_mutex);
-        strncpy_s(last_error, err.c_str(), sizeof(last_error) - 1);
+        strncpy_s(last_error, sizeof(last_error), err.c_str(), _TRUNCATE);
     }
     void SetActiveRendererName(const std::string& name) {
         std::lock_guard<std::mutex> lock(str_mutex);
-        strncpy_s(active_renderer_name, name.c_str(), sizeof(active_renderer_name) - 1);
+        strncpy_s(active_renderer_name, sizeof(active_renderer_name), name.c_str(), _TRUNCATE);
     }
     std::string GetCurrentVideo() const {
         std::lock_guard<std::mutex> lock(str_mutex);

@@ -25,7 +25,6 @@
 #include "platform/win32/desktop_injector.h"
 #include "platform/win32/d3d11_presenter.h"
 #include "platform/win32/power_governor.h"
-#include "platform/win32/lockscreen_manager.h"
 #include "platform/win32/tray_icon.h"
 #include "platform/win32/hardware_info.h"
 #include "ui/settings_app.h"
@@ -43,7 +42,6 @@ static D3D11Presenter    g_presenter;
 static FFmpegHWDecoder   g_decoder;
 static AudioPlayer       g_audio;
 static PowerGovernor     g_governor;
-static LockScreenManager g_lockscreen;
 static TrayIcon          g_tray;
 static IpcServer         g_ipc;
 
@@ -684,59 +682,6 @@ std::string OnIpcRequest(const std::string& request_json) {
     } else if (cmd == "test_render") {
         g_flash_until_us = g_clock.GetCurrentTimeMicros() + 1500000;
         return nlohmann::json{{"ok", true}}.dump();
-    } else if (cmd == "set_lockscreen") {
-        std::string path = req.value("path", "");
-        if (!path.empty()) {
-            auto& cfg = g_config.Get();
-            cfg.AddToGallery(path);
-            g_config.Save();
-
-            std::lock_guard<std::mutex> lock(g_decoder_mutex);
-            FFmpegHWDecoder tempDecoder;
-            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            if (tempDecoder.Open(path.c_str(), g_presenter.GetDevice(), vw, vh)) {
-                VideoFrame f;
-                if (tempDecoder.DecodeNextFrame(f) && f.texture) {
-                    g_lockscreen.CaptureAndSetLockScreen(g_presenter.GetDevice(), g_presenter.GetContext(), f.texture, f.texture_index);
-                }
-            }
-            return "{\"ok\":true}";
-        }
-    } else if (cmd == "set_both") {
-        std::string path = req.value("path", "");
-        if (!path.empty()) {
-            auto& cfg = g_config.Get();
-            if (cfg.wallpapers.empty()) {
-                MonitorWallpaper mw;
-                mw.video_path = path;
-                cfg.wallpapers.push_back(mw);
-            } else {
-                cfg.wallpapers[0].video_path = path;
-            }
-            cfg.AddToGallery(path);
-            g_config.Save();
-
-            if (g_fullscreen_paused) {
-                return nlohmann::json{{"ok", true}, {"hw", false}}.dump();
-            }
-
-            bool ok = OpenWallpaperVideo(path);
-
-            if (ok) {
-                std::lock_guard<std::mutex> lock(g_decoder_mutex);
-                if (g_decoder.DecodeNextFrame(g_current_frame) && g_current_frame.texture) {
-                    g_lockscreen.CaptureAndSetLockScreen(g_presenter.GetDevice(), g_presenter.GetContext(), g_current_frame.texture, g_current_frame.texture_index);
-                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode);
-                    g_presenter.Present(0);
-                }
-            }
-            TrimWorkingSetMemory();
-            if (ok && g_main_hwnd) {
-                PostMessageW(g_main_hwnd, WM_APP_ATTACH, 0, 0);
-            }
-            return nlohmann::json{{"ok", ok}, {"hw", g_decoder_hw}}.dump();
-        }
     } else if (cmd == "set_scaling") {
         int mode = req.value("mode", 0);
         g_config.Get().scaling_mode = mode;
