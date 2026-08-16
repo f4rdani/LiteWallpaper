@@ -138,6 +138,10 @@ void DesktopInjector::Detach() {
         SetParent(m_render_hwnd, nullptr);
         m_render_hwnd = nullptr;
     }
+    if (m_workerw) {
+        InvalidateRect(m_workerw, nullptr, TRUE);
+        UpdateWindow(m_workerw);
+    }
     m_workerw = nullptr;
 }
 

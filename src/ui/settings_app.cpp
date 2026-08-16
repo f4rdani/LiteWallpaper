@@ -1,4 +1,8 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "settings_app.h"
+#include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl/client.h>
@@ -339,6 +343,13 @@ static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
             return 0;
         }
 
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            mmi->ptMinTrackSize.x = 480;
+            mmi->ptMinTrackSize.y = 380;
+            return 0;
+        }
+
         case WM_SYSCOMMAND:
             if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
             break;
@@ -476,7 +487,14 @@ static void RenderGalleryTab() {
 
     ImGui::BeginChild("GalleryGrid", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     
-    float cardWidth = 440.0f;
+    float availW = ImGui::GetContentRegionAvail().x;
+    int numCols = (availW >= 740.0f) ? static_cast<int>(availW / 370.0f) : 1;
+    if (numCols < 1) numCols = 1;
+
+    float spacingX = ImGui::GetStyle().ItemSpacing.x;
+    float cardWidth = (availW - (numCols - 1) * spacingX) / static_cast<float>(numCols);
+    if (cardWidth < 280.0f) cardWidth = availW;
+
     float windowVisibleX2 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
 
     for (size_t i = 0; i < galleryCopy.size(); ++i) {
@@ -503,7 +521,7 @@ static void RenderGalleryTab() {
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.22f, 0.24f, 0.30f, 1.00f));
         }
 
-        ImGui::BeginChild("Card", ImVec2(cardWidth, 140), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("Card", ImVec2(cardWidth, 144), true, ImGuiWindowFlags_NoScrollbar);
 
         if (is_current) {
             if (is_playing_opt) {
@@ -511,16 +529,14 @@ static void RenderGalleryTab() {
             } else {
                 ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ ACTIVE: ORIGINAL VIDEO ]");
             }
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", filename.c_str());
         } else {
             if (has_opt) {
                 ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Video [ Original + 1080p Ready ]");
             } else {
                 ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM "  Video File");
             }
-            ImGui::Text("%s", filename.c_str());
         }
-
+        ImGui::TextUnformatted(filename.c_str());
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("%s", path.c_str());
         }
@@ -529,114 +545,109 @@ static void RenderGalleryTab() {
         ImGui::Separator();
         ImGui::Spacing();
 
+        float innerW = ImGui::GetContentRegionAvail().x;
+        float itemPad = ImGui::GetStyle().ItemSpacing.x;
+
+        // Row 1: Primary Playback Actions
         if (is_current) {
+            float stopW = (innerW - itemPad) * 0.38f;
+            float switchW = innerW - stopW - itemPad;
+            if (stopW < 75.0f) stopW = 75.0f;
+            if (switchW < 90.0f) switchW = 90.0f;
+
             if (g_daemonPaused) {
-                if (ImGui::Button(ICON_FA_PLAY "  Resume", ImVec2(80, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Resume", ImVec2(stopW, 26))) {
                     RequestApplyVideo(path, "resume");
                 }
             } else {
-                if (ImGui::Button(ICON_FA_STOP "  Stop", ImVec2(80, 26))) {
+                if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
                     RequestApplyVideo(path, "stop");
                 }
             }
 
             ImGui::SameLine();
             if (is_playing_opt) {
-                if (ImGui::Button(ICON_FA_PLAY "  Play Original", ImVec2(125, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Play Original", ImVec2(switchW, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Switch playback to the original high-resolution video");
+                    ImGui::SetTooltip("Switch playback to original high-resolution video");
                 }
             } else {
                 if (has_opt) {
-                    if (ImGui::Button(ICON_FA_PLAY "  Play 1080p", ImVec2(110, 26))) {
+                    if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(switchW, 26))) {
                         ApplyAction(opt_path, "wallpaper");
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Switch playback to the 1080p optimized version");
+                        ImGui::SetTooltip("Switch playback to 1080p optimized version");
                     }
                 } else {
-                    if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize", ImVec2(90, 26))) {
+                    if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 26))) {
                         StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
                     }
                 }
             }
-
-            ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(65, 26))) {
-                ApplyAction(is_playing_opt ? opt_path : path, "lockscreen");
-            }
-
-            ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_IMAGES "  Both", ImVec2(65, 26))) {
-                ApplyAction(is_playing_opt ? opt_path : path, "both");
-            }
-
-            ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
-                cfg.RemoveFromGallery(path);
-                g_config.Save();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Remove video from gallery");
-            }
         } else {
             if (has_opt) {
-                if (ImGui::Button(ICON_FA_PLAY "  Play 1080p", ImVec2(110, 26))) {
+                float halfW = (innerW - itemPad) * 0.5f;
+                if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(halfW, 26))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Play lightweight 1080p downscaled version (Saves VRAM & GPU load)");
+                    ImGui::SetTooltip("Play lightweight 1080p version (Saves VRAM & GPU load)");
                 }
-
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_PLAY "  Play Original", ImVec2(125, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Play original high-resolution video file");
-                }
-
-                ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(65, 26))) {
-                    ApplyAction(opt_path, "lockscreen");
-                }
-
-                ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_IMAGES "  Both", ImVec2(65, 26))) {
-                    ApplyAction(opt_path, "both");
-                }
-
-                ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
-                    cfg.RemoveFromGallery(path);
-                    g_config.Save();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Remove video from gallery");
+                    ImGui::SetTooltip("Play original high-resolution video");
                 }
             } else {
-                if (ImGui::Button(ICON_FA_PLAY "  Play Wallpaper", ImVec2(135, 26))) {
+                float playW = (innerW - itemPad) * 0.65f;
+                float optW = innerW - playW - itemPad;
+                if (ImGui::Button(ICON_FA_PLAY " Play Wallpaper", ImVec2(playW, 26))) {
                     RequestApplyVideo(path, "wallpaper");
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_LOCK "  Lock", ImVec2(70, 26))) {
-                    RequestApplyVideo(path, "lockscreen");
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_IMAGES "  Both", ImVec2(75, 26))) {
-                    RequestApplyVideo(path, "both");
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 26))) {
-                    cfg.RemoveFromGallery(path);
-                    g_config.Save();
+                if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 26))) {
+                    StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Remove video from gallery");
+                    ImGui::SetTooltip("Pre-render 1080p optimized version to save ~75% GPU");
                 }
             }
+        }
+
+        // Row 2: Target Desktop/Lock & Delete Management
+        float delW = 32.0f;
+        float actW = (innerW - delW - (2 * itemPad)) * 0.5f;
+        if (actW < 50.0f) actW = 50.0f;
+
+        std::string target_apply_path = (is_current && is_playing_opt) ? opt_path : (has_opt ? opt_path : path);
+
+        if (ImGui::Button(ICON_FA_LOCK " Lock", ImVec2(actW, 24))) {
+            ApplyAction(target_apply_path, "lockscreen");
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Set current frame as Windows Lock Screen");
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_IMAGES " Both", ImVec2(actW, 24))) {
+            ApplyAction(target_apply_path, "both");
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Set as Desktop Wallpaper AND Lock Screen");
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 24))) {
+            cfg.RemoveFromGallery(path);
+            g_config.Save();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Remove video from gallery");
         }
 
         ImGui::EndChild();
@@ -644,7 +655,7 @@ static void RenderGalleryTab() {
         ImGui::PopID();
 
         float lastButtonX2 = ImGui::GetItemRectMax().x;
-        float nextButtonX2 = lastButtonX2 + ImGui::GetStyle().ItemSpacing.x + cardWidth;
+        float nextButtonX2 = lastButtonX2 + spacingX + cardWidth;
         if (i + 1 < galleryCopy.size() && nextButtonX2 < windowVisibleX2) {
             ImGui::SameLine();
         }
@@ -659,13 +670,16 @@ static void RenderSettingsPanel() {
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_SLIDERS "  Display & Performance Settings");
     ImGui::Separator();
 
+    float availW = ImGui::GetContentRegionAvail().x;
+    float comboW = (std::min)(450.0f, availW);
+
     static const char* scalingModes[] = {
         "Auto Aspect Fill (Cover - Smart Crop, No Black Bars)",
         "Aspect Fit (Letterbox - Full Frame with Black Bars)",
         "Stretch to Screen (Ignore Aspect Ratio)"
     };
     int currentMode = cfg.scaling_mode;
-    ImGui::SetNextItemWidth(380);
+    ImGui::SetNextItemWidth(comboW);
     if (ImGui::Combo("Display Scaling Mode", &currentMode, scalingModes, IM_ARRAYSIZE(scalingModes))) {
         cfg.scaling_mode = currentMode;
         g_config.Save();
@@ -741,7 +755,7 @@ static void RenderSettingsPanel() {
         comboItems.push_back(name.c_str());
     }
 
-    ImGui::SetNextItemWidth(380);
+    ImGui::SetNextItemWidth(comboW);
     if (ImGui::Combo("Video Rendering Engine", &currentDeviceCombo, comboItems.data(), static_cast<int>(comboItems.size()))) {
         cfg.gpu_device_index = deviceValues[currentDeviceCombo];
         g_config.Save();
@@ -756,7 +770,8 @@ static void RenderSettingsPanel() {
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GAUGE_HIGH "  Frame Rate & Resource Control");
 
-    ImGui::SetNextItemWidth(250);
+    float sliderW = (std::min)(280.0f, availW);
+    ImGui::SetNextItemWidth(sliderW);
     if (ImGui::SliderInt("Target Render FPS", &cfg.target_fps, 15, 60)) {
         g_config.Save();
         nlohmann::json req{{"cmd", "set_fps"}, {"fps", cfg.target_fps}};
@@ -765,7 +780,7 @@ static void RenderSettingsPanel() {
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "(Active: %d FPS)", g_daemonFps);
 
-    ImGui::SetNextItemWidth(250);
+    ImGui::SetNextItemWidth(sliderW);
     if (ImGui::SliderInt("Battery Saver FPS", &cfg.battery_fps, 10, 30)) {
         g_config.Save();
     }
@@ -788,7 +803,7 @@ static void RenderSettingsPanel() {
         volume_init = true;
     }
 
-    ImGui::SetNextItemWidth(250);
+    ImGui::SetNextItemWidth(sliderW);
     if (ImGui::SliderFloat("Master Volume", &volume, 0.0f, 1.0f, "%.2f")) {
         if (!cfg.wallpapers.empty()) {
             cfg.wallpapers[0].volume = volume;
@@ -840,10 +855,10 @@ static void RenderPerformancePanel() {
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CHART_LINE "  Resource Telemetry");
 
     ImGui::Text("Process CPU Usage: %.1f %%", g_daemonCpuPercent);
-    ImGui::PlotLines("CPU (%)", g_cpuHistory.data(), (int)g_cpuHistory.size());
+    ImGui::PlotLines("CPU (%)", g_cpuHistory.data(), (int)g_cpuHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
 
     ImGui::Text("Process RAM (Working Set): %zu MB (Target: < 45 MB)", g_daemonRamMB);
-    ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size());
+    ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
 
     std::string monitoredGpuName = "Default Adapter";
     if (g_daemonActiveGpuIndex == -1) {
@@ -855,7 +870,7 @@ static void RenderPerformancePanel() {
 
     ImGui::Text("Process Video Memory (%s): %zu MB", monitoredGpuName.c_str(), g_daemonVramMB);
     std::string plotVramLabel = "VRAM: " + monitoredGpuName + " (MB)";
-    ImGui::PlotLines(plotVramLabel.c_str(), g_vramHistory.data(), (int)g_vramHistory.size());
+    ImGui::PlotLines(plotVramLabel.c_str(), g_vramHistory.data(), (int)g_vramHistory.size(), 0, nullptr, 0.0f, 256.0f, ImVec2(0, 50));
 
     ImGui::Spacing();
     ImGui::Separator();

@@ -382,7 +382,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
         // Re-attach if desktop was rebuilt, or retry injection if it initially failed
         static uint64_t last_inject_check_us = 0;
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
-        if (!g_fullscreen_paused && g_main_hwnd &&
+        bool has_active_wallpaper = (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty() && !g_paused);
+        if (has_active_wallpaper && !g_fullscreen_paused && g_main_hwnd &&
             (now_us - last_inject_check_us >= 500000)) { // Check every 500ms
             last_inject_check_us = now_us;
 
@@ -575,6 +576,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_injector.Detach();
             ShowWindow(g_main_hwnd, SW_HIDE);
             g_inject_ok = false;
+            // Force Windows Desktop to immediately repaint its native wallpaper
+            SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, nullptr, SPIF_SENDCHANGE);
+            InvalidateRect(GetDesktopWindow(), nullptr, TRUE);
         }
         return 0;
     }
@@ -777,6 +781,9 @@ std::string OnIpcRequest(const std::string& request_json) {
             cfg.wallpapers[0].video_path = "";
             g_config.Save();
         }
+        g_shared_engine_state.playing.store(false);
+        g_shared_engine_state.paused.store(false);
+        g_shared_engine_state.SetCurrentVideo("");
         if (g_main_hwnd) {
             PostMessageW(g_main_hwnd, WM_APP_DEATTACH, 0, 0);
         }
