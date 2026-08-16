@@ -21,6 +21,7 @@ struct AppConfig {
                                 // if target < video fps, frames are skipped (not slowed).
     int battery_fps = 15;        // Frame rate limit when running on battery power
     int gpu_device_index = 0;    // -1 = CPU (Software), 0 = GPU 1 (Primary), 1 = GPU 2, etc.
+    std::vector<int> target_displays; // Target displays to show wallpaper on (empty = all displays)
     bool pause_on_fullscreen = true;
     bool pause_on_battery = false; // true = pause, false = reduce FPS
     bool pause_on_lock = true;
@@ -29,6 +30,20 @@ struct AppConfig {
     bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
     bool run_on_startup = false;
     std::string config_path;     // Path to this config file
+
+    bool IsDisplayEnabled(int idx) const {
+        if (target_displays.empty()) return true;
+        return std::find(target_displays.begin(), target_displays.end(), idx) != target_displays.end();
+    }
+
+    void SetDisplayEnabled(int idx, bool enabled) {
+        auto it = std::find(target_displays.begin(), target_displays.end(), idx);
+        if (enabled && it == target_displays.end()) {
+            target_displays.push_back(idx);
+        } else if (!enabled && it != target_displays.end()) {
+            target_displays.erase(it);
+        }
+    }
 
     void AddToGallery(const std::string& path) {
         if (path.empty()) return;
@@ -108,6 +123,7 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"scaling_mode", c.scaling_mode},
         {"target_fps", c.target_fps},
         {"gpu_device_index", c.gpu_device_index},
+        {"target_displays", c.target_displays},
         {"pause_on_fullscreen", c.pause_on_fullscreen},
         {"pause_on_battery", c.pause_on_battery},
         {"battery_fps", c.battery_fps},
@@ -125,6 +141,7 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("scaling_mode")) j.at("scaling_mode").get_to(c.scaling_mode);
     if (j.contains("target_fps")) j.at("target_fps").get_to(c.target_fps);
     if (j.contains("gpu_device_index")) j.at("gpu_device_index").get_to(c.gpu_device_index);
+    if (j.contains("target_displays")) j.at("target_displays").get_to(c.target_displays);
     if (j.contains("pause_on_fullscreen")) j.at("pause_on_fullscreen").get_to(c.pause_on_fullscreen);
     if (j.contains("pause_on_battery")) j.at("pause_on_battery").get_to(c.pause_on_battery);
     if (j.contains("battery_fps")) j.at("battery_fps").get_to(c.battery_fps);

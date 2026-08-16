@@ -2,11 +2,19 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
+#include <vector>
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
 
 namespace litewp {
+
+struct DisplayViewport {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+};
 
 class D3D11Presenter {
 public:
@@ -16,8 +24,8 @@ public:
     // Initialize D3D11 device and swap chain on target HWND (gpu_index: -1=CPU/Default, 0=GPU 1, 1=GPU 2, etc.)
     bool Init(HWND hwnd, int width, int height, int gpu_index = 0);
     
-    // Render NV12 texture to swap chain with scaling mode (0=Fill/Cover, 1=Fit/Letterbox, 2=Stretch)
-    void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0);
+    // Render NV12 texture to swap chain with scaling mode and optional target viewports
+    void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0, const std::vector<DisplayViewport>& target_viewports = {});
     
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     HRESULT Present(UINT syncInterval = 0);

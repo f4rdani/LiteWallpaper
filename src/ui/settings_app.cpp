@@ -426,6 +426,49 @@ static void RenderGalleryTab() {
     ImGui::Separator();
     ImGui::Spacing();
 
+    // Multi-Monitor Target Checkboxes in Gallery
+    if (!g_hardwareInfoInit) {
+        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
+        g_hardwareInfoInit = true;
+    }
+
+    if (g_hardwareInfo.displays.size() > 1) {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.16f, 0.22f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.45f, 0.65f, 1.00f));
+        ImGui::BeginChild("MultiMonitorBanner", ImVec2(0, 40), true, ImGuiWindowFlags_NoScrollbar);
+        
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_TV " Target Desktops:");
+        ImGui::SameLine();
+
+        bool all_checked = cfg.target_displays.empty() || (cfg.target_displays.size() == g_hardwareInfo.displays.size());
+        if (ImGui::Checkbox("All Monitors", &all_checked)) {
+            if (all_checked) {
+                cfg.target_displays.clear();
+            } else {
+                cfg.target_displays = { 0 };
+            }
+            g_config.Save();
+            nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
+            SendIpcAsync(req.dump());
+        }
+
+        for (size_t d = 0; d < g_hardwareInfo.displays.size(); ++d) {
+            ImGui::SameLine();
+            bool is_d_checked = cfg.IsDisplayEnabled(static_cast<int>(d));
+            std::string disp_label = "Display " + std::to_string(d + 1) + (g_hardwareInfo.displays[d].is_primary ? " (Primary)" : "");
+            if (ImGui::Checkbox(disp_label.c_str(), &is_d_checked)) {
+                cfg.SetDisplayEnabled(static_cast<int>(d), is_d_checked);
+                g_config.Save();
+                nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
+                SendIpcAsync(req.dump());
+            }
+        }
+
+        ImGui::EndChild();
+        ImGui::PopStyleColor(2);
+        ImGui::Spacing();
+    }
+
     if (galleryCopy.empty()) {
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No videos in gallery. Click 'Add Video File...' or Drag & Drop videos here.");
         return;
@@ -633,11 +676,46 @@ static void RenderSettingsPanel() {
         ImGui::SetTooltip("Changes how video fits the screen.\n*Note: Effect is visible when video aspect ratio differs from display\n (e.g. 4:3, 21:9 ultrawide, or vertical video on 16:9 screen).");
     }
 
-    // Dynamic Hardware / Rendering Device Selector
     if (!g_hardwareInfoInit) {
         g_hardwareInfo = HardwareDetector::QuerySystemInfo();
         g_hardwareInfoInit = true;
     }
+
+    // Multi-Monitor Target Checkboxes in Settings
+    if (g_hardwareInfo.displays.size() > 1) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_TV "  Multi-Desktop / Target Display Selection");
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.75f, 1.0f), "Choose which desktop screen(s) will display the active wallpaper:");
+
+        bool all_checked = cfg.target_displays.empty() || (cfg.target_displays.size() == g_hardwareInfo.displays.size());
+        if (ImGui::Checkbox("All Monitors (Apply to All Desktops)", &all_checked)) {
+            if (all_checked) {
+                cfg.target_displays.clear();
+            } else {
+                cfg.target_displays = { 0 };
+            }
+            g_config.Save();
+            nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
+            SendIpcAsync(req.dump());
+        }
+
+        for (size_t d = 0; d < g_hardwareInfo.displays.size(); ++d) {
+            const auto& disp = g_hardwareInfo.displays[d];
+            bool is_d_checked = cfg.IsDisplayEnabled(static_cast<int>(d));
+            std::string label = "Display " + std::to_string(d + 1) + ": " + disp.name + " (" +
+                                std::to_string(disp.width) + "x" + std::to_string(disp.height) + ")" +
+                                (disp.is_primary ? " [Primary]" : " [Secondary]");
+            if (ImGui::Checkbox(label.c_str(), &is_d_checked)) {
+                cfg.SetDisplayEnabled(static_cast<int>(d), is_d_checked);
+                g_config.Save();
+                nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
+                SendIpcAsync(req.dump());
+            }
+        }
+    }
+
+    // Dynamic Hardware / Rendering Device Selector
 
     std::vector<std::string> deviceNames;
     std::vector<int> deviceValues;

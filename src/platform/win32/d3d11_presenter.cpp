@@ -275,7 +275,7 @@ bool D3D11Presenter::CreateShaders() {
     return SUCCEEDED(hr);
 }
 
-void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode) {
+void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode, const std::vector<DisplayViewport>& target_viewports) {
     if (!m_context || !m_rtv || !nv12_texture) return;
 
     D3D11_TEXTURE2D_DESC texDesc;
@@ -321,60 +321,18 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     // Copy decoded slice into staging texture
     m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
 
-    // Calculate Aspect Ratio / Scaling Transformation
-    float screenAspect = (m_height > 0) ? (static_cast<float>(m_width) / static_cast<float>(m_height)) : 1.0f;
-    float videoAspect = (texDesc.Height > 0) ? (static_cast<float>(texDesc.Width) / static_cast<float>(texDesc.Height)) : 1.0f;
-
-    float uvScaleX = 1.0f;
-    float uvScaleY = 1.0f;
-    float uvOffsetX = 0.0f;
-    float uvOffsetY = 0.0f;
-
-    D3D11_VIEWPORT vp = {0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height), 0.0f, 1.0f};
-
-    if (scaling_mode == 0) {
-        // Mode 0: Auto Aspect Fill (Cover - Proportional Center Crop, No Black Bars)
-        if (screenAspect > videoAspect) {
-            uvScaleY = videoAspect / screenAspect;
-            uvOffsetY = (1.0f - uvScaleY) * 0.5f;
-        } else {
-            uvScaleX = screenAspect / videoAspect;
-            uvOffsetX = (1.0f - uvScaleX) * 0.5f;
-        }
-    } else if (scaling_mode == 1) {
-        // Mode 1: Aspect Fit (Letterbox)
-        if (screenAspect > videoAspect) {
-            float vpWidth = static_cast<float>(m_height) * videoAspect;
-            vp.TopLeftX = (static_cast<float>(m_width) - vpWidth) * 0.5f;
-            vp.Width = vpWidth;
-        } else {
-            float vpHeight = static_cast<float>(m_width) / videoAspect;
-            vp.TopLeftY = (static_cast<float>(m_height) - vpHeight) * 0.5f;
-            vp.Height = vpHeight;
-        }
-
+    // Determine target viewports
+    std::vector<DisplayViewport> vps = target_viewports;
+    if (vps.empty()) {
+        vps.push_back({ 0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height) });
+    } else {
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         m_context->ClearRenderTargetView(m_rtv.Get(), black);
     }
 
-    // Update Constant Buffer with UV transform
-    if (m_scaling_cb) {
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        if (SUCCEEDED(m_context->Map(m_scaling_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            ScalingData* data = static_cast<ScalingData*>(mapped.pData);
-            data->uv_scale[0] = uvScaleX;
-            data->uv_scale[1] = uvScaleY;
-            data->uv_offset[0] = uvOffsetX;
-            data->uv_offset[1] = uvOffsetY;
-            m_context->Unmap(m_scaling_cb.Get(), 0);
-        }
-    }
-
-    // Set Render Target & Viewport
+    // Set Render Target & common pipeline state
     m_context->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);
-    m_context->RSSetViewports(1, &vp);
 
-    // Bind Vertex Shader, Pixel Shader, Constant Buffer, Textures & Sampler
     m_context->VSSetShader(m_fullscreen_vs.Get(), nullptr, 0);
     m_context->VSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
 
@@ -385,10 +343,64 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     m_context->PSSetShaderResources(0, 2, srvs);
     m_context->PSSetSamplers(0, 1, m_sampler.GetAddressOf());
 
-    // Draw Fullscreen Triangle (3 vertices generated on GPU)
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->IASetInputLayout(nullptr);
-    m_context->Draw(3, 0);
+
+    float videoAspect = (texDesc.Height > 0) ? (static_cast<float>(texDesc.Width) / static_cast<float>(texDesc.Height)) : 1.0f;
+
+    for (const auto& dispVp : vps) {
+        float screenAspect = (dispVp.height > 0) ? (dispVp.width / dispVp.height) : 1.0f;
+        float uvScaleX = 1.0f;
+        float uvScaleY = 1.0f;
+        float uvOffsetX = 0.0f;
+        float uvOffsetY = 0.0f;
+
+        D3D11_VIEWPORT vp = {};
+        vp.TopLeftX = dispVp.x;
+        vp.TopLeftY = dispVp.y;
+        vp.Width = dispVp.width;
+        vp.Height = dispVp.height;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+
+        if (scaling_mode == 0) {
+            // Mode 0: Auto Aspect Fill (Cover - Proportional Center Crop, No Black Bars)
+            if (screenAspect > videoAspect) {
+                uvScaleY = videoAspect / screenAspect;
+                uvOffsetY = (1.0f - uvScaleY) * 0.5f;
+            } else {
+                uvScaleX = screenAspect / videoAspect;
+                uvOffsetX = (1.0f - uvScaleX) * 0.5f;
+            }
+        } else if (scaling_mode == 1) {
+            // Mode 1: Aspect Fit (Letterbox)
+            if (screenAspect > videoAspect) {
+                float vpWidth = dispVp.height * videoAspect;
+                vp.TopLeftX = dispVp.x + (dispVp.width - vpWidth) * 0.5f;
+                vp.Width = vpWidth;
+            } else {
+                float vpHeight = dispVp.width / videoAspect;
+                vp.TopLeftY = dispVp.y + (dispVp.height - vpHeight) * 0.5f;
+                vp.Height = vpHeight;
+            }
+        }
+
+        // Update Constant Buffer with UV transform for this viewport
+        if (m_scaling_cb) {
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            if (SUCCEEDED(m_context->Map(m_scaling_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                ScalingData* data = static_cast<ScalingData*>(mapped.pData);
+                data->uv_scale[0] = uvScaleX;
+                data->uv_scale[1] = uvScaleY;
+                data->uv_offset[0] = uvOffsetX;
+                data->uv_offset[1] = uvOffsetY;
+                m_context->Unmap(m_scaling_cb.Get(), 0);
+            }
+        }
+
+        m_context->RSSetViewports(1, &vp);
+        m_context->Draw(3, 0);
+    }
 
     // Unbind SRVs to prevent pipeline resource lock
     ID3D11ShaderResourceView* null_srvs[] = { nullptr, nullptr };

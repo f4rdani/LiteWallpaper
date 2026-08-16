@@ -27,6 +27,7 @@
 #include "platform/win32/power_governor.h"
 #include "platform/win32/lockscreen_manager.h"
 #include "platform/win32/tray_icon.h"
+#include "platform/win32/hardware_info.h"
 #include "ui/settings_app.h"
 
 #define WM_APP_OPEN_SETTINGS (WM_APP + 10)
@@ -494,7 +495,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR /*l
                                       ((g_frames_decoded % g_frame_skip) == 0);
 
                 if (g_current_frame.texture && should_present) {
-                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode);
+                    std::vector<DisplayViewport> target_vps;
+                    if (!cfg.target_displays.empty()) {
+                        auto all_displays = HardwareDetector::GetDisplayList();
+                        int virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                        int virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                        for (int disp_idx : cfg.target_displays) {
+                            if (disp_idx >= 0 && disp_idx < static_cast<int>(all_displays.size())) {
+                                const auto& d = all_displays[disp_idx];
+                                target_vps.push_back({
+                                    static_cast<float>(d.pos_x - virt_x),
+                                    static_cast<float>(d.pos_y - virt_y),
+                                    static_cast<float>(d.width),
+                                    static_cast<float>(d.height)
+                                });
+                            }
+                        }
+                    }
+
+                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode, target_vps);
                     if (FAILED(g_presenter.Present(0))) {
                         if (g_last_error.empty()) {
                             g_last_error = "Present() failed (DXGI error)";
@@ -818,6 +837,18 @@ std::string OnIpcRequest(const std::string& request_json) {
             g_shared_engine_state.active_gpu_index.store(gpu_idx);
             g_shared_engine_state.hw_decode.store(g_decoder_hw);
         }
+        return "{\"ok\":true}";
+    } else if (cmd == "set_target_displays") {
+        auto& cfg = g_config.Get();
+        cfg.target_displays.clear();
+        if (req.contains("displays") && req["displays"].is_array()) {
+            for (const auto& item : req["displays"]) {
+                if (item.is_number_integer()) {
+                    cfg.target_displays.push_back(item.get<int>());
+                }
+            }
+        }
+        g_config.Save();
         return "{\"ok\":true}";
     } else if (cmd == "reload_config") {
         g_config.Load();
