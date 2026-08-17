@@ -1,6 +1,8 @@
 #pragma once
 #include <windows.h>
 
+#define WM_APP_TRAYICON (WM_APP + 1)
+
 namespace litewp {
 
 // Callback action triggered from system tray menu

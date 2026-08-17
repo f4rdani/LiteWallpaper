@@ -605,7 +605,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
-        case WM_USER + 1:
+        case WM_APP_TRAYICON:
             g_tray.HandleMessage(wParam, lParam);
             return 0;
 
