@@ -184,31 +184,7 @@ static std::wstring GetStartupShortcutPath() {
     return L"";
 }
 
-static bool CreateOrUpdateStartupShortcut(const std::wstring& exePath, const std::wstring& workDir) {
-    std::wstring shortcutPath = GetStartupShortcutPath();
-    if (shortcutPath.empty()) return false;
-
-    CoInitialize(nullptr);
-
-    ComPtr<IShellLinkW> pShellLink;
-    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pShellLink));
-    if (SUCCEEDED(hr)) {
-        pShellLink->SetPath(exePath.c_str());
-        pShellLink->SetArguments(L"--startup");
-        pShellLink->SetWorkingDirectory(workDir.c_str());
-        pShellLink->SetDescription(L"LiteWallpaper Animated Wallpaper Engine");
-
-        ComPtr<IPersistFile> pPersistFile;
-        if (SUCCEEDED(pShellLink.As(&pPersistFile))) {
-            pPersistFile->Save(shortcutPath.c_str(), TRUE);
-        }
-    }
-
-    CoUninitialize();
-    return true;
-}
-
-static bool RemoveStartupShortcut() {
+static bool RemoveLegacyStartupShortcut() {
     std::wstring shortcutPath = GetStartupShortcutPath();
     if (!shortcutPath.empty() && GetFileAttributesW(shortcutPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
         DeleteFileW(shortcutPath.c_str());
@@ -217,11 +193,6 @@ static bool RemoveStartupShortcut() {
 }
 
 bool WindowsAutostart::IsEnabled() {
-    std::wstring shortcutPath = GetStartupShortcutPath();
-    if (!shortcutPath.empty() && GetFileAttributesW(shortcutPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        return true;
-    }
-
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
         return false;
@@ -238,13 +209,12 @@ bool WindowsAutostart::SetEnabled(bool enable) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring exeStr(exePath);
-    std::wstring workDir = exeStr.substr(0, exeStr.find_last_of(L"\\/"));
+
+    // Always clean up any legacy/duplicate .lnk shortcut in shell:startup folder
+    RemoveLegacyStartupShortcut();
 
     if (enable) {
-        // 1. Create .lnk in Windows Startup folder (100% reliable for portable apps, no admin elevation required)
-        CreateOrUpdateStartupShortcut(exeStr, workDir);
-
-        // 2. Set Registry HKCU\Run as secondary startup mechanism
+        // 1. Set standard Registry HKCU\Run entry
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
             std::wstring cmd = L"\"" + exeStr + L"\" --startup";
@@ -252,7 +222,7 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegCloseKey(hKey);
         }
 
-        // 3. Mark as explicitly ENABLED in StartupApproved\Run and StartupApproved\StartupFolder
+        // 2. Set explicitly ENABLED in StartupApproved\Run (0x02 status)
         HKEY hApprovedRun = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run",
                             0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hApprovedRun, nullptr) == ERROR_SUCCESS) {
@@ -261,15 +231,7 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegCloseKey(hApprovedRun);
         }
 
-        HKEY hApprovedFolder = nullptr;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder",
-                            0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hApprovedFolder, nullptr) == ERROR_SUCCESS) {
-            BYTE enabledBytes[12] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-            RegSetValueExW(hApprovedFolder, L"LiteWallpaper.lnk", 0, REG_BINARY, enabledBytes, sizeof(enabledBytes));
-            RegCloseKey(hApprovedFolder);
-        }
-
-        // 4. Disable Windows Explorer 10-second startup delay policy
+        // 3. Disable Windows Explorer 10-second startup delay policy
         HKEY hSerializeKey = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize",
                             0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hSerializeKey, nullptr) == ERROR_SUCCESS) {
@@ -278,9 +240,6 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegCloseKey(hSerializeKey);
         }
     } else {
-        // Remove .lnk from Startup folder
-        RemoveStartupShortcut();
-
         // Remove from Registry HKCU\Run
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
@@ -293,12 +252,6 @@ bool WindowsAutostart::SetEnabled(bool enable) {
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run", 0, KEY_SET_VALUE, &hApprovedRun) == ERROR_SUCCESS) {
             RegDeleteValueW(hApprovedRun, L"LiteWallpaper");
             RegCloseKey(hApprovedRun);
-        }
-
-        HKEY hApprovedFolder = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder", 0, KEY_SET_VALUE, &hApprovedFolder) == ERROR_SUCCESS) {
-            RegDeleteValueW(hApprovedFolder, L"LiteWallpaper.lnk");
-            RegCloseKey(hApprovedFolder);
         }
     }
 
