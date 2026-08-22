@@ -284,11 +284,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     // 3. Inject window behind desktop icons (WorkerW) BEFORE DXGI initialization
     g_inject_ok = g_injector.Attach(g_main_hwnd);
     g_injector.RegisterExplorerRestart(g_main_hwnd);
+    if (g_inject_ok) {
+        ShowWindow(g_main_hwnd, SW_SHOW);
+        UpdateWindow(g_main_hwnd);
+    }
     Logger::Info("Attach: ", g_inject_ok ? "OK" : "FAILED",
                  " workerw=0x", reinterpret_cast<size_t>(g_injector.GetWorkerW()),
                  " visible=", IsWindowVisible(g_main_hwnd) ? "yes" : "no");
     if (!g_inject_ok) {
-        // Show the window as a hidden popup; injection will be retried in the main loop
         Logger::Info("Desktop injection failed, will retry periodically");
     }
 
@@ -387,10 +390,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
 
         // Re-attach if desktop was rebuilt, or retry injection if it initially failed
         static uint64_t last_inject_check_us = 0;
+        static uint64_t startup_time_us = g_clock.GetCurrentTimeMicros();
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
         bool has_active_wallpaper = (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty() && !g_paused);
+
+        // During the first 15 seconds after boot, poll every 200ms to immediately catch when Explorer spawns WorkerW
+        uint64_t check_interval_us = (now_us - startup_time_us < 15000000) ? 200000 : 500000;
         if (has_active_wallpaper && !g_fullscreen_paused && g_main_hwnd &&
-            (now_us - last_inject_check_us >= 500000)) { // Check every 500ms
+            (now_us - last_inject_check_us >= check_interval_us)) {
             last_inject_check_us = now_us;
 
             if (!g_inject_ok) {
@@ -567,12 +574,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == g_injector.GetTaskbarRestartMsg()) {
         g_tray.Create(g_main_hwnd, OnTrayAction);
         g_injector.Reattach(g_main_hwnd);
+        g_inject_ok = g_injector.IsAttached();
+        if (g_inject_ok && g_main_hwnd) {
+            ShowWindow(g_main_hwnd, SW_SHOW);
+            RECT rc;
+            if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+            }
+        }
         return 0;
     }
 
     if (msg == WM_APP_ATTACH) {
-        if (g_main_hwnd && !g_injector.IsAttached()) {
-            g_inject_ok = g_injector.Attach(g_main_hwnd);
+        if (g_main_hwnd) {
+            if (!g_injector.IsAttached() || !g_injector.IsAttachedValid()) {
+                g_injector.Reattach(g_main_hwnd);
+                g_inject_ok = g_injector.IsAttached();
+            }
+            if (g_inject_ok) {
+                ShowWindow(g_main_hwnd, SW_SHOW);
+                RECT rc;
+                if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                    g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+                }
+            }
         }
         return 0;
     }

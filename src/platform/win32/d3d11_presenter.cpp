@@ -148,6 +148,25 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
         );
     }
 
+    // On cold boot, display driver might take a brief moment to initialize
+    int retry_count = 0;
+    while (FAILED(hr) && retry_count < 5) {
+        Sleep(200);
+        hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            flags,
+            featureLevels,
+            ARRAYSIZE(featureLevels),
+            D3D11_SDK_VERSION,
+            &m_device,
+            &actualFeatureLevel,
+            &m_context
+        );
+        retry_count++;
+    }
+
     if (FAILED(hr)) {
         return false;
     }

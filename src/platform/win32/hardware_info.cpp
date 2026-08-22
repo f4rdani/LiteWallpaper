@@ -175,6 +175,20 @@ SystemHardwareInfo HardwareDetector::QuerySystemInfo() {
     return sys;
 }
 
+static void RunHiddenCommand(const std::wstring& cmd) {
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    wchar_t cmdBuf[1024] = {};
+    wcsncpy_s(cmdBuf, cmd.c_str(), _countof(cmdBuf) - 1);
+    if (CreateProcessW(nullptr, cmdBuf, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 3000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+}
+
 bool WindowsAutostart::IsEnabled() {
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
@@ -199,9 +213,24 @@ bool WindowsAutostart::SetEnabled(bool enable) {
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
         std::wstring cmd = L"\"" + std::wstring(exePath) + L"\" --startup";
         res = RegSetValueExW(hKey, L"LiteWallpaper", 0, REG_SZ, reinterpret_cast<const BYTE*>(cmd.c_str()), static_cast<DWORD>((cmd.length() + 1) * sizeof(wchar_t)));
+
+        // 1. Disable Windows Explorer 10-second startup delay policy
+        HKEY hSerializeKey = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize",
+                            0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hSerializeKey, nullptr) == ERROR_SUCCESS) {
+            DWORD delay = 0;
+            RegSetValueExW(hSerializeKey, L"StartupDelayInMSec", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&delay), sizeof(delay));
+            RegCloseKey(hSerializeKey);
+        }
+
+        // 2. Register Task Scheduler On-Logon trigger for instant 0s launch
+        std::wstring schCmd = L"schtasks /create /tn \"LiteWallpaper\" /tr \"\\\"" + std::wstring(exePath) + L"\\\" --startup\" /sc onlogon /rl limited /f /delay 0000:00";
+        RunHiddenCommand(schCmd);
     } else {
         res = RegDeleteValueW(hKey, L"LiteWallpaper");
         if (res == ERROR_FILE_NOT_FOUND) res = ERROR_SUCCESS;
+
+        RunHiddenCommand(L"schtasks /delete /tn \"LiteWallpaper\" /f");
     }
     RegCloseKey(hKey);
     return (res == ERROR_SUCCESS);

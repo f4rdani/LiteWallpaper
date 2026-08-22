@@ -1,14 +1,32 @@
 #include "desktop_injector.h"
+#include <iostream>
+
+#define WM_APP_ATTACH (WM_APP + 11)
 
 namespace litewp {
+
+static UINT g_taskbar_created_msg = 0;
 
 DesktopInjector::DesktopInjector() = default;
 
 DesktopInjector::~DesktopInjector() {
     Detach();
+    if (m_msg_receiver) {
+        DestroyWindow(m_msg_receiver);
+        m_msg_receiver = nullptr;
+    }
 }
 
-HWND DesktopInjector::FindDesktopWorkerW() {
+bool DesktopInjector::IsWorkerWClass(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    wchar_t cls[64] = {};
+    if (GetClassNameW(hwnd, cls, 64) == 0) return false;
+    return (wcscmp(cls, L"WorkerW") == 0);
+}
+
+HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
+    if (out_is_fallback) *out_is_fallback = false;
+
     // 1. Find Progman window
     HWND progman = FindWindowW(L"Progman", L"Program Manager");
     if (!progman) {
@@ -78,16 +96,19 @@ HWND DesktopInjector::FindDesktopWorkerW() {
     }, reinterpret_cast<LPARAM>(&standaloneWorker));
     if (standaloneWorker) return standaloneWorker;
 
-    // 6. Fallback: attach directly to Progman (desktop icons hidden case)
+    // 6. Fallback: attach directly to Progman (desktop icons hidden case or early boot)
+    if (out_is_fallback) *out_is_fallback = true;
     return progman;
 }
 
 bool DesktopInjector::Attach(HWND renderHwnd) {
     if (!renderHwnd) return false;
 
-    m_workerw = FindDesktopWorkerW();
+    bool is_fallback = false;
+    m_workerw = FindDesktopWorkerW(&is_fallback);
     if (!m_workerw) return false;
 
+    m_is_fallback = is_fallback;
     m_render_hwnd = renderHwnd;
 
     // Remove window decorations and make it a child window
@@ -128,8 +149,6 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
 
 void DesktopInjector::Detach() {
     if (m_render_hwnd) {
-        // Restore window to a normal hidden top-level window so it stops
-        // covering the desktop wallpaper.
         ShowWindow(m_render_hwnd, SW_HIDE);
         LONG_PTR style = GetWindowLongPtrW(m_render_hwnd, GWL_STYLE);
         style &= ~WS_CHILD;
@@ -143,6 +162,7 @@ void DesktopInjector::Detach() {
         UpdateWindow(m_workerw);
     }
     m_workerw = nullptr;
+    m_is_fallback = false;
 }
 
 bool DesktopInjector::Reattach(HWND renderHwnd) {
@@ -159,7 +179,22 @@ bool DesktopInjector::IsAttachedValid() const {
     if (!IsWindow(m_workerw)) return false;
     if (!IsWindow(m_render_hwnd)) return false;
     HWND parent = GetParent(m_render_hwnd);
-    return (parent == m_workerw);
+    if (parent != m_workerw) return false;
+
+    // If currently attached to fallback Progman, check if true WorkerW has spawned
+    if (m_is_fallback) {
+        bool still_fallback = false;
+        HWND trueWorker = FindDesktopWorkerW(&still_fallback);
+        if (!still_fallback && trueWorker && trueWorker != m_workerw) {
+            return false; // Force reattach to upgrade to genuine WorkerW!
+        }
+    }
+
+    return true;
+}
+
+bool DesktopInjector::IsTrueWorkerW() const {
+    return IsAttached() && !m_is_fallback && IsWorkerWClass(m_workerw);
 }
 
 HWND DesktopInjector::GetWorkerW() const {
@@ -185,8 +220,43 @@ std::vector<MonitorInfo> DesktopInjector::EnumerateMonitors() {
     return monitors;
 }
 
-void DesktopInjector::RegisterExplorerRestart(HWND /*messageHwnd*/) {
+LRESULT CALLBACK DesktopInjector::MsgReceiverWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_taskbar_created_msg && msg == g_taskbar_created_msg) {
+        HWND target = reinterpret_cast<HWND>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (target && IsWindow(target)) {
+            PostMessageW(target, WM_APP_ATTACH, 0, 0);
+        }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void DesktopInjector::RegisterExplorerRestart(HWND targetHwnd) {
     m_taskbar_restart_msg = RegisterWindowMessageW(L"TaskbarCreated");
+    g_taskbar_created_msg = m_taskbar_restart_msg;
+
+    if (!m_msg_receiver) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = MsgReceiverWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"LiteWallpaper_MsgReceiver";
+        RegisterClassExW(&wc);
+
+        // Top-level hidden window (WS_POPUP) to reliably receive HWND_BROADCAST TaskbarCreated
+        m_msg_receiver = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            L"LiteWallpaper_MsgReceiver",
+            L"",
+            WS_POPUP,
+            0, 0, 0, 0,
+            nullptr, nullptr, wc.hInstance, nullptr
+        );
+
+        if (m_msg_receiver) {
+            SetWindowLongPtrW(m_msg_receiver, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(targetHwnd));
+        }
+    }
 }
 
 UINT DesktopInjector::GetTaskbarRestartMsg() const {
