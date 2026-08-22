@@ -30,7 +30,6 @@ LiteWallpaper is engineered in native **C++20** and **DirectX 11 (D3D11VA)** fro
 | **RAM (Working Set)** | **`4.4 MB - 12 MB`** | ~350 MB - 600 MB | ~250 MB - 350 MB |
 | **CPU Usage** | **`0.0% - 1.1%`** | ~3% - 8% | ~2% - 5% |
 | **dGPU Power Saving** | 🟢 **Deep Sleep (0% NVIDIA)** | Variable | Variable |
-| **Startup Time** | **`< 200 ms`** | ~3 - 5 sec | ~2 - 4 sec |
 | **Architecture** | **Native C++20 / DirectX 11** | C# / .NET / WinUI | C++ / CEF / Chromium |
 
 ### 📸 Real-World Telemetry
