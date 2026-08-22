@@ -248,6 +248,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     g_config.Load();
     auto& cfg = g_config.Get();
 
+    // Ensure startup registration matches configuration (auto-repair path if moved)
+    if (cfg.run_on_startup) {
+        WindowsAutostart::SetEnabled(true);
+    }
+
     // 2. Register Background Render Window Class
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
