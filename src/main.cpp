@@ -20,6 +20,7 @@
 #include "core/ipc_server.h"
 #include "core/logger.h"
 #include "core/engine_state.h"
+#include "core/video_optimizer.h"
 #include "decoder/ffmpeg_hw_decoder.h"
 #include "decoder/audio_player.h"
 #include "platform/win32/desktop_injector.h"
@@ -662,6 +663,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
 
     // Cleanup
     SettingsUI::Shutdown();
+    g_video_optimizer.Cancel();
     g_ipc.Stop();
     g_tray.Destroy();
     g_audio.Stop();
