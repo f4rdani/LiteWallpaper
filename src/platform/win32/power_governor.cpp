@@ -21,15 +21,15 @@ bool PowerGovernor::Init(HWND messageHwnd) {
     return true;
 }
 
-PowerState PowerGovernor::GetCurrentState() {
+PowerState PowerGovernor::GetCurrentState(bool check_maximized) {
     // Priority 1: Workstation Locked → Sleep (Immediate 0% CPU)
     if (m_is_locked) {
         return PowerState::Sleeping;
     }
 
     uint64_t now = GetTickCount64();
-    // Throttle Win32 window queries to once every 500ms
-    if (now - m_last_check_tick < 500) {
+    // Throttle Win32 window queries to once every 250ms
+    if (now - m_last_check_tick < 250) {
         return m_cached_state;
     }
     m_last_check_tick = now;
@@ -40,7 +40,13 @@ PowerState PowerGovernor::GetCurrentState() {
         return m_cached_state;
     }
 
-    // Priority 3: On Battery → Reduced FPS
+    // Priority 3: Desktop Occluded by Maximized Window → Occluded
+    if (check_maximized && IsDesktopOccluded()) {
+        m_cached_state = PowerState::Occluded;
+        return m_cached_state;
+    }
+
+    // Priority 4: On Battery → Reduced FPS
     if (IsOnBattery()) {
         m_cached_state = PowerState::Reduced;
         return m_cached_state;
@@ -127,6 +133,47 @@ bool PowerGovernor::IsOnBattery() {
 }
 
 bool PowerGovernor::IsDesktopOccluded() {
+    HWND fg = GetForegroundWindow();
+    if (!fg || !IsWindow(fg)) return false;
+
+    // Desktop / shell / our settings or daemon window focused -> NEVER occluded
+    wchar_t cls[256];
+    if (GetClassNameW(fg, cls, 256)) {
+        if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
+            wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+            wcscmp(cls, L"LiteWallpaper_SettingsClass") == 0 ||
+            wcscmp(cls, L"LiteWallpaper_Daemon") == 0) {
+            return false;
+        }
+    }
+
+    if (IsIconic(fg) || !IsWindowVisible(fg)) return false;
+
+    int cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+        return false;
+    }
+
+    // Method 1: Check standard Win32 maximized style or zoomed state
+    if (IsZoomed(fg) || (GetWindowLongPtr(fg, GWL_STYLE) & WS_MAXIMIZE) != 0) {
+        return true;
+    }
+
+    // Method 2: Check if window covers the monitor's work area
+    HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoW(hmon, &mi)) return false;
+
+    RECT rc;
+    if (!GetWindowRect(fg, &rc)) return false;
+
+    // A maximized or desktop-filling window covers the entire work area (rcWork)
+    // Tolerance of 8px handles invisible DWM resize borders
+    if (rc.left <= mi.rcWork.left + 8 && rc.top <= mi.rcWork.top + 8 &&
+        rc.right >= mi.rcWork.right - 8 && rc.bottom >= mi.rcWork.bottom - 8) {
+        return true;
+    }
+
     return false;
 }
 

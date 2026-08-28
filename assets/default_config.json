@@ -3,6 +3,7 @@
     "target_fps": 30,
     "idle_fps": 15,
     "pause_on_fullscreen": true,
+    "pause_on_maximized": true,
     "pause_on_battery": false,
     "battery_fps": 15,
     "pause_on_lock": true,

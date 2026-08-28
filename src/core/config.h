@@ -23,6 +23,7 @@ struct AppConfig {
     int gpu_device_index = 0;    // -1 = CPU (Software), 0 = GPU 1 (Primary), 1 = GPU 2, etc.
     std::vector<int> target_displays; // Target displays to show wallpaper on (empty = all displays)
     bool pause_on_fullscreen = true;
+    bool pause_on_maximized = true; // Auto-pause when an app is maximized / covers the desktop (0% CPU/GPU)
     bool pause_on_battery = false; // true = pause, false = reduce FPS
     bool pause_on_lock = true;
     bool update_lockscreen = true; // Capture frame for lock screen
@@ -127,6 +128,7 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"gpu_device_index", c.gpu_device_index},
         {"target_displays", c.target_displays},
         {"pause_on_fullscreen", c.pause_on_fullscreen},
+        {"pause_on_maximized", c.pause_on_maximized},
         {"pause_on_battery", c.pause_on_battery},
         {"battery_fps", c.battery_fps},
         {"pause_on_lock", c.pause_on_lock},
@@ -147,6 +149,7 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("gpu_device_index")) j.at("gpu_device_index").get_to(c.gpu_device_index);
     if (j.contains("target_displays")) j.at("target_displays").get_to(c.target_displays);
     if (j.contains("pause_on_fullscreen")) j.at("pause_on_fullscreen").get_to(c.pause_on_fullscreen);
+    if (j.contains("pause_on_maximized")) j.at("pause_on_maximized").get_to(c.pause_on_maximized);
     if (j.contains("pause_on_battery")) j.at("pause_on_battery").get_to(c.pause_on_battery);
     if (j.contains("battery_fps")) j.at("battery_fps").get_to(c.battery_fps);
     if (j.contains("pause_on_lock")) j.at("pause_on_lock").get_to(c.pause_on_lock);

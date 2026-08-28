@@ -9,6 +9,7 @@ enum class PowerState {
     Active,         // Desktop visible, no fullscreen app → render at target FPS
     Reduced,        // On battery → render at reduced FPS
     Paused,         // Fullscreen app/game detected → stop rendering completely
+    Occluded,       // Maximized window / desktop covered → stop rendering completely (0% CPU/GPU)
     Sleeping,       // Workstation locked → stop everything (0% CPU)
 };
 
@@ -20,8 +21,8 @@ public:
     // Initialize session notifications
     bool Init(HWND messageHwnd);
     
-    // Poll current state (throttled to 500ms internally to conserve CPU)
-    PowerState GetCurrentState();
+    // Poll current state (throttled internally to conserve CPU)
+    PowerState GetCurrentState(bool check_maximized = true);
     
     // Handle WM_WTSSESSION_CHANGE message from WndProc
     void HandleSessionChange(WPARAM wParam);

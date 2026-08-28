@@ -220,14 +220,14 @@ static bool OpenWallpaperVideo(const std::string& path) {
     return true;
 }
 
-static void SuspendWallpaperForFullscreen() {
+static void SuspendWallpaper(const char* reason = "Fullscreen app") {
     if (g_fullscreen_paused) return;
     g_fullscreen_paused = true;
     g_audio.Stop();
-    Logger::Info("Fullscreen app detected: wallpaper playback paused");
+    Logger::Info("Playback auto-paused: ", reason);
 }
 
-static void ResumeWallpaperFromFullscreen() {
+static void ResumeWallpaper() {
     if (!g_fullscreen_paused) return;
     g_fullscreen_paused = false;
 
@@ -236,7 +236,7 @@ static void ResumeWallpaperFromFullscreen() {
         g_audio.Init();
     }
     g_clock.Reset();
-    Logger::Info("Fullscreen app closed: wallpaper playback resumed");
+    Logger::Info("Playback auto-resumed");
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int /*nCmdShow*/) {
@@ -374,19 +374,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             SettingsUI::RenderFrame();
         }
 
-        PowerState power = g_governor.GetCurrentState();
+        PowerState power = g_governor.GetCurrentState(cfg.pause_on_maximized);
         bool fullscreen_active = (power == PowerState::Paused && cfg.pause_on_fullscreen);
+        bool occluded_active = (power == PowerState::Occluded && cfg.pause_on_maximized);
         bool battery_pause_active = (power == PowerState::Reduced && cfg.pause_on_battery);
         bool lock_pause_active = (power == PowerState::Sleeping && cfg.pause_on_lock);
 
-        if (fullscreen_active || battery_pause_active || lock_pause_active) {
+        if (fullscreen_active || occluded_active || battery_pause_active || lock_pause_active) {
             if (!g_fullscreen_paused) {
-                SuspendWallpaperForFullscreen();
+                if (occluded_active) {
+                    SuspendWallpaper("Maximized window / desktop covered");
+                } else if (fullscreen_active) {
+                    SuspendWallpaper("Fullscreen app / 3D game");
+                } else if (lock_pause_active) {
+                    SuspendWallpaper("Workstation locked");
+                } else {
+                    SuspendWallpaper("Battery saver");
+                }
             }
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
         } else if (g_fullscreen_paused) {
-            ResumeWallpaperFromFullscreen();
+            ResumeWallpaper();
         }
 
         // Apply battery vs AC FPS throttling

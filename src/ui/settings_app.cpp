@@ -813,6 +813,12 @@ static void RenderSettingsPanel() {
     if (ImGui::Checkbox("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen)) {
         g_config.Save();
     }
+    if (ImGui::Checkbox("Auto-Pause when Window is Maximized / Desktop Covered", &cfg.pause_on_maximized)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Automatically pauses wallpaper playback when an application (browser, code editor, etc.) is maximized and covers the desktop, reducing CPU and GPU usage to 0%.");
+    }
     if (ImGui::Checkbox("Auto-Pause on Battery Power", &cfg.pause_on_battery)) {
         g_config.Save();
     }
