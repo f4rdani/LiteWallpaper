@@ -342,23 +342,6 @@ void VideoOptimizer::TranscodeWorker(
         return;
     }
 
-    // Find H.264 Encoder
-    const AVCodec* venc = avcodec_find_encoder(AV_CODEC_ID_H264);
-    if (!venc) {
-        venc = avcodec_find_encoder_by_name("libx264");
-    }
-    if (!venc) {
-        avformat_free_context(out_fmt);
-        avcodec_free_context(&dec_ctx);
-        avformat_close_input(&in_fmt);
-        report(0.0f, "H.264 encoder not found");
-        finish(false, "");
-        return;
-    }
-
-    AVStream* out_vstream = avformat_new_stream(out_fmt, nullptr);
-    AVCodecContext* enc_ctx = avcodec_alloc_context3(venc);
-
     int src_w = in_vstream->codecpar->width;
     int src_h = in_vstream->codecpar->height;
     auto [out_w, out_h] = CalculateTargetDimensions(src_w, src_h, target_w, target_h);
@@ -369,39 +352,89 @@ void VideoOptimizer::TranscodeWorker(
     int out_fps_int = static_cast<int>(out_fps + 0.5);
     if (out_fps_int < 1) out_fps_int = 30;
 
-    enc_ctx->width = out_w;
-    enc_ctx->height = out_h;
-    enc_ctx->sample_aspect_ratio = AVRational{1, 1};
-    enc_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-    enc_ctx->time_base = AVRational{1, out_fps_int};
-    enc_ctx->framerate = AVRational{out_fps_int, 1};
-    
-    // Balanced bitrate for wallpaper quality at low file size (e.g. 5 Mbps for 1080p)
-    enc_ctx->bit_rate = static_cast<int64_t>(out_w) * out_h * 2;
-    if (enc_ctx->bit_rate < 2000000) enc_ctx->bit_rate = 2000000;
-    if (enc_ctx->bit_rate > 8000000) enc_ctx->bit_rate = 8000000;
+    // Multi-tier Hardware and Software Encoder Candidates
+    struct EncoderCandidate {
+        std::string name;
+        std::string display_name;
+    };
 
-    enc_ctx->gop_size = static_cast<int>(out_fps_int * 2);
-    enc_ctx->max_b_frames = 2;
-    enc_ctx->thread_count = 0;
+    std::vector<EncoderCandidate> candidates = {
+        { "h264_nvenc", "NVIDIA NVENC (GPU)" },
+        { "h264_qsv",   "Intel QuickSync (GPU)" },
+        { "h264_amf",   "AMD AMF (GPU)" },
+        { "h264_mf",    "MediaFoundation (GPU)" },
+        { "libx264",    "Lanczos High-Fidelity Engine (CPU)" }
+    };
 
-    if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER) {
-        enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    const AVCodec* venc = nullptr;
+    AVCodecContext* enc_ctx = nullptr;
+    std::string active_encoder_display = "High-Fidelity Engine";
+
+    for (const auto& cand : candidates) {
+        const AVCodec* candidate_codec = avcodec_find_encoder_by_name(cand.name.c_str());
+        if (!candidate_codec) continue;
+
+        AVCodecContext* test_ctx = avcodec_alloc_context3(candidate_codec);
+        if (!test_ctx) continue;
+
+        test_ctx->width = out_w;
+        test_ctx->height = out_h;
+        test_ctx->sample_aspect_ratio = AVRational{1, 1};
+        test_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        test_ctx->time_base = AVRational{1, out_fps_int};
+        test_ctx->framerate = AVRational{out_fps_int, 1};
+        test_ctx->gop_size = static_cast<int>(out_fps_int * 2);
+        test_ctx->max_b_frames = 2;
+        test_ctx->thread_count = 0;
+
+        if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER) {
+            test_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        }
+
+        // Apply high-quality rate control & tuning specific to candidate encoder
+        if (cand.name == "h264_nvenc") {
+            av_opt_set(test_ctx->priv_data, "preset", "p6", 0); // High Quality
+            av_opt_set(test_ctx->priv_data, "tune", "hq", 0);
+            av_opt_set(test_ctx->priv_data, "rc", "vbr", 0);
+            av_opt_set_int(test_ctx->priv_data, "cq", 19, 0); // CQ 19 (Visually Lossless)
+            av_opt_set(test_ctx->priv_data, "profile", "high", 0);
+        } else if (cand.name == "h264_qsv") {
+            av_opt_set(test_ctx->priv_data, "preset", "veryfast", 0);
+            test_ctx->global_quality = 20 * FF_QP2LAMBDA;
+        } else if (cand.name == "h264_amf") {
+            av_opt_set(test_ctx->priv_data, "quality", "quality", 0);
+            av_opt_set(test_ctx->priv_data, "rc", "cqp", 0);
+            av_opt_set_int(test_ctx->priv_data, "qp_i", 19, 0);
+            av_opt_set_int(test_ctx->priv_data, "qp_p", 20, 0);
+        } else if (cand.name == "h264_mf") {
+            test_ctx->bit_rate = static_cast<int64_t>(out_w) * out_h * 4;
+            if (test_ctx->bit_rate < 4000000) test_ctx->bit_rate = 4000000;
+        } else if (cand.name == "libx264") {
+            av_opt_set(test_ctx->priv_data, "preset", "fast", 0);
+            av_opt_set(test_ctx->priv_data, "crf", "19", 0); // Visually Lossless CRF 19
+            av_opt_set(test_ctx->priv_data, "tune", "film", 0);
+        }
+
+        if (avcodec_open2(test_ctx, candidate_codec, nullptr) >= 0) {
+            venc = candidate_codec;
+            enc_ctx = test_ctx;
+            active_encoder_display = cand.display_name;
+            break;
+        } else {
+            avcodec_free_context(&test_ctx);
+        }
     }
 
-    av_opt_set(enc_ctx->priv_data, "preset", "veryfast", 0);
-    av_opt_set(enc_ctx->priv_data, "tune", "film", 0);
-
-    if (avcodec_open2(enc_ctx, venc, nullptr) < 0) {
-        avcodec_free_context(&enc_ctx);
+    if (!enc_ctx || !venc) {
         avformat_free_context(out_fmt);
         avcodec_free_context(&dec_ctx);
         avformat_close_input(&in_fmt);
-        report(0.0f, "Failed to open video encoder");
+        report(0.0f, "Failed to initialize any H.264 video encoder");
         finish(false, "");
         return;
     }
 
+    AVStream* out_vstream = avformat_new_stream(out_fmt, nullptr);
     avcodec_parameters_from_context(out_vstream->codecpar, enc_ctx);
     out_vstream->time_base = enc_ctx->time_base;
     out_vstream->r_frame_rate = enc_ctx->framerate;
@@ -458,7 +491,7 @@ void VideoOptimizer::TranscodeWorker(
     double next_frame_time = 0.0;
     double out_frame_interval = 1.0 / out_fps;
 
-    report(0.05f, "Optimizing video...");
+    report(0.05f, "Optimizing [" + active_encoder_display + "]...");
 
     bool success = true;
     while (!m_cancel.load() && av_read_frame(in_fmt, in_pkt) >= 0) {
@@ -475,7 +508,7 @@ void VideoOptimizer::TranscodeWorker(
                         sws_ctx = sws_getContext(
                             in_frame->width, in_frame->height, static_cast<AVPixelFormat>(in_frame->format),
                             out_w, out_h, enc_ctx->pix_fmt,
-                            SWS_BILINEAR, nullptr, nullptr, nullptr
+                            SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, nullptr, nullptr, nullptr
                         );
                     }
 
@@ -509,7 +542,7 @@ void VideoOptimizer::TranscodeWorker(
                 double pts_sec = current_pts * av_q2d(in_vstream->time_base);
                 double total_sec = static_cast<double>(total_duration) / AV_TIME_BASE;
                 float pct = static_cast<float>(std::clamp(pts_sec / (total_sec > 0 ? total_sec : 1.0), 0.05, 0.95));
-                report(pct, "Optimizing video (" + std::to_string(static_cast<int>(pct * 100)) + "%)...");
+                report(pct, "Optimizing [" + active_encoder_display + "] (" + std::to_string(static_cast<int>(pct * 100)) + "%)...");
             }
         } else if (in_pkt->stream_index == in_audio_idx && out_astream) {
             av_packet_rescale_ts(in_pkt, in_fmt->streams[in_audio_idx]->time_base, out_astream->time_base);
