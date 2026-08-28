@@ -13,11 +13,24 @@ void PlaybackClock::SetTargetFPS(int fps) {
     if (fps < 1) fps = 1;
     if (fps > 240) fps = 240;
     m_target_fps = fps;
-    m_frame_interval_us = 1000000 / fps;
+    double effective_fps = (m_speed > 0.05) ? (m_target_fps * m_speed) : m_target_fps;
+    m_frame_interval_us = static_cast<int64_t>(1000000.0 / effective_fps);
 }
 
 int PlaybackClock::GetTargetFPS() const {
     return m_target_fps;
+}
+
+void PlaybackClock::SetSpeedMultiplier(double speed) {
+    if (speed < 0.1) speed = 0.1;
+    if (speed > 5.0) speed = 5.0;
+    m_speed = speed;
+    double effective_fps = m_target_fps * m_speed;
+    m_frame_interval_us = static_cast<int64_t>(1000000.0 / effective_fps);
+}
+
+double PlaybackClock::GetSpeedMultiplier() const {
+    return m_speed;
 }
 
 void PlaybackClock::Reset() {

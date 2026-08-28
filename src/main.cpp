@@ -535,7 +535,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                         g_first_frame_captured = true;
                     }
 
-                    // Calculate Auto Smooth Loop crossfade blend alpha
+                    // Calculate Auto Smooth Loop crossfade blend alpha & dynamic speed ramp
                     float blend_alpha = 0.0f;
                     auto info = g_decoder.GetInfo();
                     if (cfg.auto_smooth_loop && info.duration_seconds > 1.5 && info.fps > 0.0) {
@@ -543,12 +543,71 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                         if (total_frames > 0.0) {
                             double current_frame_pos = static_cast<double>(g_frames_decoded % static_cast<uint64_t>(total_frames + 0.5));
                             double current_time_sec = current_frame_pos / info.fps;
-                            float fade_dur = std::clamp(cfg.smooth_loop_duration, 0.2f, 2.0f);
+
+                            float fade_dur = 0.8f;
+                            bool enable_speed_ramp = false;
+                            float min_speed = 0.75f;
+                            int easing_mode = 1;
+
+                            if (cfg.loop_preset == 0) { // Cinematic Speed Ramp
+                                fade_dur = 1.2f;
+                                enable_speed_ramp = true;
+                                min_speed = 0.75f;
+                                easing_mode = 1; // Smoothstep
+                            } else if (cfg.loop_preset == 1) { // Smoothstep S-Curve
+                                fade_dur = 0.8f;
+                                enable_speed_ramp = false;
+                                easing_mode = 1; // Smoothstep
+                            } else if (cfg.loop_preset == 2) { // Gentle Flow
+                                fade_dur = 1.8f;
+                                enable_speed_ramp = true;
+                                min_speed = 0.85f;
+                                easing_mode = 2; // Sine
+                            } else if (cfg.loop_preset == 3) { // Instant Snap
+                                fade_dur = 0.4f;
+                                enable_speed_ramp = false;
+                                easing_mode = 0; // Linear
+                            } else { // Custom Tuning
+                                fade_dur = std::clamp(cfg.smooth_loop_duration, 0.2f, 2.5f);
+                                enable_speed_ramp = cfg.loop_speed_ramp;
+                                min_speed = std::clamp(cfg.loop_min_speed, 0.5f, 0.95f);
+                                easing_mode = cfg.loop_easing_curve;
+                            }
+
                             double time_remaining = info.duration_seconds - current_time_sec;
                             if (time_remaining >= 0.0 && time_remaining <= fade_dur) {
-                                blend_alpha = static_cast<float>(1.0 - (time_remaining / fade_dur));
+                                float raw_alpha = static_cast<float>(1.0 - (time_remaining / fade_dur));
+                                
+                                // Apply Easing Curve
+                                if (easing_mode == 1) {
+                                    // Smoothstep S-Curve: 3x^2 - 2x^3
+                                    blend_alpha = raw_alpha * raw_alpha * (3.0f - 2.0f * raw_alpha);
+                                } else if (easing_mode == 2) {
+                                    // Sine In-Out: 0.5 * (1 - cos(pi * x))
+                                    blend_alpha = 0.5f * (1.0f - cosf(raw_alpha * 3.14159265f));
+                                } else if (easing_mode == 3) {
+                                    // Smootherstep (Ken Perlin): 6x^5 - 15x^4 + 10x^3
+                                    blend_alpha = raw_alpha * raw_alpha * raw_alpha * (raw_alpha * (raw_alpha * 6.0f - 15.0f) + 10.0f);
+                                } else {
+                                    // Linear
+                                    blend_alpha = raw_alpha;
+                                }
+
+                                // Apply Dynamic Speed Ramp (Time Warp)
+                                if (enable_speed_ramp) {
+                                    // Sine bell curve: decelerate smoothly towards seam, then accelerate back to 1.0x
+                                    float ramp_factor = sinf(raw_alpha * 3.14159265f);
+                                    double target_speed = 1.0 - (1.0 - static_cast<double>(min_speed)) * ramp_factor;
+                                    g_clock.SetSpeedMultiplier(target_speed);
+                                } else {
+                                    g_clock.SetSpeedMultiplier(1.0);
+                                }
+                            } else {
+                                g_clock.SetSpeedMultiplier(1.0);
                             }
                         }
+                    } else {
+                        g_clock.SetSpeedMultiplier(1.0);
                     }
 
                     std::vector<DisplayViewport> target_vps;

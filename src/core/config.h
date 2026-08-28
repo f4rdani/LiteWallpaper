@@ -32,7 +32,11 @@ struct AppConfig {
     int optimizer_crop_mode = 0;        // 0 = Aspect Fit (Proportional), 1 = Aspect Fill (Center Crop to Full Screen)
     bool run_on_startup = false;
     bool auto_smooth_loop = true;       // Seamless crossfade transition on video loop boundary
-    float smooth_loop_duration = 0.8f;  // Crossfade transition duration in seconds (0.2s - 2.0s)
+    float smooth_loop_duration = 0.8f;  // Crossfade transition duration in seconds (0.2s - 2.5s)
+    int loop_preset = 0;                // 0=Cinematic Speed Ramp, 1=Smoothstep S-Curve, 2=Gentle Flow, 3=Instant Snap, 4=Custom
+    bool loop_speed_ramp = true;        // Dynamic time-warp deceleration during loop boundary
+    float loop_min_speed = 0.75f;       // Minimum playback speed at seam (0.5x - 0.95x)
+    int loop_easing_curve = 1;          // 0=Linear, 1=Smoothstep, 2=Sine, 3=Smootherstep
     std::string config_path;     // Path to this config file
 
     bool IsDisplayEnabled(int idx) const {
@@ -139,7 +143,11 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"optimizer_crop_mode", c.optimizer_crop_mode},
         {"run_on_startup", c.run_on_startup},
         {"auto_smooth_loop", c.auto_smooth_loop},
-        {"smooth_loop_duration", c.smooth_loop_duration}
+        {"smooth_loop_duration", c.smooth_loop_duration},
+        {"loop_preset", c.loop_preset},
+        {"loop_speed_ramp", c.loop_speed_ramp},
+        {"loop_min_speed", c.loop_min_speed},
+        {"loop_easing_curve", c.loop_easing_curve}
     };
 }
 
@@ -162,6 +170,10 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("run_on_startup")) j.at("run_on_startup").get_to(c.run_on_startup);
     if (j.contains("auto_smooth_loop")) j.at("auto_smooth_loop").get_to(c.auto_smooth_loop);
     if (j.contains("smooth_loop_duration")) j.at("smooth_loop_duration").get_to(c.smooth_loop_duration);
+    if (j.contains("loop_preset")) j.at("loop_preset").get_to(c.loop_preset);
+    if (j.contains("loop_speed_ramp")) j.at("loop_speed_ramp").get_to(c.loop_speed_ramp);
+    if (j.contains("loop_min_speed")) j.at("loop_min_speed").get_to(c.loop_min_speed);
+    if (j.contains("loop_easing_curve")) j.at("loop_easing_curve").get_to(c.loop_easing_curve);
 }
 
 extern Config g_config;

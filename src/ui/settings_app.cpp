@@ -873,16 +873,59 @@ static void RenderSettingsPanel() {
         g_config.Save();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Applies a smooth dissolve crossfade transition between the end and beginning of the video for a seamless continuous loop without hard cuts.");
+        ImGui::SetTooltip("Applies a smooth crossfade transition and time-warp deceleration at loop seams for a seamless continuous loop without hard cuts.");
     }
 
     if (cfg.auto_smooth_loop) {
+        const char* loop_presets[] = {
+            "Cinematic Speed Ramp (1.2s + 0.75x Slow-Mo Blend)",
+            "Smoothstep S-Curve (0.8s Natural Easing)",
+            "Gentle Flow (1.8s Ambient Scenery Blend)",
+            "Instant Snap (0.4s Fast Seamless Snap)",
+            "Custom Tuning..."
+        };
+
         ImGui::SetNextItemWidth(sliderW);
-        if (ImGui::SliderFloat("Transition Duration", &cfg.smooth_loop_duration, 0.2f, 2.0f, "%.1f seconds")) {
+        if (ImGui::Combo("Looping Preset", &cfg.loop_preset, loop_presets, IM_ARRAYSIZE(loop_presets))) {
             g_config.Save();
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Duration of the crossfade transition when the wallpaper loops back to the start.");
+            ImGui::SetTooltip("Select curated looping behavior presets optimized for different types of wallpaper animations.");
+        }
+
+        if (cfg.loop_preset == 4) { // Custom Tuning
+            ImGui::SetNextItemWidth(sliderW);
+            if (ImGui::SliderFloat("Transition Duration", &cfg.smooth_loop_duration, 0.2f, 2.5f, "%.1f seconds")) {
+                g_config.Save();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Duration of the crossfade transition when the wallpaper loops back to the start.");
+            }
+
+            const char* easing_curves[] = {
+                "Linear (Constant)",
+                "Smoothstep (S-Curve Hermite)",
+                "Sine Wave (Smooth Harmonic)",
+                "Smootherstep (Perlin Ultra-Smooth)"
+            };
+            ImGui::SetNextItemWidth(sliderW);
+            if (ImGui::Combo("Easing Curve", &cfg.loop_easing_curve, easing_curves, IM_ARRAYSIZE(easing_curves))) {
+                g_config.Save();
+            }
+
+            if (ImGui::Checkbox("Enable Speed Ramping (Time Warp Deceleration)", &cfg.loop_speed_ramp)) {
+                g_config.Save();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Subtly slows down video playback speed right before the loop seam, masking cuts and creating an organic rhythm.");
+            }
+
+            if (cfg.loop_speed_ramp) {
+                ImGui::SetNextItemWidth(sliderW);
+                if (ImGui::SliderFloat("Min Speed at Seam", &cfg.loop_min_speed, 0.50f, 0.95f, "%.2fx")) {
+                    g_config.Save();
+                }
+            }
         }
     }
 

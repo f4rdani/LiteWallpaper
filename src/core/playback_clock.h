@@ -12,8 +12,13 @@ public:
 
     // Set the base pacing rate = video native fps. Playback always advances at
     // this rate regardless of the display target FPS.
-    void SetTargetFPS(int fps);     // Set base frame rate (video fps)
+    // Set base frame rate (video fps)
+    void SetTargetFPS(int fps);
     int  GetTargetFPS() const;
+
+    // Set dynamic speed multiplier (1.0 = normal, 0.75 = 25% slower for speed ramping)
+    void SetSpeedMultiplier(double speed);
+    double GetSpeedMultiplier() const;
     
     // Call every iteration in main loop.
     // Returns true if it's time to decode+display the next video frame.
@@ -31,6 +36,7 @@ public:
 
 private:
     int m_target_fps = 30;
+    double m_speed = 1.0;
     int64_t m_frame_interval_us = 33333; // microseconds per frame (1/30s)
     int64_t m_last_frame_time = 0;       // timestamp in microseconds
 };
