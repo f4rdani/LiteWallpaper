@@ -147,6 +147,38 @@ void VideoOptimizer::DeleteOptimizedCache(const std::string& input_path) {
     }
 }
 
+void VideoOptimizer::CleanOrphanCaches(const std::vector<std::string>& active_videos) {
+    std::string cache_dir = GetCacheDirectory();
+    if (cache_dir.empty()) return;
+
+    std::vector<std::string> active_hashes;
+    for (const auto& v : active_videos) {
+        if (!v.empty()) {
+            uint64_t hash = HashString(v);
+            std::ostringstream ss;
+            ss << std::hex << std::setw(16) << std::setfill('0') << hash;
+            active_hashes.push_back(ss.str());
+        }
+    }
+
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(cache_dir, ec)) {
+        if (entry.is_regular_file()) {
+            std::string name = entry.path().filename().string();
+            bool is_active = false;
+            for (const auto& h : active_hashes) {
+                if (name.find(h) != std::string::npos) {
+                    is_active = true;
+                    break;
+                }
+            }
+            if (!is_active) {
+                fs::remove(entry.path(), ec);
+            }
+        }
+    }
+}
+
 bool VideoOptimizer::StartOptimizeAsync(
     const std::string& input_path,
     int target_w,

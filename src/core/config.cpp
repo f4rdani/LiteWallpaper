@@ -1,4 +1,5 @@
 #include "config.h"
+#include "video_optimizer.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <fstream>
@@ -83,6 +84,13 @@ bool Config::Load() {
     };
     auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), is_invalid);
     m_config.gallery_history.erase(it, m_config.gallery_history.end());
+
+    // Clean up any orphaned cache files that don't belong to current gallery or active wallpaper
+    std::vector<std::string> all_active = m_config.gallery_history;
+    for (const auto& w : m_config.wallpapers) {
+        if (!w.video_path.empty()) all_active.push_back(w.video_path);
+    }
+    VideoOptimizer::CleanOrphanCaches(all_active);
 
     return true;
 }

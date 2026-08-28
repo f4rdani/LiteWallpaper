@@ -40,6 +40,9 @@ public:
     // Delete all cached optimized video files for a given input video
     static void DeleteOptimizedCache(const std::string& input_path);
 
+    // Automatically clean up any orphaned cache files not present in the active gallery list
+    static void CleanOrphanCaches(const std::vector<std::string>& active_videos);
+
     // Start background transcode to downscale video
     bool StartOptimizeAsync(
         const std::string& input_path,
