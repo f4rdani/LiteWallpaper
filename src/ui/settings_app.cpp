@@ -426,6 +426,9 @@ static void RenderGalleryTab() {
 
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_TRASH_CAN "  Clear All", ImVec2(120, 32))) {
+        for (const auto& p : cfg.gallery_history) {
+            VideoOptimizer::DeleteOptimizedCache(p);
+        }
         cfg.gallery_history.clear();
         g_config.Save();
     }
@@ -595,11 +598,12 @@ static void RenderGalleryTab() {
 
             ImGui::SameLine();
             if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 30))) {
+                VideoOptimizer::DeleteOptimizedCache(path);
                 cfg.RemoveFromGallery(path);
                 g_config.Save();
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Remove video from gallery");
+                ImGui::SetTooltip("Remove video and its optimized cache from gallery");
             }
         } else {
             if (has_opt) {
@@ -634,11 +638,12 @@ static void RenderGalleryTab() {
 
             ImGui::SameLine();
             if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 30))) {
+                VideoOptimizer::DeleteOptimizedCache(path);
                 cfg.RemoveFromGallery(path);
                 g_config.Save();
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Remove video from gallery");
+                ImGui::SetTooltip("Remove video and its optimized cache from gallery");
             }
         }
 

@@ -37,6 +37,9 @@ public:
     // Check if an optimized version already exists in cache
     static bool HasOptimizedCache(const std::string& input_path, int target_w, int target_h);
 
+    // Delete all cached optimized video files for a given input video
+    static void DeleteOptimizedCache(const std::string& input_path);
+
     // Start background transcode to downscale video
     bool StartOptimizeAsync(
         const std::string& input_path,

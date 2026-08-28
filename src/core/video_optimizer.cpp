@@ -125,6 +125,28 @@ bool VideoOptimizer::HasOptimizedCache(const std::string& input_path, int target
     return fs::exists(out_path, ec) && fs::file_size(out_path, ec) > 1024;
 }
 
+void VideoOptimizer::DeleteOptimizedCache(const std::string& input_path) {
+    std::string cache_dir = GetCacheDirectory();
+    if (cache_dir.empty()) return;
+
+    std::string filename = fs::path(input_path).stem().string();
+    uint64_t hash = HashString(input_path);
+    std::ostringstream ss;
+    ss << std::hex << std::setw(16) << std::setfill('0') << hash;
+    std::string hash_str = ss.str();
+
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(cache_dir, ec)) {
+        if (entry.is_regular_file()) {
+            std::string name = entry.path().filename().string();
+            if ((!filename.empty() && name.find(filename) != std::string::npos) || 
+                (!hash_str.empty() && name.find(hash_str) != std::string::npos)) {
+                fs::remove(entry.path(), ec);
+            }
+        }
+    }
+}
+
 bool VideoOptimizer::StartOptimizeAsync(
     const std::string& input_path,
     int target_w,
