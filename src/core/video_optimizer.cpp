@@ -126,10 +126,10 @@ bool VideoOptimizer::HasOptimizedCache(const std::string& input_path, int target
 }
 
 void VideoOptimizer::DeleteOptimizedCache(const std::string& input_path) {
+    if (input_path.empty()) return;
     std::string cache_dir = GetCacheDirectory();
     if (cache_dir.empty()) return;
 
-    std::string filename = fs::path(input_path).stem().string();
     uint64_t hash = HashString(input_path);
     std::ostringstream ss;
     ss << std::hex << std::setw(16) << std::setfill('0') << hash;
@@ -139,8 +139,8 @@ void VideoOptimizer::DeleteOptimizedCache(const std::string& input_path) {
     for (const auto& entry : fs::directory_iterator(cache_dir, ec)) {
         if (entry.is_regular_file()) {
             std::string name = entry.path().filename().string();
-            if ((!filename.empty() && name.find(filename) != std::string::npos) || 
-                (!hash_str.empty() && name.find(hash_str) != std::string::npos)) {
+            // Strict match: only delete cache files containing the unique hash of this specific video
+            if (name.find(hash_str) != std::string::npos) {
                 fs::remove(entry.path(), ec);
             }
         }
