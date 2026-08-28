@@ -53,6 +53,8 @@ bool Config::Load() {
         m_config.pause_on_lock = true;
         m_config.update_lockscreen = true;
         m_config.run_on_startup = false;
+        m_config.auto_smooth_loop = true;
+        m_config.smooth_loop_duration = 0.8f;
         return Save();
     }
 

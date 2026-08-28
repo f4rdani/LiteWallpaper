@@ -182,12 +182,16 @@ static void OpenWallpaperDialog() {
     }
 }
 
+static bool g_first_frame_captured = false;
+
 static bool OpenWallpaperVideo(const std::string& path) {
     auto& cfg = g_config.Get();
     bool audio_on = !cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && (cfg.wallpapers[0].volume > 0.0f);
 
     std::lock_guard<std::mutex> lock(g_decoder_mutex);
     g_current_frame = VideoFrame{};
+    g_presenter.ResetStartFrame();
+    g_first_frame_captured = false;
     g_decoder.Close();
     g_decoder.SetAudioEnabled(audio_on);
     g_decoder.SetForceSoftware(cfg.gpu_device_index == -1);
@@ -497,12 +501,40 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             }
 
             std::lock_guard<std::mutex> lock(g_decoder_mutex);
-            if (g_decoder.DecodeNextFrame(g_current_frame)) {
-                g_frames_decoded++;
-                bool should_present = (g_frame_skip <= 1) ||
-                                      ((g_frames_decoded % g_frame_skip) == 0);
+            bool decode_ok = false;
+            int frames_to_decode = (g_frame_skip > 0) ? g_frame_skip : 1;
+            for (int step = 0; step < frames_to_decode; ++step) {
+                if (g_decoder.DecodeNextFrame(g_current_frame)) {
+                    g_frames_decoded++;
+                    decode_ok = true;
+                } else {
+                    break;
+                }
+            }
 
-                if (g_current_frame.texture && should_present) {
+            if (decode_ok) {
+                if (g_current_frame.texture) {
+                    if (!g_first_frame_captured) {
+                        g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
+                        g_first_frame_captured = true;
+                    }
+
+                    // Calculate Auto Smooth Loop crossfade blend alpha
+                    float blend_alpha = 0.0f;
+                    auto info = g_decoder.GetInfo();
+                    if (cfg.auto_smooth_loop && info.duration_seconds > 1.5 && info.fps > 0.0) {
+                        double total_frames = info.duration_seconds * info.fps;
+                        if (total_frames > 0.0) {
+                            double current_frame_pos = static_cast<double>(g_frames_decoded % static_cast<uint64_t>(total_frames + 0.5));
+                            double current_time_sec = current_frame_pos / info.fps;
+                            float fade_dur = std::clamp(cfg.smooth_loop_duration, 0.2f, 2.0f);
+                            double time_remaining = info.duration_seconds - current_time_sec;
+                            if (time_remaining >= 0.0 && time_remaining <= fade_dur) {
+                                blend_alpha = static_cast<float>(1.0 - (time_remaining / fade_dur));
+                            }
+                        }
+                    }
+
                     std::vector<DisplayViewport> target_vps;
                     if (!cfg.target_displays.empty()) {
                         auto all_displays = HardwareDetector::GetDisplayList();
@@ -521,7 +553,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                         }
                     }
 
-                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode, target_vps);
+                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode, target_vps, blend_alpha);
                     if (FAILED(g_presenter.Present(0))) {
                         if (g_last_error.empty()) {
                             g_last_error = "Present() failed (DXGI error)";

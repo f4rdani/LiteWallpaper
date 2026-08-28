@@ -7,5 +7,7 @@
     "battery_fps": 15,
     "pause_on_lock": true,
     "update_lockscreen": true,
-    "run_on_startup": false
+    "run_on_startup": false,
+    "auto_smooth_loop": true,
+    "smooth_loop_duration": 0.8
 }

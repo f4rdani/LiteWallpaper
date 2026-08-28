@@ -29,6 +29,8 @@ struct AppConfig {
     bool auto_downscale_highres = true; // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
     bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
     bool run_on_startup = false;
+    bool auto_smooth_loop = true;       // Seamless crossfade transition on video loop boundary
+    float smooth_loop_duration = 0.8f;  // Crossfade transition duration in seconds (0.2s - 2.0s)
     std::string config_path;     // Path to this config file
 
     bool IsDisplayEnabled(int idx) const {
@@ -131,7 +133,9 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"update_lockscreen", c.update_lockscreen},
         {"auto_downscale_highres", c.auto_downscale_highres},
         {"prompt_downscale", c.prompt_downscale},
-        {"run_on_startup", c.run_on_startup}
+        {"run_on_startup", c.run_on_startup},
+        {"auto_smooth_loop", c.auto_smooth_loop},
+        {"smooth_loop_duration", c.smooth_loop_duration}
     };
 }
 
@@ -150,6 +154,8 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("auto_downscale_highres")) j.at("auto_downscale_highres").get_to(c.auto_downscale_highres);
     if (j.contains("prompt_downscale")) j.at("prompt_downscale").get_to(c.prompt_downscale);
     if (j.contains("run_on_startup")) j.at("run_on_startup").get_to(c.run_on_startup);
+    if (j.contains("auto_smooth_loop")) j.at("auto_smooth_loop").get_to(c.auto_smooth_loop);
+    if (j.contains("smooth_loop_duration")) j.at("smooth_loop_duration").get_to(c.smooth_loop_duration);
 }
 
 extern Config g_config;

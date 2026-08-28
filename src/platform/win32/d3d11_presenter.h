@@ -27,9 +27,13 @@ public:
     // Initialize D3D11 device and swap chain on target HWND (gpu_index: -1=CPU/Default, 0=GPU 1, 1=GPU 2, etc.)
     bool Init(HWND hwnd, int width, int height, int gpu_index = 0);
     
-    // Render NV12 texture to swap chain with scaling mode and optional target viewports
-    void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0, const std::vector<DisplayViewport>& target_viewports = {});
+    // Render NV12 texture to swap chain with scaling mode, target viewports, and smooth loop blend alpha (0.0f - 1.0f)
+    void RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode = 0, const std::vector<DisplayViewport>& target_viewports = {}, float blend_alpha = 0.0f);
     
+    // Capture snapshot of the start frame for seamless crossfade looping
+    void CaptureStartFrame(ID3D11Texture2D* nv12_texture, int array_index);
+    void ResetStartFrame();
+
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     HRESULT Present(UINT syncInterval = 0);
 
@@ -68,6 +72,13 @@ private:
     ComPtr<ID3D11Texture2D>          m_srv_texture;
     UINT                             m_srv_width = 0;
     UINT                             m_srv_height = 0;
+
+    // Start frame snapshot for auto smooth looping crossfade
+    ComPtr<ID3D11Texture2D>          m_start_texture;
+    ComPtr<ID3D11ShaderResourceView> m_start_srv_y;
+    ComPtr<ID3D11ShaderResourceView> m_start_srv_uv;
+    UINT                             m_start_width = 0;
+    UINT                             m_start_height = 0;
     
     HWND m_hwnd = nullptr;
     int m_width = 0;

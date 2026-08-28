@@ -272,27 +272,29 @@ static void RequestApplyVideo(std::string utf8_path, std::string action) {
     if (screen_w <= 0) screen_w = 1920;
     if (screen_h <= 0) screen_h = 1080;
 
+    auto probe = VideoOptimizer::Probe(utf8_path);
+    auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h);
+
     // Check if optimized version already exists in cache
-    if (VideoOptimizer::HasOptimizedCache(utf8_path, screen_w, screen_h)) {
-        std::string opt_path = VideoOptimizer::GetOptimizedPath(utf8_path, screen_w, screen_h);
+    if (VideoOptimizer::HasOptimizedCache(utf8_path, target_w, target_h)) {
+        std::string opt_path = VideoOptimizer::GetOptimizedPath(utf8_path, target_w, target_h);
         ApplyAction(opt_path, action);
         return;
     }
 
-    // Probe source video dimensions
-    auto probe = VideoOptimizer::Probe(utf8_path);
-    if (probe.valid && (probe.width > screen_w || probe.height > screen_h)) {
+    // Probe source video dimensions and framerate
+    if (probe.valid && (probe.width > screen_w || probe.height > screen_h || probe.fps > 60.0)) {
         if (cfg.prompt_downscale) {
             g_pendingOptimizePath = utf8_path;
             g_pendingOptimizeAction = action;
             g_pendingSourceW = probe.width;
             g_pendingSourceH = probe.height;
-            g_pendingTargetW = screen_w;
-            g_pendingTargetH = screen_h;
+            g_pendingTargetW = target_w;
+            g_pendingTargetH = target_h;
             g_showOptimizeModal = true;
             return;
         } else if (cfg.auto_downscale_highres) {
-            StartVideoOptimization(utf8_path, screen_w, screen_h, action);
+            StartVideoOptimization(utf8_path, target_w, target_h, action);
             return;
         }
     }
@@ -816,6 +818,27 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_ROTATE "  Auto Smooth & Seamless Looping");
+
+    if (ImGui::Checkbox("Enable Auto Smooth Looping (Seamless Crossfade)", &cfg.auto_smooth_loop)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Applies a smooth dissolve crossfade transition between the end and beginning of the video for a seamless continuous loop without hard cuts.");
+    }
+
+    if (cfg.auto_smooth_loop) {
+        ImGui::SetNextItemWidth(sliderW);
+        if (ImGui::SliderFloat("Transition Duration", &cfg.smooth_loop_duration, 0.2f, 2.0f, "%.1f seconds")) {
+            g_config.Save();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Duration of the crossfade transition when the wallpaper loops back to the start.");
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
     ImGui::Spacing();
 
@@ -979,13 +1002,12 @@ static void RenderOptimizeModal() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::Text("Source Video Resolution : %dx%d (4K / Ultra-HD)", g_pendingSourceW, g_pendingSourceH);
-        ImGui::Text("Desktop Screen Resolution: %dx%d (%s)", g_pendingTargetW, g_pendingTargetH,
-                    (g_pendingTargetW == 1920 && g_pendingTargetH == 1080) ? "1080p Full HD" : "Display Native");
+        ImGui::Text("Source Video Resolution : %dx%d", g_pendingSourceW, g_pendingSourceH);
+        ImGui::Text("Optimized Target Size    : %dx%d (Aspect Ratio Preserved)", g_pendingTargetW, g_pendingTargetH);
         
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
-            "*Downscaling to match your screen resolution will save ~75%% GPU Decode & ~50MB VRAM!");
+            "*Optimizing will preserve 100%% of your video aspect ratio while saving up to 75%% GPU & VRAM!");
         
         ImGui::Spacing();
         ImGui::Checkbox("Remember my choice (Auto-downscale in the future)", &g_rememberDownscaleChoice);
@@ -994,7 +1016,7 @@ static void RenderOptimizeModal() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize for Display (Recommended)", ImVec2(270, 36))) {
+        if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize Video (Recommended)", ImVec2(260, 36))) {
             if (g_rememberDownscaleChoice) {
                 auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = true;
@@ -1007,7 +1029,7 @@ static void RenderOptimizeModal() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Play Original 4K", ImVec2(140, 36))) {
+        if (ImGui::Button("Play Original", ImVec2(130, 36))) {
             if (g_rememberDownscaleChoice) {
                 auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = false;

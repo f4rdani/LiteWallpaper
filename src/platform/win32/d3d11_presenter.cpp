@@ -7,12 +7,18 @@ namespace litewp {
 struct ScalingData {
     float uv_scale[2];
     float uv_offset[2];
+    float blend_alpha;
+    float has_start_frame;
+    float _pad[2];
 };
 
 static const char* g_vs_source = R"(
 cbuffer ScalingBuffer : register(b0) {
     float2 uv_scale;
     float2 uv_offset;
+    float  blend_alpha;
+    float  has_start_frame;
+    float2 _pad;
 };
 
 struct VS_OUT {
@@ -30,9 +36,19 @@ VS_OUT main(uint vertexID : SV_VertexID) {
 )";
 
 static const char* g_ps_source = R"(
-Texture2D<float>  texY  : register(t0);
-Texture2D<float2> texUV : register(t1);
-SamplerState      samp  : register(s0);
+cbuffer ScalingBuffer : register(b0) {
+    float2 uv_scale;
+    float2 uv_offset;
+    float  blend_alpha;
+    float  has_start_frame;
+    float2 _pad;
+};
+
+Texture2D<float>  texY        : register(t0);
+Texture2D<float2> texUV       : register(t1);
+Texture2D<float>  texY_start  : register(t2);
+Texture2D<float2> texUV_start : register(t3);
+SamplerState      samp        : register(s0);
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     float y = texY.Sample(samp, uv);
@@ -45,8 +61,24 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     float r = y + 1.5748f * v;
     float g = y - 0.1873f * u - 0.4681f * v;
     float b = y + 1.8556f * u;
+    float3 rgb_curr = saturate(float3(r, g, b));
+
+    if (has_start_frame > 0.5f && blend_alpha > 0.001f) {
+        float y_s = texY_start.Sample(samp, uv);
+        float2 uv_val_s = texUV_start.Sample(samp, uv);
+        float u_s = uv_val_s.x - 0.5f;
+        float v_s = uv_val_s.y - 0.5f;
+        float r_s = y_s + 1.5748f * v_s;
+        float g_s = y_s - 0.1873f * u_s - 0.4681f * v_s;
+        float b_s = y_s + 1.8556f * u_s;
+        float3 rgb_start = saturate(float3(r_s, g_s, b_s));
+
+        // Smooth cosine / smoothstep crossfade dissolve curve
+        float t = smoothstep(0.0f, 1.0f, saturate(blend_alpha));
+        return float4(lerp(rgb_curr, rgb_start, t), 1.0f);
+    }
     
-    return float4(saturate(float3(r, g, b)), 1.0f);
+    return float4(rgb_curr, 1.0f);
 }
 )";
 
@@ -315,7 +347,56 @@ bool D3D11Presenter::CreateShaders() {
     return SUCCEEDED(hr);
 }
 
-void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode, const std::vector<DisplayViewport>& target_viewports) {
+void D3D11Presenter::CaptureStartFrame(ID3D11Texture2D* nv12_texture, int array_index) {
+    if (!m_device || !m_context || !nv12_texture) return;
+    D3D11_TEXTURE2D_DESC desc;
+    nv12_texture->GetDesc(&desc);
+    if (desc.Width == 0 || desc.Height == 0) return;
+
+    if (!m_start_texture || m_start_width != desc.Width || m_start_height != desc.Height) {
+        m_start_texture.Reset();
+        m_start_srv_y.Reset();
+        m_start_srv_uv.Reset();
+
+        D3D11_TEXTURE2D_DESC srvDesc = desc;
+        srvDesc.ArraySize = 1;
+        srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        srvDesc.MiscFlags = 0;
+        srvDesc.Usage = D3D11_USAGE_DEFAULT;
+        srvDesc.CPUAccessFlags = 0;
+
+        if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_start_texture))) {
+            return;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
+        yDesc.Format = DXGI_FORMAT_R8_UNORM;
+        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        yDesc.Texture2D.MipLevels = 1;
+        m_device->CreateShaderResourceView(m_start_texture.Get(), &yDesc, &m_start_srv_y);
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
+        uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        uvDesc.Texture2D.MipLevels = 1;
+        m_device->CreateShaderResourceView(m_start_texture.Get(), &uvDesc, &m_start_srv_uv);
+
+        m_start_width = desc.Width;
+        m_start_height = desc.Height;
+    }
+
+    m_context->CopySubresourceRegion(m_start_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
+}
+
+void D3D11Presenter::ResetStartFrame() {
+    m_start_srv_uv.Reset();
+    m_start_srv_y.Reset();
+    m_start_texture.Reset();
+    m_start_width = 0;
+    m_start_height = 0;
+}
+
+void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode, const std::vector<DisplayViewport>& target_viewports, float blend_alpha) {
     if (!m_context || !m_rtv || !nv12_texture) return;
 
     D3D11_TEXTURE2D_DESC texDesc;
@@ -379,14 +460,20 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     m_context->PSSetShader(m_nv12_ps.Get(), nullptr, 0);
     m_context->PSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
 
-    ID3D11ShaderResourceView* srvs[] = { m_srv_y.Get(), m_srv_uv.Get() };
-    m_context->PSSetShaderResources(0, 2, srvs);
+    ID3D11ShaderResourceView* srvs[4] = {
+        m_srv_y.Get(),
+        m_srv_uv.Get(),
+        (m_start_srv_y ? m_start_srv_y.Get() : m_srv_y.Get()),
+        (m_start_srv_uv ? m_start_srv_uv.Get() : m_srv_uv.Get())
+    };
+    m_context->PSSetShaderResources(0, 4, srvs);
     m_context->PSSetSamplers(0, 1, m_sampler.GetAddressOf());
 
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->IASetInputLayout(nullptr);
 
     float videoAspect = (texDesc.Height > 0) ? (static_cast<float>(texDesc.Width) / static_cast<float>(texDesc.Height)) : 1.0f;
+    bool has_start = (m_start_srv_y && m_start_srv_uv);
 
     for (const auto& dispVp : vps) {
         float screenAspect = (dispVp.height > 0) ? (dispVp.width / dispVp.height) : 1.0f;
@@ -434,6 +521,8 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
                 data->uv_scale[1] = uvScaleY;
                 data->uv_offset[0] = uvOffsetX;
                 data->uv_offset[1] = uvOffsetY;
+                data->blend_alpha = blend_alpha;
+                data->has_start_frame = (has_start && blend_alpha > 0.001f) ? 1.0f : 0.0f;
                 m_context->Unmap(m_scaling_cb.Get(), 0);
             }
         }
@@ -443,8 +532,8 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     }
 
     // Unbind SRVs to prevent pipeline resource lock
-    ID3D11ShaderResourceView* null_srvs[] = { nullptr, nullptr };
-    m_context->PSSetShaderResources(0, 2, null_srvs);
+    ID3D11ShaderResourceView* null_srvs[4] = { nullptr, nullptr, nullptr, nullptr };
+    m_context->PSSetShaderResources(0, 4, null_srvs);
 }
 
 HRESULT D3D11Presenter::Present(UINT syncInterval) {
@@ -509,6 +598,7 @@ size_t D3D11Presenter::GetVramUsageMB() const {
 }
 
 void D3D11Presenter::Cleanup() {
+    ResetStartFrame();
     m_srv_uv.Reset();
     m_srv_y.Reset();
     m_srv_texture.Reset();

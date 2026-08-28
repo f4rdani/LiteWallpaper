@@ -87,12 +87,30 @@ static uint64_t HashString(const std::string& str) {
     return hash;
 }
 
+std::pair<int, int> VideoOptimizer::CalculateTargetDimensions(int src_w, int src_h, int max_w, int max_h) {
+    if (src_w <= 0 || src_h <= 0) return { (max_w > 0 ? (max_w / 2) * 2 : 1920), (max_h > 0 ? (max_h / 2) * 2 : 1080) };
+    if (max_w <= 0) max_w = 1920;
+    if (max_h <= 0) max_h = 1080;
+
+    double scale = (std::min)(static_cast<double>(max_w) / src_w, static_cast<double>(max_h) / src_h);
+    if (scale > 1.0) scale = 1.0;
+
+    int target_w = (static_cast<int>(src_w * scale) / 2) * 2;
+    int target_h = (static_cast<int>(src_h * scale) / 2) * 2;
+    if (target_w < 128) target_w = 128;
+    if (target_h < 128) target_h = 128;
+    return { target_w, target_h };
+}
+
 std::string VideoOptimizer::GetOptimizedPath(const std::string& input_path, int target_w, int target_h) {
     std::string cache_dir = GetCacheDirectory();
     if (cache_dir.empty()) return "";
 
     std::string filename = fs::path(input_path).stem().string();
     uint64_t hash = HashString(input_path);
+
+    target_w = (target_w / 2) * 2;
+    target_h = (target_h / 2) * 2;
 
     std::ostringstream ss;
     ss << cache_dir << "\\" << filename << "_" << target_w << "x" << target_h << "_" 
@@ -287,19 +305,27 @@ void VideoOptimizer::TranscodeWorker(
     AVStream* out_vstream = avformat_new_stream(out_fmt, nullptr);
     AVCodecContext* enc_ctx = avcodec_alloc_context3(venc);
 
-    enc_ctx->width = target_w;
-    enc_ctx->height = target_h;
+    int src_w = in_vstream->codecpar->width;
+    int src_h = in_vstream->codecpar->height;
+    auto [out_w, out_h] = CalculateTargetDimensions(src_w, src_h, target_w, target_h);
+
+    double in_fps = (in_vstream->avg_frame_rate.den > 0) ? av_q2d(in_vstream->avg_frame_rate) : 30.0;
+    if (in_fps <= 0.0) in_fps = 30.0;
+    double out_fps = (in_fps > 60.0) ? 60.0 : in_fps;
+
+    enc_ctx->width = out_w;
+    enc_ctx->height = out_h;
     enc_ctx->sample_aspect_ratio = AVRational{1, 1};
     enc_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-    enc_ctx->time_base = in_vstream->time_base;
-    enc_ctx->framerate = in_vstream->avg_frame_rate.den > 0 ? in_vstream->avg_frame_rate : AVRational{30, 1};
+    enc_ctx->time_base = AVRational{1, static_cast<int>(out_fps * 1000 + 0.5)};
+    enc_ctx->framerate = av_d2q(out_fps, 1000);
     
     // Balanced bitrate for wallpaper quality at low file size (e.g. 5 Mbps for 1080p)
-    enc_ctx->bit_rate = static_cast<int64_t>(target_w) * target_h * 2;
+    enc_ctx->bit_rate = static_cast<int64_t>(out_w) * out_h * 2;
     if (enc_ctx->bit_rate < 2000000) enc_ctx->bit_rate = 2000000;
     if (enc_ctx->bit_rate > 8000000) enc_ctx->bit_rate = 8000000;
 
-    enc_ctx->gop_size = 60;
+    enc_ctx->gop_size = static_cast<int>(out_fps * 2);
     enc_ctx->max_b_frames = 2;
     enc_ctx->thread_count = 0;
 
@@ -360,8 +386,8 @@ void VideoOptimizer::TranscodeWorker(
     AVFrame* in_frame = av_frame_alloc();
     AVFrame* out_frame = av_frame_alloc();
     out_frame->format = enc_ctx->pix_fmt;
-    out_frame->width = target_w;
-    out_frame->height = target_h;
+    out_frame->width = out_w;
+    out_frame->height = out_h;
     av_frame_get_buffer(out_frame, 32);
 
     AVPacket* in_pkt = av_packet_alloc();
@@ -370,6 +396,9 @@ void VideoOptimizer::TranscodeWorker(
 
     int64_t total_duration = in_fmt->duration;
     int64_t current_pts = 0;
+    int64_t out_frame_idx = 0;
+    double next_frame_time = 0.0;
+    double out_frame_interval = 1.0 / out_fps;
 
     report(0.05f, "Optimizing video...");
 
@@ -378,10 +407,16 @@ void VideoOptimizer::TranscodeWorker(
         if (in_pkt->stream_index == in_video_idx) {
             if (avcodec_send_packet(dec_ctx, in_pkt) >= 0) {
                 while (avcodec_receive_frame(dec_ctx, in_frame) >= 0) {
+                    double cur_pts_sec = (in_frame->best_effort_timestamp != AV_NOPTS_VALUE ? in_frame->best_effort_timestamp : in_frame->pts) * av_q2d(in_vstream->time_base);
+                    if (in_fps > out_fps && cur_pts_sec < (next_frame_time - (out_frame_interval * 0.45))) {
+                        av_frame_unref(in_frame);
+                        continue;
+                    }
+
                     if (!sws_ctx) {
                         sws_ctx = sws_getContext(
                             in_frame->width, in_frame->height, static_cast<AVPixelFormat>(in_frame->format),
-                            target_w, target_h, enc_ctx->pix_fmt,
+                            out_w, out_h, enc_ctx->pix_fmt,
                             SWS_BILINEAR, nullptr, nullptr, nullptr
                         );
                     }
@@ -394,7 +429,9 @@ void VideoOptimizer::TranscodeWorker(
                             out_frame->data, out_frame->linesize
                         );
 
-                        out_frame->pts = in_frame->pts;
+                        out_frame->pts = av_rescale_q(out_frame_idx, AVRational{1, static_cast<int>(out_fps * 1000 + 0.5)}, enc_ctx->time_base);
+                        out_frame_idx++;
+                        next_frame_time += out_frame_interval;
                         current_pts = in_frame->pts;
 
                         if (avcodec_send_frame(enc_ctx, out_frame) >= 0) {
