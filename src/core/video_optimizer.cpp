@@ -312,20 +312,22 @@ void VideoOptimizer::TranscodeWorker(
     double in_fps = (in_vstream->avg_frame_rate.den > 0) ? av_q2d(in_vstream->avg_frame_rate) : 30.0;
     if (in_fps <= 0.0) in_fps = 30.0;
     double out_fps = (in_fps > 60.0) ? 60.0 : in_fps;
+    int out_fps_int = static_cast<int>(out_fps + 0.5);
+    if (out_fps_int < 1) out_fps_int = 30;
 
     enc_ctx->width = out_w;
     enc_ctx->height = out_h;
     enc_ctx->sample_aspect_ratio = AVRational{1, 1};
     enc_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-    enc_ctx->time_base = AVRational{1, static_cast<int>(out_fps * 1000 + 0.5)};
-    enc_ctx->framerate = av_d2q(out_fps, 1000);
+    enc_ctx->time_base = AVRational{1, out_fps_int};
+    enc_ctx->framerate = AVRational{out_fps_int, 1};
     
     // Balanced bitrate for wallpaper quality at low file size (e.g. 5 Mbps for 1080p)
     enc_ctx->bit_rate = static_cast<int64_t>(out_w) * out_h * 2;
     if (enc_ctx->bit_rate < 2000000) enc_ctx->bit_rate = 2000000;
     if (enc_ctx->bit_rate > 8000000) enc_ctx->bit_rate = 8000000;
 
-    enc_ctx->gop_size = static_cast<int>(out_fps * 2);
+    enc_ctx->gop_size = static_cast<int>(out_fps_int * 2);
     enc_ctx->max_b_frames = 2;
     enc_ctx->thread_count = 0;
 
@@ -348,6 +350,8 @@ void VideoOptimizer::TranscodeWorker(
 
     avcodec_parameters_from_context(out_vstream->codecpar, enc_ctx);
     out_vstream->time_base = enc_ctx->time_base;
+    out_vstream->r_frame_rate = enc_ctx->framerate;
+    out_vstream->avg_frame_rate = enc_ctx->framerate;
 
     // Copy Audio Stream if available
     AVStream* out_astream = nullptr;
@@ -429,7 +433,7 @@ void VideoOptimizer::TranscodeWorker(
                             out_frame->data, out_frame->linesize
                         );
 
-                        out_frame->pts = av_rescale_q(out_frame_idx, AVRational{1, static_cast<int>(out_fps * 1000 + 0.5)}, enc_ctx->time_base);
+                        out_frame->pts = out_frame_idx;
                         out_frame_idx++;
                         next_frame_time += out_frame_interval;
                         current_pts = in_frame->pts;

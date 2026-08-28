@@ -65,19 +65,22 @@ static uint64_t g_frames_decoded = 0;
 static bool g_fullscreen_paused = false;
 
 static int ComputeFrameSkip(double video_fps, int display_fps) {
-    if (video_fps <= 0.0) return 1;
+    if (video_fps <= 0.0 || video_fps > 240.0) return 1;
     if (display_fps <= 0) return 1;
     if (display_fps >= video_fps) return 1;
-    double skip = std::ceil(video_fps / display_fps);
+    double skip = std::round(video_fps / display_fps);
     if (skip < 1.0) skip = 1.0;
+    if (skip > 4.0) skip = 4.0; // Max safety clamp: never decode > 4 frames per tick
     return static_cast<int>(skip);
 }
 
 static void SetVideoPacing(double video_fps) {
+    if (video_fps <= 0.0 || video_fps > 240.0) video_fps = 30.0;
     g_video_fps = video_fps;
     auto& cfg = g_config.Get();
-    int fps = (cfg.target_fps > 0) ? cfg.target_fps : ((video_fps > 0.0) ? static_cast<int>(video_fps + 0.5) : 30);
+    int fps = (cfg.target_fps > 0) ? cfg.target_fps : static_cast<int>(video_fps + 0.5);
     if (fps < 1) fps = 1;
+    if (fps > 120) fps = 120;
     g_clock.SetTargetFPS(fps);
     g_frames_decoded = 0;
 }

@@ -499,8 +499,17 @@ static void RenderGalleryTab() {
         std::string filename = p.filename().string();
         if (filename.empty()) filename = path;
 
-        std::string opt_path = VideoOptimizer::GetOptimizedPath(path, screen_w, screen_h);
-        bool has_opt = VideoOptimizer::HasOptimizedCache(path, screen_w, screen_h);
+        int target_w = screen_w;
+        int target_h = screen_h;
+        auto probe = VideoOptimizer::Probe(path);
+        if (probe.valid) {
+            auto [pw, ph] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h);
+            target_w = pw;
+            target_h = ph;
+        }
+
+        std::string opt_path = VideoOptimizer::GetOptimizedPath(path, target_w, target_h);
+        bool has_opt = VideoOptimizer::HasOptimizedCache(path, target_w, target_h);
 
         bool is_playing_opt = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == opt_path);
         bool is_playing_ori = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == path);
@@ -521,13 +530,13 @@ static void RenderGalleryTab() {
 
         if (is_current) {
             if (is_playing_opt) {
-                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ ACTIVE: 1080p OPTIMIZED ]");
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ ACTIVE: OPTIMIZED ]");
             } else {
                 ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ ACTIVE: ORIGINAL VIDEO ]");
             }
         } else {
             if (has_opt) {
-                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Video [ Original + 1080p Ready ]");
+                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Video [ Original + Optimized Ready ]");
             } else {
                 ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM "  Video File");
             }
@@ -571,15 +580,15 @@ static void RenderGalleryTab() {
                 }
             } else {
                 if (has_opt) {
-                    if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(switchW, 30))) {
+                    if (ImGui::Button(ICON_FA_PLAY " Play Optimized", ImVec2(switchW, 30))) {
                         ApplyAction(opt_path, "wallpaper");
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Switch playback to 1080p optimized version");
+                        ImGui::SetTooltip("Switch playback to optimized version (Saves GPU & VRAM)");
                     }
                 } else {
                     if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 30))) {
-                        StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
+                        StartVideoOptimization(path, target_w, target_h, "wallpaper");
                     }
                 }
             }
@@ -595,11 +604,11 @@ static void RenderGalleryTab() {
         } else {
             if (has_opt) {
                 float halfW = (innerW - delW - (2 * itemPad)) * 0.5f;
-                if (ImGui::Button(ICON_FA_PLAY " Play 1080p", ImVec2(halfW, 30))) {
+                if (ImGui::Button(ICON_FA_PLAY " Play Optimized", ImVec2(halfW, 30))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Play lightweight 1080p version (Saves VRAM & GPU load)");
+                    ImGui::SetTooltip("Play optimized version (Saves VRAM & GPU load)");
                 }
                 ImGui::SameLine();
                 if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 30))) {
@@ -616,10 +625,10 @@ static void RenderGalleryTab() {
                 }
                 ImGui::SameLine();
                 if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 30))) {
-                    StartVideoOptimization(path, screen_w, screen_h, "wallpaper");
+                    StartVideoOptimization(path, target_w, target_h, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Pre-render 1080p optimized version to save ~75% GPU");
+                    ImGui::SetTooltip("Pre-render optimized version to save ~75% GPU");
                 }
             }
 
