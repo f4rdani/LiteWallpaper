@@ -2,6 +2,9 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
+#if __has_include(<dxgi1_3.h>)
+#include <dxgi1_3.h>
+#endif
 #if __has_include(<dxgi1_4.h>)
 #include <dxgi1_4.h>
 #endif
@@ -37,6 +40,10 @@ public:
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     HRESULT Present(UINT syncInterval = 0);
 
+    // Frame latency waitable object (hardware vsync synchronization with zero CPU jitter)
+    HANDLE GetWaitableObject() const;
+    bool WaitForNextFrame(DWORD timeout_ms = 1000);
+
     // Query live dedicated/shared video memory used by this process on the active adapter (in MB)
     size_t GetVramUsageMB() const;
 
@@ -57,6 +64,7 @@ private:
     ComPtr<ID3D11DeviceContext>      m_context;
     ComPtr<IDXGISwapChain>           m_swapchain;
     ComPtr<ID3D11RenderTargetView>   m_rtv;
+    HANDLE                           m_frame_latency_waitable_object = nullptr;
     
     // NV12 -> RGB conversion resources
     ComPtr<ID3D11PixelShader>        m_nv12_ps;

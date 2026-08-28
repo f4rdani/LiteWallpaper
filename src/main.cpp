@@ -506,7 +506,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                 g_presenter.ClearAndPresent(0.05f, 0.80f, 0.10f);
                 g_frames_rendered++;
                 DWORD sleepMs = g_clock.GetSleepDurationMs();
-                if (sleepMs > 0) {
+                HANDLE waitable = g_presenter.GetWaitableObject();
+                if (waitable) {
+                    DWORD waitTimeout = (sleepMs > 0 && sleepMs < 100) ? sleepMs : 16;
+                    MsgWaitForMultipleObjectsEx(1, &waitable, waitTimeout, QS_ALLINPUT, MWMO_ALERTABLE);
+                } else if (sleepMs > 0) {
                     MsgWaitForMultipleObjects(0, nullptr, FALSE, sleepMs, QS_ALLINPUT);
                 }
                 continue;
@@ -587,7 +591,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             }
         } else {
             DWORD sleepMs = g_clock.GetSleepDurationMs();
-            if (sleepMs > 0) {
+            HANDLE waitable = g_presenter.GetWaitableObject();
+            if (waitable) {
+                DWORD waitTimeout = (sleepMs > 0 && sleepMs < 100) ? sleepMs : 16;
+                MsgWaitForMultipleObjectsEx(1, &waitable, waitTimeout, QS_ALLINPUT, MWMO_ALERTABLE);
+            } else if (sleepMs > 0) {
                 MsgWaitForMultipleObjects(0, nullptr, FALSE, sleepMs, QS_ALLINPUT);
             }
         }

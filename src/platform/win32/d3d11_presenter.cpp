@@ -245,13 +245,29 @@ bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
             sd.Scaling = DXGI_SCALING_STRETCH;
             sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
             sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-            sd.Flags = 0;
+            sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
             ComPtr<IDXGISwapChain1> sc1;
-            if (SUCCEEDED(dxgiFactory2->CreateSwapChainForHwnd(
-                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1))) {
+            HRESULT hr_sc = dxgiFactory2->CreateSwapChainForHwnd(
+                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1);
+            
+            if (FAILED(hr_sc)) {
+                // Fallback without waitable object flag on older Windows platforms
+                sd.Flags = 0;
+                hr_sc = dxgiFactory2->CreateSwapChainForHwnd(
+                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1);
+            }
+
+            if (SUCCEEDED(hr_sc) && sc1) {
                 m_swapchain = sc1;
                 dxgiFactory2->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+                // Query IDXGISwapChain2 for frame latency waitable object (lowest latency, zero CPU jitter)
+                ComPtr<IDXGISwapChain2> sc2;
+                if (SUCCEEDED(sc1.As(&sc2))) {
+                    sc2->SetMaximumFrameLatency(1);
+                    m_frame_latency_waitable_object = sc2->GetFrameLatencyWaitableObject();
+                }
             }
         }
     }
@@ -555,12 +571,25 @@ void D3D11Presenter::Resize(int width, int height) {
     m_height = height;
     m_rtv.Reset();
 
-    m_swapchain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    UINT flags = (m_frame_latency_waitable_object != nullptr) ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0;
+    m_swapchain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags);
 
     ComPtr<ID3D11Texture2D> backBuffer;
     if (SUCCEEDED(m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
         m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, &m_rtv);
     }
+}
+
+HANDLE D3D11Presenter::GetWaitableObject() const {
+    return m_frame_latency_waitable_object;
+}
+
+bool D3D11Presenter::WaitForNextFrame(DWORD timeout_ms) {
+    if (m_frame_latency_waitable_object) {
+        DWORD res = WaitForSingleObjectEx(m_frame_latency_waitable_object, timeout_ms, TRUE);
+        return (res == WAIT_OBJECT_0);
+    }
+    return false;
 }
 
 ID3D11Device* D3D11Presenter::GetDevice() const {
@@ -599,6 +628,7 @@ size_t D3D11Presenter::GetVramUsageMB() const {
 
 void D3D11Presenter::Cleanup() {
     ResetStartFrame();
+    m_frame_latency_waitable_object = nullptr;
     m_srv_uv.Reset();
     m_srv_y.Reset();
     m_srv_texture.Reset();
