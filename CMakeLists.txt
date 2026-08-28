@@ -40,6 +40,7 @@ add_executable(LiteWallpaper WIN32
     src/platform/win32/tray_icon.cpp
     src/platform/win32/hardware_info.cpp
     src/ui/settings_app.cpp
+    src/ui/thumbnail_manager.cpp
     src/app.rc
 )
 

@@ -26,6 +26,7 @@
 #include "core/engine_state.h"
 #include "core/video_optimizer.h"
 #include "platform/win32/hardware_info.h"
+#include "thumbnail_manager.h"
 #include "icons_fontawesome6.h"
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
@@ -427,6 +428,7 @@ static void RenderGalleryTab() {
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_TRASH_CAN "  Clear All", ImVec2(120, 32))) {
         for (const auto& p : cfg.gallery_history) {
+            ThumbnailManager::DeleteThumbnailCache(p);
             VideoOptimizer::DeleteOptimizedCache(p);
         }
         cfg.gallery_history.clear();
@@ -529,53 +531,75 @@ static void RenderGalleryTab() {
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.22f, 0.24f, 0.30f, 1.00f));
         }
 
-        ImGui::BeginChild("Card", ImVec2(cardWidth, 128), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("Card", ImVec2(cardWidth, 106), true, ImGuiWindowFlags_NoScrollbar);
+
+        float thumbW = 112.0f;
+        float thumbH = 63.0f;
+
+        // Render Thumbnail
+        ID3D11ShaderResourceView* thumb_srv = ThumbnailManager::Instance().GetThumbnailSRV(g_pd3dDevice, path);
+        if (thumb_srv) {
+            ImGui::Image((ImTextureID)thumb_srv, ImVec2(thumbW, thumbH));
+        } else {
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImVec2 p1 = ImVec2(p0.x + thumbW, p0.y + thumbH);
+            draw_list->AddRectFilled(p0, p1, IM_COL32(20, 22, 28, 255), 4.0f);
+            draw_list->AddRect(p0, p1, IM_COL32(38, 42, 54, 255), 4.0f);
+            ImGui::Dummy(ImVec2(thumbW, thumbH));
+        }
+
+        ImGui::SameLine();
+        ImGui::BeginGroup();
 
         if (is_current) {
             if (is_playing_opt) {
-                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ ACTIVE: OPTIMIZED ]");
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY " [ ACTIVE: OPTIMIZED ]");
             } else {
-                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY "  [ ACTIVE: ORIGINAL VIDEO ]");
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY " [ ACTIVE: ORIGINAL ]");
             }
         } else {
             if (has_opt) {
-                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC "  Video [ Original + Optimized Ready ]");
+                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC " [ Optimized Ready ]");
             } else {
-                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM "  Video File");
+                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM " Video File");
             }
         }
-        ImGui::TextUnformatted(filename.c_str());
+
+        std::string display_name = filename;
+        if (display_name.length() > 32) {
+            display_name = display_name.substr(0, 29) + "...";
+        }
+        ImGui::TextUnformatted(display_name.c_str());
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("%s", path.c_str());
         }
 
         ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
 
         float innerW = ImGui::GetContentRegionAvail().x;
         float itemPad = ImGui::GetStyle().ItemSpacing.x;
-        float delW = 34.0f;
+        float delW = 30.0f;
 
         if (is_current) {
-            float stopW = (innerW - delW - (2 * itemPad)) * 0.40f;
+            float stopW = (innerW - delW - (2 * itemPad)) * 0.42f;
             float switchW = innerW - delW - stopW - (2 * itemPad);
-            if (stopW < 75.0f) stopW = 75.0f;
-            if (switchW < 90.0f) switchW = 90.0f;
+            if (stopW < 65.0f) stopW = 65.0f;
+            if (switchW < 80.0f) switchW = 80.0f;
 
             if (g_daemonPaused) {
-                if (ImGui::Button(ICON_FA_PLAY " Resume", ImVec2(stopW, 30))) {
+                if (ImGui::Button(ICON_FA_PLAY " Resume", ImVec2(stopW, 26))) {
                     RequestApplyVideo(path, "resume");
                 }
             } else {
-                if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 30))) {
+                if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
                     RequestApplyVideo(path, "stop");
                 }
             }
 
             ImGui::SameLine();
             if (is_playing_opt) {
-                if (ImGui::Button(ICON_FA_PLAY " Play Original", ImVec2(switchW, 30))) {
+                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(switchW, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
@@ -583,39 +607,40 @@ static void RenderGalleryTab() {
                 }
             } else {
                 if (has_opt) {
-                    if (ImGui::Button(ICON_FA_PLAY " Play Optimized", ImVec2(switchW, 30))) {
+                    if (ImGui::Button(ICON_FA_PLAY " Optimized", ImVec2(switchW, 26))) {
                         ApplyAction(opt_path, "wallpaper");
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Switch playback to optimized version (Saves GPU & VRAM)");
                     }
                 } else {
-                    if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 30))) {
+                    if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 26))) {
                         StartVideoOptimization(path, target_w, target_h, "wallpaper");
                     }
                 }
             }
 
             ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 30))) {
+            if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 26))) {
+                ThumbnailManager::DeleteThumbnailCache(path);
                 VideoOptimizer::DeleteOptimizedCache(path);
                 cfg.RemoveFromGallery(path);
                 g_config.Save();
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Remove video and its optimized cache from gallery");
+                ImGui::SetTooltip("Remove video and its cache from gallery");
             }
         } else {
             if (has_opt) {
                 float halfW = (innerW - delW - (2 * itemPad)) * 0.5f;
-                if (ImGui::Button(ICON_FA_PLAY " Play Optimized", ImVec2(halfW, 30))) {
+                if (ImGui::Button(ICON_FA_PLAY " Optimized", ImVec2(halfW, 26))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Play optimized version (Saves VRAM & GPU load)");
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 30))) {
+                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
@@ -624,11 +649,11 @@ static void RenderGalleryTab() {
             } else {
                 float playW = (innerW - delW - (2 * itemPad)) * 0.68f;
                 float optW = innerW - delW - playW - (2 * itemPad);
-                if (ImGui::Button(ICON_FA_PLAY " Play Wallpaper", ImVec2(playW, 30))) {
+                if (ImGui::Button(ICON_FA_PLAY " Play", ImVec2(playW, 26))) {
                     RequestApplyVideo(path, "wallpaper");
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 30))) {
+                if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 26))) {
                     StartVideoOptimization(path, target_w, target_h, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
@@ -637,15 +662,18 @@ static void RenderGalleryTab() {
             }
 
             ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 30))) {
+            if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 26))) {
+                ThumbnailManager::DeleteThumbnailCache(path);
                 VideoOptimizer::DeleteOptimizedCache(path);
                 cfg.RemoveFromGallery(path);
                 g_config.Save();
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Remove video and its optimized cache from gallery");
+                ImGui::SetTooltip("Remove video and its cache from gallery");
             }
         }
+
+        ImGui::EndGroup();
 
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
@@ -1183,6 +1211,7 @@ void SettingsUI::RenderFrame() {
     if (!g_isOpen || !g_hWnd || !IsWindowVisible(g_hWnd) || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
 
     FetchDaemonStatus();
+    ThumbnailManager::Instance().Update(g_pd3dDevice);
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -1250,6 +1279,8 @@ void SettingsUI::Shutdown() {
     if (!g_hWnd) return;
 
     g_isOpen = false;
+
+    ThumbnailManager::Instance().ReleaseTextures();
 
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

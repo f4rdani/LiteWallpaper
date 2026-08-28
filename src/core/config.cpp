@@ -1,5 +1,6 @@
 #include "config.h"
 #include "video_optimizer.h"
+#include "ui/thumbnail_manager.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <fstream>
@@ -91,6 +92,7 @@ bool Config::Load() {
         if (!w.video_path.empty()) all_active.push_back(w.video_path);
     }
     VideoOptimizer::CleanOrphanCaches(all_active);
+    ThumbnailManager::CleanOrphanThumbnails(all_active);
 
     return true;
 }
