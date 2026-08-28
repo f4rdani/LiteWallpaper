@@ -87,11 +87,20 @@ static uint64_t HashString(const std::string& str) {
     return hash;
 }
 
-std::pair<int, int> VideoOptimizer::CalculateTargetDimensions(int src_w, int src_h, int max_w, int max_h) {
+std::pair<int, int> VideoOptimizer::CalculateTargetDimensions(int src_w, int src_h, int max_w, int max_h, int crop_mode) {
     if (src_w <= 0 || src_h <= 0) return { (max_w > 0 ? (max_w / 2) * 2 : 1920), (max_h > 0 ? (max_h / 2) * 2 : 1080) };
     if (max_w <= 0) max_w = 1920;
     if (max_h <= 0) max_h = 1080;
 
+    max_w = (max_w / 2) * 2;
+    max_h = (max_h / 2) * 2;
+
+    if (crop_mode == 1) {
+        // Mode 1: Aspect Fill (Center Crop to exact full screen resolution e.g. 1920x1080)
+        return { max_w, max_h };
+    }
+
+    // Mode 0: Aspect Fit (Proportional scaling, keeps entire video frame intact)
     double scale = (std::min)(static_cast<double>(max_w) / src_w, static_cast<double>(max_h) / src_h);
     if (scale > 1.0) scale = 1.0;
 
@@ -183,6 +192,7 @@ bool VideoOptimizer::StartOptimizeAsync(
     const std::string& input_path,
     int target_w,
     int target_h,
+    int crop_mode,
     ProgressCallback on_progress,
     CompleteCallback on_complete
 ) {
@@ -223,6 +233,7 @@ bool VideoOptimizer::StartOptimizeAsync(
         input_path,
         target_w,
         target_h,
+        crop_mode,
         on_progress,
         on_complete
     );
@@ -255,6 +266,7 @@ void VideoOptimizer::TranscodeWorker(
     std::string input_path,
     int target_w,
     int target_h,
+    int crop_mode,
     ProgressCallback on_progress,
     CompleteCallback on_complete
 ) {
@@ -344,7 +356,23 @@ void VideoOptimizer::TranscodeWorker(
 
     int src_w = in_vstream->codecpar->width;
     int src_h = in_vstream->codecpar->height;
-    auto [out_w, out_h] = CalculateTargetDimensions(src_w, src_h, target_w, target_h);
+    auto [out_w, out_h] = CalculateTargetDimensions(src_w, src_h, target_w, target_h, crop_mode);
+
+    // Calculate crop rectangle if crop_mode == 1 (Aspect Fill / Center Crop)
+    int crop_w = src_w;
+    int crop_h = src_h;
+    int crop_x = 0;
+    int crop_y = 0;
+
+    if (crop_mode == 1 && src_w > 0 && src_h > 0 && out_w > 0 && out_h > 0) {
+        double scale = (std::max)(static_cast<double>(out_w) / src_w, static_cast<double>(out_h) / src_h);
+        crop_w = (static_cast<int>(out_w / scale) / 2) * 2;
+        crop_h = (static_cast<int>(out_h / scale) / 2) * 2;
+        if (crop_w > src_w) crop_w = src_w;
+        if (crop_h > src_h) crop_h = src_h;
+        crop_x = ((src_w - crop_w) / 4) * 2;
+        crop_y = ((src_h - crop_h) / 4) * 2;
+    }
 
     double in_fps = (in_vstream->avg_frame_rate.den > 0) ? av_q2d(in_vstream->avg_frame_rate) : 30.0;
     if (in_fps <= 0.0) in_fps = 30.0;
@@ -506,17 +534,41 @@ void VideoOptimizer::TranscodeWorker(
 
                     if (!sws_ctx) {
                         sws_ctx = sws_getContext(
-                            in_frame->width, in_frame->height, static_cast<AVPixelFormat>(in_frame->format),
+                            crop_w, crop_h, static_cast<AVPixelFormat>(in_frame->format),
                             out_w, out_h, enc_ctx->pix_fmt,
                             SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, nullptr, nullptr, nullptr
                         );
                     }
 
                     if (sws_ctx) {
+                        uint8_t* in_data[4] = { nullptr, nullptr, nullptr, nullptr };
+                        int in_linesize[4] = { in_frame->linesize[0], in_frame->linesize[1], in_frame->linesize[2], in_frame->linesize[3] };
+
+                        if (crop_mode == 1 && (crop_x > 0 || crop_y > 0)) {
+                            if (in_frame->format == AV_PIX_FMT_NV12) {
+                                in_data[0] = in_frame->data[0] + crop_y * in_frame->linesize[0] + crop_x;
+                                in_data[1] = in_frame->data[1] + (crop_y / 2) * in_frame->linesize[1] + crop_x;
+                            } else if (in_frame->format == AV_PIX_FMT_YUV420P) {
+                                in_data[0] = in_frame->data[0] + crop_y * in_frame->linesize[0] + crop_x;
+                                in_data[1] = in_frame->data[1] + (crop_y / 2) * in_frame->linesize[1] + (crop_x / 2);
+                                in_data[2] = in_frame->data[2] + (crop_y / 2) * in_frame->linesize[2] + (crop_x / 2);
+                            } else {
+                                in_data[0] = in_frame->data[0];
+                                in_data[1] = in_frame->data[1];
+                                in_data[2] = in_frame->data[2];
+                                in_data[3] = in_frame->data[3];
+                            }
+                        } else {
+                            in_data[0] = in_frame->data[0];
+                            in_data[1] = in_frame->data[1];
+                            in_data[2] = in_frame->data[2];
+                            in_data[3] = in_frame->data[3];
+                        }
+
                         sws_scale(
                             sws_ctx,
-                            in_frame->data, in_frame->linesize,
-                            0, in_frame->height,
+                            in_data, in_linesize,
+                            0, crop_h,
                             out_frame->data, out_frame->linesize
                         );
 

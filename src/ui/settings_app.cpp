@@ -238,7 +238,7 @@ static void ApplyAction(std::string utf8_path, std::string action) {
     }
 }
 
-static void StartVideoOptimization(const std::string& input_path, int target_w, int target_h, const std::string& action) {
+static void StartVideoOptimization(const std::string& input_path, int target_w, int target_h, const std::string& action, int crop_mode = 0) {
     // Add source path to gallery immediately so user sees card right away
     g_config.Get().AddToGallery(input_path);
     g_config.Save();
@@ -247,6 +247,7 @@ static void StartVideoOptimization(const std::string& input_path, int target_w, 
         input_path,
         target_w,
         target_h,
+        crop_mode,
         nullptr,
         [action](bool success, const std::string& output_path) {
             if (success && !output_path.empty()) {
@@ -274,7 +275,7 @@ static void RequestApplyVideo(std::string utf8_path, std::string action) {
     if (screen_h <= 0) screen_h = 1080;
 
     auto probe = VideoOptimizer::Probe(utf8_path);
-    auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h);
+    auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h, cfg.optimizer_crop_mode);
 
     // Check if optimized version already exists in cache
     if (VideoOptimizer::HasOptimizedCache(utf8_path, target_w, target_h)) {
@@ -295,7 +296,7 @@ static void RequestApplyVideo(std::string utf8_path, std::string action) {
             g_showOptimizeModal = true;
             return;
         } else if (cfg.auto_downscale_highres) {
-            StartVideoOptimization(utf8_path, target_w, target_h, action);
+            StartVideoOptimization(utf8_path, target_w, target_h, action, cfg.optimizer_crop_mode);
             return;
         }
     }
@@ -508,7 +509,7 @@ static void RenderGalleryTab() {
         int target_h = screen_h;
         auto probe = VideoOptimizer::Probe(path);
         if (probe.valid) {
-            auto [pw, ph] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h);
+            auto [pw, ph] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h, cfg.optimizer_crop_mode);
             target_w = pw;
             target_h = ph;
         }
@@ -615,7 +616,7 @@ static void RenderGalleryTab() {
                     }
                 } else {
                     if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 26))) {
-                        StartVideoOptimization(path, target_w, target_h, "wallpaper");
+                        StartVideoOptimization(path, target_w, target_h, "wallpaper", cfg.optimizer_crop_mode);
                     }
                 }
             }
@@ -654,7 +655,7 @@ static void RenderGalleryTab() {
                 }
                 ImGui::SameLine();
                 if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(optW, 26))) {
-                    StartVideoOptimization(path, target_w, target_h, "wallpaper");
+                    StartVideoOptimization(path, target_w, target_h, "wallpaper", cfg.optimizer_crop_mode);
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Pre-render optimized version to save ~75% GPU");
@@ -887,6 +888,24 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_EXPAND "  Video Optimization Scaling Mode");
+
+    if (ImGui::RadioButton("Aspect Fit (Proportional - e.g. 1728x1080, keeps entire video frame)", &cfg.optimizer_crop_mode, 0)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Downscales video proportionally without cropping (keeps 100% of original image intact).");
+    }
+
+    if (ImGui::RadioButton("Aspect Fill / Center Crop (Exact Full Screen 1080p - fills entire monitor)", &cfg.optimizer_crop_mode, 1)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Crops excess top/bottom or sides to produce an exact 1920x1080 video that fills the whole screen with zero black bars.");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
     ImGui::Spacing();
 
@@ -1050,12 +1069,39 @@ static void RenderOptimizeModal() {
         ImGui::Separator();
         ImGui::Spacing();
 
+        int screen_w = GetSystemMetrics(SM_CXSCREEN);
+        int screen_h = GetSystemMetrics(SM_CYSCREEN);
+        if (screen_w <= 0) screen_w = 1920;
+        if (screen_h <= 0) screen_h = 1080;
+
+        auto& cfg = g_config.Get();
+
         ImGui::Text("Source Video Resolution : %dx%d", g_pendingSourceW, g_pendingSourceH);
-        ImGui::Text("Optimized Target Size    : %dx%d (Aspect Ratio Preserved)", g_pendingTargetW, g_pendingTargetH);
-        
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_EXPAND "  Optimization Scaling Mode:");
+
+        if (ImGui::RadioButton("Aspect Fit (Proportional - keeps entire frame intact)", &cfg.optimizer_crop_mode, 0)) {
+            g_config.Save();
+        }
+        if (ImGui::RadioButton("Aspect Fill / Center Crop (Exact Full Screen 1080p - zero black bars)", &cfg.optimizer_crop_mode, 1)) {
+            g_config.Save();
+        }
+
+        auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(g_pendingSourceW, g_pendingSourceH, screen_w, screen_h, cfg.optimizer_crop_mode);
+        g_pendingTargetW = target_w;
+        g_pendingTargetH = target_h;
+
+        ImGui::Spacing();
+        if (cfg.optimizer_crop_mode == 0) {
+            ImGui::Text("Target Resolution : %dx%d (Proportional Letterbox)", g_pendingTargetW, g_pendingTargetH);
+        } else {
+            ImGui::Text("Target Resolution : %dx%d (Full Screen Center-Crop)", g_pendingTargetW, g_pendingTargetH);
+        }
+
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
-            "*Optimizing will preserve 100%% of your video aspect ratio while saving up to 75%% GPU & VRAM!");
+            "*Optimizing saves up to 75%% GPU & VRAM with crystal-clear Lanczos downscaling!");
         
         ImGui::Spacing();
         ImGui::Checkbox("Remember my choice (Auto-downscale in the future)", &g_rememberDownscaleChoice);
@@ -1066,14 +1112,13 @@ static void RenderOptimizeModal() {
 
         if (ImGui::Button(ICON_FA_DOWNLOAD "  Optimize Video (Recommended)", ImVec2(260, 36))) {
             if (g_rememberDownscaleChoice) {
-                auto& cfg = g_config.Get();
                 cfg.auto_downscale_highres = true;
                 cfg.prompt_downscale = false;
                 g_config.Save();
             }
             g_showOptimizeModal = false;
             ImGui::CloseCurrentPopup();
-            StartVideoOptimization(g_pendingOptimizePath, g_pendingTargetW, g_pendingTargetH, g_pendingOptimizeAction);
+            StartVideoOptimization(g_pendingOptimizePath, g_pendingTargetW, g_pendingTargetH, g_pendingOptimizeAction, cfg.optimizer_crop_mode);
         }
 
         ImGui::SameLine();

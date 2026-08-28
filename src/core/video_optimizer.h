@@ -28,8 +28,8 @@ public:
     // Probe video dimensions and basic stream info quickly without full decode
     static VideoProbeResult Probe(const std::string& input_path);
 
-    // Calculate aspect-ratio preserved target dimensions fitting within max bounding box
-    static std::pair<int, int> CalculateTargetDimensions(int src_w, int src_h, int max_w, int max_h);
+    // Calculate target dimensions (crop_mode: 0 = Aspect Fit, 1 = Aspect Fill Center Crop)
+    static std::pair<int, int> CalculateTargetDimensions(int src_w, int src_h, int max_w, int max_h, int crop_mode = 0);
 
     // Get deterministic cached output path for a downscaled version
     static std::string GetOptimizedPath(const std::string& input_path, int target_w, int target_h);
@@ -48,6 +48,7 @@ public:
         const std::string& input_path,
         int target_w,
         int target_h,
+        int crop_mode = 0,
         ProgressCallback on_progress = nullptr,
         CompleteCallback on_complete = nullptr
     );
@@ -69,6 +70,7 @@ private:
         std::string input_path,
         int target_w,
         int target_h,
+        int crop_mode,
         ProgressCallback on_progress,
         CompleteCallback on_complete
     );

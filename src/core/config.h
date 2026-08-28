@@ -29,6 +29,7 @@ struct AppConfig {
     bool update_lockscreen = true; // Capture frame for lock screen
     bool auto_downscale_highres = true; // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
     bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
+    int optimizer_crop_mode = 0;        // 0 = Aspect Fit (Proportional), 1 = Aspect Fill (Center Crop to Full Screen)
     bool run_on_startup = false;
     bool auto_smooth_loop = true;       // Seamless crossfade transition on video loop boundary
     float smooth_loop_duration = 0.8f;  // Crossfade transition duration in seconds (0.2s - 2.0s)
@@ -135,6 +136,7 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"update_lockscreen", c.update_lockscreen},
         {"auto_downscale_highres", c.auto_downscale_highres},
         {"prompt_downscale", c.prompt_downscale},
+        {"optimizer_crop_mode", c.optimizer_crop_mode},
         {"run_on_startup", c.run_on_startup},
         {"auto_smooth_loop", c.auto_smooth_loop},
         {"smooth_loop_duration", c.smooth_loop_duration}
@@ -156,6 +158,7 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("update_lockscreen")) j.at("update_lockscreen").get_to(c.update_lockscreen);
     if (j.contains("auto_downscale_highres")) j.at("auto_downscale_highres").get_to(c.auto_downscale_highres);
     if (j.contains("prompt_downscale")) j.at("prompt_downscale").get_to(c.prompt_downscale);
+    if (j.contains("optimizer_crop_mode")) j.at("optimizer_crop_mode").get_to(c.optimizer_crop_mode);
     if (j.contains("run_on_startup")) j.at("run_on_startup").get_to(c.run_on_startup);
     if (j.contains("auto_smooth_loop")) j.at("auto_smooth_loop").get_to(c.auto_smooth_loop);
     if (j.contains("smooth_loop_duration")) j.at("smooth_loop_duration").get_to(c.smooth_loop_duration);
