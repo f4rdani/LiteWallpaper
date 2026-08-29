@@ -192,6 +192,7 @@ static void OpenWallpaperDialog() {
 }
 
 static bool g_first_frame_captured = false;
+static bool g_desktop_snapshot_synced = false;
 
 static bool OpenWallpaperVideo(const std::string& path) {
     auto& cfg = g_config.Get();
@@ -201,6 +202,7 @@ static bool OpenWallpaperVideo(const std::string& path) {
     g_current_frame = VideoFrame{};
     g_presenter.ResetStartFrame();
     g_first_frame_captured = false;
+    g_desktop_snapshot_synced = false;
     g_decoder.Close();
     g_decoder.SetAudioEnabled(audio_on);
     g_decoder.SetForceSoftware(cfg.gpu_device_index == -1);
@@ -563,26 +565,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     if (!g_first_frame_captured) {
                         g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
                         g_first_frame_captured = true;
-
-                        // Wallpaper Engine Secret #1: Auto-sync first frame as native Windows desktop wallpaper for instant 0s boot visual
-                        if (cfg.sync_static_desktop) {
-                            g_lockscreen.SetNativeDesktopWallpaper(
-                                g_presenter.GetDevice(),
-                                g_presenter.GetContext(),
-                                g_current_frame.texture,
-                                g_current_frame.texture_index
-                            );
-                        }
-
-                        // Auto-update Windows lock screen if configured
-                        if (cfg.update_lockscreen) {
-                            g_lockscreen.CaptureAndSetLockScreen(
-                                g_presenter.GetDevice(),
-                                g_presenter.GetContext(),
-                                g_current_frame.texture,
-                                g_current_frame.texture_index
-                            );
-                        }
                     }
 
                     // Calculate Auto Smooth Loop crossfade blend alpha & dynamic speed ramp
@@ -686,6 +668,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                         }
                     }
                     g_frames_rendered++;
+
+                    // Capture crystal-clear RGB JPEG snapshot directly from BackBuffer on first rendered frame
+                    if (!g_desktop_snapshot_synced) {
+                        g_desktop_snapshot_synced = true;
+                        if (cfg.sync_static_desktop) {
+                            std::wstring placeholderPath = g_lockscreen.GetDesktopPlaceholderImagePathJpg();
+                            if (g_presenter.CaptureBackBufferAsJpg(placeholderPath, 92)) {
+                                SystemParametersInfoW(
+                                    SPI_SETDESKWALLPAPER,
+                                    0,
+                                    reinterpret_cast<void*>(const_cast<wchar_t*>(placeholderPath.c_str())),
+                                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+                                );
+                                Logger::Info("Native static desktop wallpaper synced from BackBuffer: OK");
+                            }
+                        }
+                        if (cfg.update_lockscreen) {
+                            std::wstring lockPath = g_lockscreen.GetTempImagePathJpg();
+                            if (g_presenter.CaptureBackBufferAsJpg(lockPath, 85)) {
+                                g_lockscreen.SetLockScreenImage(lockPath);
+                                g_lockscreen.SetLockScreenImageWin7(lockPath);
+                            }
+                        }
+                    }
                 } else if (!g_current_frame.texture && g_last_error.empty()) {
                     g_last_error = "Decoded frame has no GPU texture (HW decode inactive)";
                     Logger::Info(g_last_error);

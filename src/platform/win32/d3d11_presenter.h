@@ -9,6 +9,7 @@
 #include <dxgi1_4.h>
 #endif
 #include <vector>
+#include <string>
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
@@ -39,6 +40,9 @@ public:
 
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     HRESULT Present(UINT syncInterval = 0);
+
+    // Capture pixel-perfect RGB JPEG snapshot directly from DirectX 11 Back Buffer
+    bool CaptureBackBufferAsJpg(const std::wstring& outputPath, int quality = 92);
 
     // Frame latency waitable object (hardware vsync synchronization with zero CPU jitter)
     HANDLE GetWaitableObject() const;

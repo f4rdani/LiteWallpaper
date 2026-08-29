@@ -1,6 +1,7 @@
 #include "d3d11_presenter.h"
 #include <d3dcompiler.h>
 #include <iostream>
+#include "stb/stb_image_write.h"
 
 namespace litewp {
 
@@ -624,6 +625,66 @@ size_t D3D11Presenter::GetVramUsageMB() const {
         }
     }
     return 0;
+}
+
+static std::string WideToUtf8Presenter(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string str(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
+    return str;
+}
+
+bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int quality) {
+    if (!m_swapchain || !m_device || !m_context) return false;
+
+    ComPtr<ID3D11Texture2D> backBuffer;
+    if (FAILED(m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC desc;
+    backBuffer->GetDesc(&desc);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.ArraySize = 1;
+    stagingDesc.MipLevels = 1;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+
+    ComPtr<ID3D11Texture2D> stagingTexture;
+    if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture))) {
+        return false;
+    }
+
+    m_context->CopyResource(stagingTexture.Get(), backBuffer.Get());
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (FAILED(m_context->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+        return false;
+    }
+
+    int width = static_cast<int>(desc.Width);
+    int height = static_cast<int>(desc.Height);
+    std::vector<uint8_t> rgbData(static_cast<size_t>(width) * height * 3);
+
+    const uint8_t* src = reinterpret_cast<const uint8_t*>(mapped.pData);
+    for (int y = 0; y < height; ++y) {
+        const uint8_t* rowSrc = src + y * mapped.RowPitch;
+        size_t rowDst = static_cast<size_t>(y) * width * 3;
+        for (int x = 0; x < width; ++x) {
+            rgbData[rowDst + x * 3 + 0] = rowSrc[x * 4 + 2]; // R
+            rgbData[rowDst + x * 3 + 1] = rowSrc[x * 4 + 1]; // G
+            rgbData[rowDst + x * 3 + 2] = rowSrc[x * 4 + 0]; // B
+        }
+    }
+
+    m_context->Unmap(stagingTexture.Get(), 0);
+
+    std::string utf8Path = WideToUtf8Presenter(outputPath);
+    return stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgbData.data(), quality) != 0;
 }
 
 void D3D11Presenter::Cleanup() {
