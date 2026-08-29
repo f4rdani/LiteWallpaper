@@ -32,7 +32,6 @@ struct AppConfig {
     int optimizer_crop_mode = 0;        // 0 = Aspect Fit (Proportional), 1 = Aspect Fill (Center Crop to Full Screen)
     bool run_on_startup = false;
     int startup_priority = 1;           // 0 = Normal (Registry Only), 1 = High Priority (Dual Path: Registry + Startup Shortcut)
-    bool sync_static_desktop = true;    // Auto-sync first frame as native Windows desktop wallpaper for instant 0s boot visual
     bool auto_smooth_loop = true;       // Seamless crossfade transition on video loop boundary
     float smooth_loop_duration = 0.8f;  // Crossfade transition duration in seconds (0.2s - 2.5s)
     int loop_preset = 0;                // 0=Cinematic Speed Ramp, 1=Smoothstep S-Curve, 2=Gentle Flow, 3=Instant Snap, 4=Custom
@@ -145,7 +144,6 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"optimizer_crop_mode", c.optimizer_crop_mode},
         {"run_on_startup", c.run_on_startup},
         {"startup_priority", c.startup_priority},
-        {"sync_static_desktop", c.sync_static_desktop},
         {"auto_smooth_loop", c.auto_smooth_loop},
         {"smooth_loop_duration", c.smooth_loop_duration},
         {"loop_preset", c.loop_preset},
@@ -173,7 +171,6 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("optimizer_crop_mode")) j.at("optimizer_crop_mode").get_to(c.optimizer_crop_mode);
     if (j.contains("run_on_startup")) j.at("run_on_startup").get_to(c.run_on_startup);
     if (j.contains("startup_priority")) j.at("startup_priority").get_to(c.startup_priority);
-    if (j.contains("sync_static_desktop")) j.at("sync_static_desktop").get_to(c.sync_static_desktop);
     if (j.contains("auto_smooth_loop")) j.at("auto_smooth_loop").get_to(c.auto_smooth_loop);
     if (j.contains("smooth_loop_duration")) j.at("smooth_loop_duration").get_to(c.smooth_loop_duration);
     if (j.contains("loop_preset")) j.at("loop_preset").get_to(c.loop_preset);

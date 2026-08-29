@@ -882,13 +882,6 @@ static void RenderSettingsPanel() {
         ImGui::Unindent(24.0f);
     }
 
-    if (ImGui::Checkbox("Sync Static Desktop Background (Instant 0s Boot Visual Handover)", &cfg.sync_static_desktop)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Wallpaper Engine Technique: Automatically sets the first frame of your video as the native Windows desktop background, so your wallpaper appears instantly at 0.0 seconds when PC turns on.");
-    }
-
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_ROTATE "  Auto Smooth & Seamless Looping");
