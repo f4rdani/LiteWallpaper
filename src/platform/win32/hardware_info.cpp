@@ -214,7 +214,7 @@ bool WindowsAutostart::SetEnabled(bool enable) {
     RemoveLegacyStartupShortcut();
 
     if (enable) {
-        // 1. Set standard Registry HKCU\Run entry
+        // 1. Set standard Registry HKCU\Run entry with quoted path and --startup flag
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
             std::wstring cmd = L"\"" + exeStr + L"\" --startup";
@@ -222,7 +222,7 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegCloseKey(hKey);
         }
 
-        // 2. Set explicitly ENABLED in StartupApproved\Run (0x02 status)
+        // 2. Set explicitly ENABLED in StartupApproved\Run (0x02 status) to prevent Task Manager disabling
         HKEY hApprovedRun = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run",
                             0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hApprovedRun, nullptr) == ERROR_SUCCESS) {
@@ -231,7 +231,7 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegCloseKey(hApprovedRun);
         }
 
-        // 3. Disable Windows Explorer 10-second startup delay policy
+        // 3. Disable Windows Explorer 10-second startup delay policy for fast instant boot
         HKEY hSerializeKey = nullptr;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize",
                             0, nullptr, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hSerializeKey, nullptr) == ERROR_SUCCESS) {
@@ -256,6 +256,29 @@ bool WindowsAutostart::SetEnabled(bool enable) {
     }
 
     return true;
+}
+
+void WindowsAutostart::AutoRepairIfMoved() {
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring currentExe(exePath);
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+        wchar_t val[MAX_PATH * 2] = {};
+        DWORD size = sizeof(val);
+        DWORD type = 0;
+        if (RegQueryValueExW(hKey, L"LiteWallpaper", nullptr, &type, reinterpret_cast<LPBYTE>(val), &size) == ERROR_SUCCESS) {
+            std::wstring regVal(val);
+            // If registered command does not match currentExe path, repair it!
+            if (regVal.find(currentExe) == std::wstring::npos) {
+                RegCloseKey(hKey);
+                SetEnabled(true);
+                return;
+            }
+        }
+        RegCloseKey(hKey);
+    }
 }
 
 } // namespace litewp

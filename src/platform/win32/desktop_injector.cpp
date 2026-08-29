@@ -27,7 +27,7 @@ bool DesktopInjector::IsWorkerWClass(HWND hwnd) {
 HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
     if (out_is_fallback) *out_is_fallback = false;
 
-    // 1. Find Progman window
+    // 1. Find Progman window with multi-stage lookup
     HWND progman = FindWindowW(L"Progman", L"Program Manager");
     if (!progman) {
         progman = FindWindowW(L"Progman", nullptr);
@@ -35,51 +35,62 @@ HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
     if (!progman) {
         progman = GetShellWindow();
     }
-    if (!progman) return nullptr;
-
-    // 2. Send message 0x052C to Progman to spawn WorkerW behind desktop icons
-    DWORD_PTR result = 0;
-    SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000001, SMTO_NORMAL, 1000, &result);
-    SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000000, SMTO_NORMAL, 1000, &result);
-    SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
-
-    // 3. Strategy A (classic, Win10/11): top-level WorkerW that is the sibling following
-    //    the window containing SHELLDLL_DefView (behind desktop icons).
-    HWND workerw = nullptr;
-    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
-        HWND defview = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
-        if (defview != nullptr) {
-            HWND nextWorker = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
-            if (nextWorker != nullptr) {
-                *reinterpret_cast<HWND*>(lparam) = nextWorker;
+    if (!progman) {
+        EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+            wchar_t cls[64] = {};
+            if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"Progman") == 0) {
+                *reinterpret_cast<HWND*>(lparam) = hwnd;
                 return FALSE;
             }
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&workerw));
-    if (workerw) return workerw;
-
-    // 4. Strategy B (Win11 24H2+): the background WorkerW is a CHILD of Progman,
-    //    while SHELLDLL_DefView is also a direct child of Progman. The wallpaper layer
-    //    is the bottom-most Progman child WorkerW that does NOT contain the icons.
-    HWND defviewInProgman = FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr);
-    if (defviewInProgman) {
-        HWND bgWorkerW = nullptr;
-        EnumChildWindows(progman, [](HWND hwnd, LPARAM lparam) -> BOOL {
-            wchar_t cls[256];
-            if (GetClassNameW(hwnd, cls, 256) == 0 || wcscmp(cls, L"WorkerW") != 0) {
-                return TRUE;
-            }
-            // Skip any WorkerW that contains the icons layer
-            if (FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) != nullptr) {
-                return TRUE;
-            }
-            // Keep the LAST (bottom-most) WorkerW child of Progman: that is the
-            // background wallpaper layer closest to the desktop.
-            *reinterpret_cast<HWND*>(lparam) = hwnd;
             return TRUE;
-        }, reinterpret_cast<LPARAM>(&bgWorkerW));
-        if (bgWorkerW) return bgWorkerW;
+        }, reinterpret_cast<LPARAM>(&progman));
+    }
+
+    if (progman) {
+        // 2. Send message 0x052C to Progman to spawn WorkerW behind desktop icons
+        DWORD_PTR result = 0;
+        SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000001, SMTO_NORMAL, 1000, &result);
+        SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0x00000000, SMTO_NORMAL, 1000, &result);
+        SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
+
+        // 3. Strategy A (classic, Win10/11): top-level WorkerW that is the sibling following
+        //    the window containing SHELLDLL_DefView (behind desktop icons).
+        HWND workerw = nullptr;
+        EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+            HWND defview = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
+            if (defview != nullptr) {
+                HWND nextWorker = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
+                if (nextWorker != nullptr) {
+                    *reinterpret_cast<HWND*>(lparam) = nextWorker;
+                    return FALSE;
+                }
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&workerw));
+        if (workerw) return workerw;
+
+        // 4. Strategy B (Win11 24H2+): the background WorkerW is a CHILD of Progman,
+        //    while SHELLDLL_DefView is also a direct child of Progman. The wallpaper layer
+        //    is the bottom-most Progman child WorkerW that does NOT contain the icons.
+        HWND defviewInProgman = FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr);
+        if (defviewInProgman) {
+            HWND bgWorkerW = nullptr;
+            EnumChildWindows(progman, [](HWND hwnd, LPARAM lparam) -> BOOL {
+                wchar_t cls[256];
+                if (GetClassNameW(hwnd, cls, 256) == 0 || wcscmp(cls, L"WorkerW") != 0) {
+                    return TRUE;
+                }
+                // Skip any WorkerW that contains the icons layer
+                if (FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) != nullptr) {
+                    return TRUE;
+                }
+                // Keep the LAST (bottom-most) WorkerW child of Progman: that is the
+                // background wallpaper layer closest to the desktop.
+                *reinterpret_cast<HWND*>(lparam) = hwnd;
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&bgWorkerW));
+            if (bgWorkerW) return bgWorkerW;
+        }
     }
 
     // 5. Strategy C: Any top-level WorkerW that does NOT contain icons
@@ -97,8 +108,12 @@ HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
     if (standaloneWorker) return standaloneWorker;
 
     // 6. Fallback: attach directly to Progman (desktop icons hidden case or early boot)
-    if (out_is_fallback) *out_is_fallback = true;
-    return progman;
+    if (progman) {
+        if (out_is_fallback) *out_is_fallback = true;
+        return progman;
+    }
+
+    return nullptr;
 }
 
 bool DesktopInjector::Attach(HWND renderHwnd) {

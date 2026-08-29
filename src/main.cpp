@@ -12,8 +12,11 @@
 #include <thread>
 #include <mutex>
 #include <cmath>
+#include <filesystem>
 #include <mimalloc.h>
 #include <nlohmann/json.hpp>
+
+namespace fs = std::filesystem;
 
 #include "core/config.h"
 #include "core/playback_clock.h"
@@ -231,21 +234,47 @@ static void SuspendWallpaper(const char* reason = "Fullscreen app") {
 static void ResumeWallpaper() {
     if (!g_fullscreen_paused) return;
     g_fullscreen_paused = false;
+    g_shared_engine_state.paused.store(false);
 
     auto& cfg = g_config.Get();
     if (!cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && cfg.wallpapers[0].volume > 0.0f) {
         g_audio.Init();
     }
     g_clock.Reset();
+
+    // Ensure desktop injection is valid upon resume
+    if (g_main_hwnd && (!g_inject_ok || !g_injector.IsAttachedValid())) {
+        g_injector.Reattach(g_main_hwnd);
+        g_inject_ok = g_injector.IsAttached();
+        if (g_inject_ok) {
+            ShowWindow(g_main_hwnd, SW_SHOW);
+            RECT rc;
+            if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+            }
+        }
+    }
     Logger::Info("Playback auto-resumed");
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int /*nCmdShow*/) {
+    // 0. Explicitly lock Current Working Directory to executable directory
+    wchar_t exePathBuf[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+    fs::path exeDirPath = fs::path(exePathBuf).parent_path();
+    if (!exeDirPath.empty()) {
+        SetCurrentDirectoryW(exeDirPath.c_str());
+    }
+
+    bool is_silent_boot = (lpCmdLine && (wcsstr(lpCmdLine, L"--startup") != nullptr || wcsstr(lpCmdLine, L"-startup") != nullptr));
+
     // Single-Instance Check
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"LiteWallpaper_SingleInstance_Mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        IpcClient client;
-        client.SendRequest("{\"cmd\":\"open_settings\"}");
+        if (!is_silent_boot) {
+            IpcClient client;
+            client.SendRequest("{\"cmd\":\"open_settings\"}");
+        }
         if (hMutex) CloseHandle(hMutex);
         return 0;
     }
@@ -256,9 +285,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     g_config.Load();
     auto& cfg = g_config.Get();
 
-    // Ensure startup registration matches configuration (auto-repair path if moved)
+    // Auto-repair registry startup path if portable folder was moved
     if (cfg.run_on_startup) {
-        WindowsAutostart::SetEnabled(true);
+        WindowsAutostart::AutoRepairIfMoved();
     }
 
     // 2. Register Background Render Window Class
@@ -345,7 +374,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     g_ipc.Start(OnIpcRequest);
 
     // 10. Open Settings UI on first manual launch (silent when launched by Windows boot via --startup)
-    bool is_silent_boot = (lpCmdLine && (wcsstr(lpCmdLine, L"--startup") != nullptr || wcsstr(lpCmdLine, L"-startup") != nullptr));
     if (!is_silent_boot) {
         SettingsUI::Open(hInstance);
     }
@@ -373,6 +401,46 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
         // Render Settings UI if open
         if (SettingsUI::IsOpen()) {
             SettingsUI::RenderFrame();
+        }
+
+        // Re-attach if desktop was rebuilt, or retry injection if it initially failed (runs UN-GATED so it never misses boot)
+        static uint64_t last_inject_check_us = 0;
+        static uint64_t startup_time_us = g_clock.GetCurrentTimeMicros();
+        uint64_t now_us = g_clock.GetCurrentTimeMicros();
+        bool has_active_wallpaper = (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty() && !g_paused);
+
+        // During the first 20 seconds after boot, poll every 200ms to immediately catch when Explorer spawns WorkerW
+        uint64_t check_interval_us = (now_us - startup_time_us < 20000000) ? 200000 : 500000;
+        if (has_active_wallpaper && g_main_hwnd && (now_us - last_inject_check_us >= check_interval_us)) {
+            last_inject_check_us = now_us;
+
+            if (!g_inject_ok) {
+                // Retry initial injection
+                g_inject_ok = g_injector.Attach(g_main_hwnd);
+                if (g_inject_ok) {
+                    Logger::Info("Injection retry succeeded, workerw=0x",
+                                 reinterpret_cast<size_t>(g_injector.GetWorkerW()));
+                    g_last_error.clear();
+                    ShowWindow(g_main_hwnd, SW_SHOW);
+                    // Resize swap chain to match desktop dimensions
+                    RECT rc;
+                    if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                        g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+                    }
+                }
+            } else if (!g_injector.IsAttachedValid()) {
+                // Desktop hierarchy changed, re-attach
+                Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
+                g_injector.Reattach(g_main_hwnd);
+                g_inject_ok = g_injector.IsAttached();
+                if (g_inject_ok && g_main_hwnd) {
+                    ShowWindow(g_main_hwnd, SW_SHOW);
+                    RECT rc;
+                    if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                        g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
+                    }
+                }
+            }
         }
 
         PowerState power = g_governor.GetCurrentState(cfg.pause_on_maximized);
@@ -407,47 +475,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
         } else if (power == PowerState::Active && cfg.target_fps > 0) {
             if (g_clock.GetTargetFPS() != static_cast<uint32_t>(cfg.target_fps)) {
                 g_clock.SetTargetFPS(cfg.target_fps);
-            }
-        }
-
-        // Re-attach if desktop was rebuilt, or retry injection if it initially failed
-        static uint64_t last_inject_check_us = 0;
-        static uint64_t startup_time_us = g_clock.GetCurrentTimeMicros();
-        uint64_t now_us = g_clock.GetCurrentTimeMicros();
-        bool has_active_wallpaper = (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty() && !g_paused);
-
-        // During the first 15 seconds after boot, poll every 200ms to immediately catch when Explorer spawns WorkerW
-        uint64_t check_interval_us = (now_us - startup_time_us < 15000000) ? 200000 : 500000;
-        if (has_active_wallpaper && !g_fullscreen_paused && g_main_hwnd &&
-            (now_us - last_inject_check_us >= check_interval_us)) {
-            last_inject_check_us = now_us;
-
-            if (!g_inject_ok) {
-                // Retry initial injection
-                g_inject_ok = g_injector.Attach(g_main_hwnd);
-                if (g_inject_ok) {
-                    Logger::Info("Injection retry succeeded, workerw=0x",
-                                 reinterpret_cast<size_t>(g_injector.GetWorkerW()));
-                    g_last_error.clear();
-                    ShowWindow(g_main_hwnd, SW_SHOW);
-                    // Resize swap chain to match desktop dimensions
-                    RECT rc;
-                    if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
-                        g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
-                    }
-                }
-            } else if (!g_injector.IsAttachedValid()) {
-                // Desktop hierarchy changed, re-attach
-                Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
-                g_injector.Reattach(g_main_hwnd);
-                g_inject_ok = g_injector.IsAttached();
-                if (g_inject_ok && g_main_hwnd) {
-                    ShowWindow(g_main_hwnd, SW_SHOW);
-                    RECT rc;
-                    if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
-                        g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
-                    }
-                }
             }
         }
 
@@ -742,9 +769,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DISPLAYCHANGE: {
-            int cx = LOWORD(lParam);
-            int cy = HIWORD(lParam);
-            g_presenter.Resize(cx, cy);
+            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (g_main_hwnd && vw > 0 && vh > 0) {
+                SetWindowPos(g_main_hwnd, HWND_BOTTOM, vx, vy, vw, vh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                g_presenter.Resize(vw, vh);
+            }
+            Logger::Info("WM_DISPLAYCHANGE: adapted resolution to ", vw, "x", vh);
             return 0;
         }
 
