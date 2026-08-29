@@ -86,42 +86,71 @@ bool PowerGovernor::IsFullscreenAppRunning() {
         }
     }
 
-    // Method 2: Check foreground window
+    // Method 2: Fast check foreground window
     HWND fg = GetForegroundWindow();
-    if (!fg || !IsWindow(fg)) return false;
-
-    // Desktop/shell/our app focused -> NEVER pause
-    wchar_t cls[256];
-    if (GetClassNameW(fg, cls, 256)) {
-        if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
-            wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
-            wcscmp(cls, L"LiteWallpaper_SettingsClass") == 0 ||
-            wcscmp(cls, L"LiteWallpaper_Daemon") == 0) {
-            return false;
+    if (fg && IsWindow(fg) && !IsIconic(fg) && IsWindowVisible(fg)) {
+        wchar_t cls[256] = {};
+        if (GetClassNameW(fg, cls, 256)) {
+            if (wcscmp(cls, L"LiteWallpaper_SettingsClass") != 0 &&
+                wcscmp(cls, L"LiteWallpaper_Daemon") != 0) {
+                int cloaked = 0;
+                if (!SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) || cloaked == 0) {
+                    HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+                    MONITORINFO mi = { sizeof(mi) };
+                    if (GetMonitorInfoW(hmon, &mi)) {
+                        RECT rc;
+                        if (GetWindowRect(fg, &rc)) {
+                            if (rc.left <= mi.rcMonitor.left && rc.top <= mi.rcMonitor.top &&
+                                rc.right >= mi.rcMonitor.right && rc.bottom >= mi.rcMonitor.bottom) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    if (IsIconic(fg) || !IsWindowVisible(fg)) return false;
+    // Method 3: Deep Z-Order scan - check if ANY visible top-level window covers the entire monitor
+    bool fullscreen = false;
+    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+        if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
 
-    int cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
-        return false;
-    }
+        int cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+            return TRUE;
+        }
 
-    HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = { sizeof(mi) };
-    if (!GetMonitorInfoW(hmon, &mi)) return false;
+        wchar_t cls[256] = {};
+        if (GetClassNameW(hwnd, cls, 256) > 0) {
+            // Reached desktop layer, stop enumeration
+            if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0) return FALSE;
+            // Skip shell trays, tooltips, settings UI, and daemon
+            if (wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+                wcscmp(cls, L"LiteWallpaper_SettingsClass") == 0 ||
+                wcscmp(cls, L"LiteWallpaper_Daemon") == 0 ||
+                wcscmp(cls, L"tooltips_class32") == 0) {
+                return TRUE;
+            }
+        }
 
-    RECT rc;
-    if (!GetWindowRect(fg, &rc)) return false;
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(hmon, &mi)) {
+            RECT rc;
+            if (GetWindowRect(hwnd, &rc)) {
+                if (rc.left <= mi.rcMonitor.left && rc.top <= mi.rcMonitor.top &&
+                    rc.right >= mi.rcMonitor.right && rc.bottom >= mi.rcMonitor.bottom) {
+                    *reinterpret_cast<bool*>(lparam) = true;
+                    return FALSE; // Found fullscreen app, stop searching!
+                }
+            }
+        }
 
-    // A true fullscreen app covers the ENTIRE monitor (rcMonitor, including taskbar)
-    if (rc.left <= mi.rcMonitor.left && rc.top <= mi.rcMonitor.top &&
-        rc.right >= mi.rcMonitor.right && rc.bottom >= mi.rcMonitor.bottom) {
-        return true;
-    }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&fullscreen));
 
-    return false;
+    return fullscreen;
 }
 
 bool PowerGovernor::IsOnBattery() {
@@ -133,48 +162,82 @@ bool PowerGovernor::IsOnBattery() {
 }
 
 bool PowerGovernor::IsDesktopOccluded() {
+    // Method 1: Fast check foreground window
     HWND fg = GetForegroundWindow();
-    if (!fg || !IsWindow(fg)) return false;
-
-    // Desktop / shell / our settings or daemon window focused -> NEVER occluded
-    wchar_t cls[256];
-    if (GetClassNameW(fg, cls, 256)) {
-        if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0 ||
-            wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
-            wcscmp(cls, L"LiteWallpaper_SettingsClass") == 0 ||
-            wcscmp(cls, L"LiteWallpaper_Daemon") == 0) {
-            return false;
+    if (fg && IsWindow(fg) && !IsIconic(fg) && IsWindowVisible(fg)) {
+        wchar_t cls[256] = {};
+        if (GetClassNameW(fg, cls, 256)) {
+            if (wcscmp(cls, L"LiteWallpaper_SettingsClass") != 0 &&
+                wcscmp(cls, L"LiteWallpaper_Daemon") != 0) {
+                int cloaked = 0;
+                if (!SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) || cloaked == 0) {
+                    if (IsZoomed(fg) || (GetWindowLongPtr(fg, GWL_STYLE) & WS_MAXIMIZE) != 0) {
+                        return true;
+                    }
+                    HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+                    MONITORINFO mi = { sizeof(mi) };
+                    if (GetMonitorInfoW(hmon, &mi)) {
+                        RECT rc;
+                        if (GetWindowRect(fg, &rc)) {
+                            if (rc.left <= mi.rcWork.left + 8 && rc.top <= mi.rcWork.top + 8 &&
+                                rc.right >= mi.rcWork.right - 8 && rc.bottom >= mi.rcWork.bottom - 8) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    if (IsIconic(fg) || !IsWindowVisible(fg)) return false;
+    // Method 2: Deep Z-Order scan - check if ANY visible top-level window is maximized or covers the work area
+    // (Handles small dialogs/popups focused on top of a maximized browser/editor/game)
+    bool occluded = false;
+    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+        if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
 
-    int cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(fg, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
-        return false;
-    }
+        int cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+            return TRUE;
+        }
 
-    // Method 1: Check standard Win32 maximized style or zoomed state
-    if (IsZoomed(fg) || (GetWindowLongPtr(fg, GWL_STYLE) & WS_MAXIMIZE) != 0) {
-        return true;
-    }
+        wchar_t cls[256] = {};
+        if (GetClassNameW(hwnd, cls, 256) > 0) {
+            // Reached desktop layer, stop enumeration
+            if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0) return FALSE;
+            // Skip shell trays, tooltips, settings UI, and daemon
+            if (wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+                wcscmp(cls, L"LiteWallpaper_SettingsClass") == 0 ||
+                wcscmp(cls, L"LiteWallpaper_Daemon") == 0 ||
+                wcscmp(cls, L"tooltips_class32") == 0) {
+                return TRUE;
+            }
+        }
 
-    // Method 2: Check if window covers the monitor's work area
-    HMONITOR hmon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = { sizeof(mi) };
-    if (!GetMonitorInfoW(hmon, &mi)) return false;
+        // Check if window is maximized (IsZoomed or WS_MAXIMIZE style)
+        if (IsZoomed(hwnd) || (GetWindowLongPtr(hwnd, GWL_STYLE) & WS_MAXIMIZE) != 0) {
+            *reinterpret_cast<bool*>(lparam) = true;
+            return FALSE; // Found a maximized window covering the desktop, stop searching!
+        }
 
-    RECT rc;
-    if (!GetWindowRect(fg, &rc)) return false;
+        // Check if window rect covers monitor work area (e.g. borderless maximized)
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(hmon, &mi)) {
+            RECT rc;
+            if (GetWindowRect(hwnd, &rc)) {
+                if (rc.left <= mi.rcWork.left + 8 && rc.top <= mi.rcWork.top + 8 &&
+                    rc.right >= mi.rcWork.right - 8 && rc.bottom >= mi.rcWork.bottom - 8) {
+                    *reinterpret_cast<bool*>(lparam) = true;
+                    return FALSE;
+                }
+            }
+        }
 
-    // A maximized or desktop-filling window covers the entire work area (rcWork)
-    // Tolerance of 8px handles invisible DWM resize borders
-    if (rc.left <= mi.rcWork.left + 8 && rc.top <= mi.rcWork.top + 8 &&
-        rc.right >= mi.rcWork.right - 8 && rc.bottom >= mi.rcWork.bottom - 8) {
-        return true;
-    }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&occluded));
 
-    return false;
+    return occluded;
 }
 
 void PowerGovernor::Shutdown() {
