@@ -228,11 +228,15 @@ static bool OpenWallpaperVideo(const std::string& path) {
     return true;
 }
 
-static void SuspendWallpaper(const char* reason = "Fullscreen app") {
+static void SuspendWallpaper(const std::string& reason = "Fullscreen app", const std::string& detail = "") {
     if (g_fullscreen_paused) return;
     g_fullscreen_paused = true;
     g_audio.Stop();
-    Logger::Info("Playback auto-paused: ", reason);
+    if (!detail.empty()) {
+        Logger::Info("Playback auto-paused: ", reason, " [", detail, "]");
+    } else {
+        Logger::Info("Playback auto-paused: ", reason);
+    }
 }
 
 static void ResumeWallpaper() {
@@ -258,7 +262,7 @@ static void ResumeWallpaper() {
             }
         }
     }
-    Logger::Info("Playback auto-resumed");
+    Logger::Info("Playback auto-resumed: Desktop is visible and active");
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int /*nCmdShow*/) {
@@ -455,14 +459,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
 
         if (fullscreen_active || occluded_active || battery_pause_active || lock_pause_active) {
             if (!g_fullscreen_paused) {
+                std::string detail = g_governor.GetLastTriggerInfo();
                 if (occluded_active) {
-                    SuspendWallpaper("Maximized window / desktop covered");
+                    SuspendWallpaper("Maximized window / desktop covered", detail);
                 } else if (fullscreen_active) {
-                    SuspendWallpaper("Fullscreen app / 3D game");
+                    SuspendWallpaper("Fullscreen app / 3D game", detail);
                 } else if (lock_pause_active) {
-                    SuspendWallpaper("Workstation locked");
+                    SuspendWallpaper("Workstation locked", detail);
                 } else {
-                    SuspendWallpaper("Battery saver");
+                    SuspendWallpaper("Battery saver", detail);
                 }
             }
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);

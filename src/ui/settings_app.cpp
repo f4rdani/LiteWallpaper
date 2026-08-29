@@ -966,6 +966,18 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CIRCLE_INFO "  Diagnostics & Activity Logs");
+    ImGui::TextDisabled("View live hardware detection, window occlusion state, and detailed playback events.");
+    if (ImGui::Button(ICON_FA_FOLDER_OPEN "  Open Engine Log (Notepad)", ImVec2(240, 32))) {
+        const char* appData = getenv("APPDATA");
+        if (appData) {
+            std::string logPath = std::string(appData) + "\\LiteWallpaper\\engine.log";
+            ShellExecuteA(nullptr, "open", "notepad.exe", logPath.c_str(), nullptr, SW_SHOW);
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
     ImGui::Spacing();
 

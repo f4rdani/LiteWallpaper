@@ -3,6 +3,8 @@
 #include <wtsapi32.h>
 #include <cstdint>
 
+#include <string>
+
 namespace litewp {
 
 enum class PowerState {
@@ -24,6 +26,9 @@ public:
     // Poll current state (throttled internally to conserve CPU)
     PowerState GetCurrentState(bool check_maximized = true);
     
+    // Detailed telemetry
+    std::string GetLastTriggerInfo() const { return m_last_trigger_info; }
+
     // Handle WM_WTSSESSION_CHANGE message from WndProc
     void HandleSessionChange(WPARAM wParam);
     
@@ -37,8 +42,9 @@ private:
     bool m_is_locked = false;
     bool m_on_battery = false;
     
-    PowerState m_cached_state = PowerState::Active;
-    uint64_t   m_last_check_tick = 0;
+    PowerState  m_cached_state = PowerState::Active;
+    uint64_t    m_last_check_tick = 0;
+    std::string m_last_trigger_info = "Desktop is active";
     
     bool IsFullscreenAppRunning();
     bool IsDesktopOccluded();
