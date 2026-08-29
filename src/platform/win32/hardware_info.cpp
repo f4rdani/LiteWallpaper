@@ -184,6 +184,37 @@ static std::wstring GetStartupShortcutPath() {
     return L"";
 }
 
+static bool CreateStartupShortcut(const std::wstring& exePath, const std::wstring& arguments) {
+    HRESULT hr = CoInitialize(nullptr);
+    bool needUninit = SUCCEEDED(hr);
+
+    ComPtr<IShellLinkW> shellLink;
+    hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shellLink));
+    if (SUCCEEDED(hr)) {
+        shellLink->SetPath(exePath.c_str());
+        shellLink->SetArguments(arguments.c_str());
+
+        wchar_t exeDir[MAX_PATH] = {};
+        wcsncpy_s(exeDir, exePath.c_str(), _TRUNCATE);
+        wchar_t* lastSlash = wcsrchr(exeDir, L'\\');
+        if (lastSlash) *lastSlash = L'\0';
+        shellLink->SetWorkingDirectory(exeDir);
+        shellLink->SetDescription(L"LiteWallpaper Animated Video Wallpaper Engine");
+        shellLink->SetIconLocation(exePath.c_str(), 0);
+
+        ComPtr<IPersistFile> persistFile;
+        if (SUCCEEDED(shellLink.As(&persistFile))) {
+            std::wstring shortcutPath = GetStartupShortcutPath();
+            if (!shortcutPath.empty()) {
+                persistFile->Save(shortcutPath.c_str(), TRUE);
+            }
+        }
+    }
+
+    if (needUninit) CoUninitialize();
+    return true;
+}
+
 static bool RemoveLegacyStartupShortcut() {
     std::wstring shortcutPath = GetStartupShortcutPath();
     if (!shortcutPath.empty() && GetFileAttributesW(shortcutPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -205,13 +236,10 @@ bool WindowsAutostart::IsEnabled() {
     return (res == ERROR_SUCCESS);
 }
 
-bool WindowsAutostart::SetEnabled(bool enable) {
+bool WindowsAutostart::SetEnabled(bool enable, int priority) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring exeStr(exePath);
-
-    // Always clean up any legacy/duplicate .lnk shortcut in shell:startup folder
-    RemoveLegacyStartupShortcut();
 
     if (enable) {
         // 1. Set standard Registry HKCU\Run entry with quoted path and --startup flag
@@ -239,6 +267,13 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegSetValueExW(hSerializeKey, L"StartupDelayInMSec", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&delay), sizeof(delay));
             RegCloseKey(hSerializeKey);
         }
+
+        // 4. High Priority: Add shell:startup .lnk shortcut for early parallel Explorer execution
+        if (priority == 1) {
+            CreateStartupShortcut(exeStr, L"--startup");
+        } else {
+            RemoveLegacyStartupShortcut();
+        }
     } else {
         // Remove from Registry HKCU\Run
         HKEY hKey = nullptr;
@@ -253,15 +288,20 @@ bool WindowsAutostart::SetEnabled(bool enable) {
             RegDeleteValueW(hApprovedRun, L"LiteWallpaper");
             RegCloseKey(hApprovedRun);
         }
+
+        // Clean up shortcut
+        RemoveLegacyStartupShortcut();
     }
 
     return true;
 }
 
-void WindowsAutostart::AutoRepairIfMoved() {
+void WindowsAutostart::AutoRepairIfMoved(int priority) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring currentExe(exePath);
+
+    bool needsRepair = false;
 
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
@@ -270,14 +310,25 @@ void WindowsAutostart::AutoRepairIfMoved() {
         DWORD type = 0;
         if (RegQueryValueExW(hKey, L"LiteWallpaper", nullptr, &type, reinterpret_cast<LPBYTE>(val), &size) == ERROR_SUCCESS) {
             std::wstring regVal(val);
-            // If registered command does not match currentExe path, repair it!
             if (regVal.find(currentExe) == std::wstring::npos) {
-                RegCloseKey(hKey);
-                SetEnabled(true);
-                return;
+                needsRepair = true;
             }
         }
         RegCloseKey(hKey);
+    } else {
+        needsRepair = true;
+    }
+
+    std::wstring shortcutPath = GetStartupShortcutPath();
+    bool shortcutExists = (!shortcutPath.empty() && GetFileAttributesW(shortcutPath.c_str()) != INVALID_FILE_ATTRIBUTES);
+    if (priority == 1 && !shortcutExists) {
+        needsRepair = true;
+    } else if (priority == 0 && shortcutExists) {
+        needsRepair = true;
+    }
+
+    if (needsRepair) {
+        SetEnabled(true, priority);
     }
 }
 

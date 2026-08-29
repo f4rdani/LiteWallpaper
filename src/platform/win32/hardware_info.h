@@ -48,8 +48,8 @@ public:
 class WindowsAutostart {
 public:
     static bool IsEnabled();
-    static bool SetEnabled(bool enable);
-    static void AutoRepairIfMoved();
+    static bool SetEnabled(bool enable, int priority = 1);
+    static void AutoRepairIfMoved(int priority = 1);
 };
 
 } // namespace litewp

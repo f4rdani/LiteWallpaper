@@ -857,12 +857,36 @@ static void RenderSettingsPanel() {
     }
 
     if (ImGui::Checkbox("Start LiteWallpaper automatically on Windows Boot", &startup_enabled)) {
-        WindowsAutostart::SetEnabled(startup_enabled);
+        WindowsAutostart::SetEnabled(startup_enabled, cfg.startup_priority);
         cfg.run_on_startup = startup_enabled;
         g_config.Save();
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Launches LiteWallpaper silently in the background when Windows starts, seamlessly resuming your wallpaper.");
+    }
+
+    if (startup_enabled) {
+        ImGui::Indent(24.0f);
+        const char* priority_modes[] = {
+            "Normal (Standard Windows Registry Queue)",
+            "High Priority (Instant Dual Launch: Registry + Shell:Startup - Recommended)"
+        };
+        ImGui::SetNextItemWidth(sliderW);
+        if (ImGui::Combo("Startup Priority", &cfg.startup_priority, priority_modes, IM_ARRAYSIZE(priority_modes))) {
+            WindowsAutostart::SetEnabled(startup_enabled, cfg.startup_priority);
+            g_config.Save();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("High Priority launches LiteWallpaper in parallel with Windows Explorer startup for fastest possible initialization.");
+        }
+        ImGui::Unindent(24.0f);
+    }
+
+    if (ImGui::Checkbox("Sync Static Desktop Background (Instant 0s Boot Visual Handover)", &cfg.sync_static_desktop)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Wallpaper Engine Technique: Automatically sets the first frame of your video as the native Windows desktop background, so your wallpaper appears instantly at 0.0 seconds when PC turns on.");
     }
 
     ImGui::Spacing();

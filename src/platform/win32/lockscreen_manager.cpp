@@ -45,6 +45,16 @@ std::wstring LockScreenManager::GetTempImagePathJpg() const {
     return L"lockscreen_capture.jpg";
 }
 
+std::wstring LockScreenManager::GetDesktopPlaceholderImagePathJpg() const {
+    wchar_t appDataPath[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
+        std::wstring dir = std::wstring(appDataPath) + L"\\LiteWallpaper";
+        CreateDirectoryW(dir.c_str(), NULL);
+        return dir + L"\\active_wallpaper_placeholder.jpg";
+    }
+    return L"active_wallpaper_placeholder.jpg";
+}
+
 bool LockScreenManager::SaveTextureAsBmp(
     ID3D11Device* device,
     ID3D11DeviceContext* ctx,
@@ -247,6 +257,28 @@ bool LockScreenManager::CaptureAndSetLockScreen(
     SetLockScreenImageWin7(imgPathJpg);
 
     return true;
+}
+
+bool LockScreenManager::SetNativeDesktopWallpaper(
+    ID3D11Device* device,
+    ID3D11DeviceContext* ctx,
+    ID3D11Texture2D* currentFrame,
+    int arrayIndex
+) {
+    if (!device || !ctx || !currentFrame) return false;
+
+    std::wstring placeholderPath = GetDesktopPlaceholderImagePathJpg();
+    if (SaveTextureAsJpg(device, ctx, currentFrame, arrayIndex, placeholderPath, 92)) {
+        // Set native Windows desktop wallpaper for instant 0s boot visual
+        SystemParametersInfoW(
+            SPI_SETDESKWALLPAPER,
+            0,
+            reinterpret_cast<void*>(const_cast<wchar_t*>(placeholderPath.c_str())),
+            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+        );
+        return true;
+    }
+    return false;
 }
 
 bool LockScreenManager::SetLockScreenImage(const std::wstring& imagePath) {

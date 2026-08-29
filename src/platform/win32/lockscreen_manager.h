@@ -17,6 +17,14 @@ public:
         int arrayIndex
     );
     
+    // Capture current frame from D3D11 texture and set as native Windows desktop wallpaper for instant 0s boot visual
+    bool SetNativeDesktopWallpaper(
+        ID3D11Device* device,
+        ID3D11DeviceContext* ctx,
+        ID3D11Texture2D* currentFrame,
+        int arrayIndex
+    );
+
     // Set image file as lock screen image (Windows 10/11)
     bool SetLockScreenImage(const std::wstring& imagePath);
     
@@ -25,6 +33,7 @@ public:
 
     std::wstring GetTempImagePathBmp() const;
     std::wstring GetTempImagePathJpg() const;
+    std::wstring GetDesktopPlaceholderImagePathJpg() const;
 
 private:
     bool SaveTextureAsBmp(

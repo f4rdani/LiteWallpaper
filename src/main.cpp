@@ -31,6 +31,7 @@ namespace fs = std::filesystem;
 #include "platform/win32/power_governor.h"
 #include "platform/win32/tray_icon.h"
 #include "platform/win32/hardware_info.h"
+#include "platform/win32/lockscreen_manager.h"
 #include "ui/settings_app.h"
 
 #define WM_APP_OPEN_SETTINGS (WM_APP + 10)
@@ -48,6 +49,7 @@ static AudioPlayer       g_audio;
 static PowerGovernor     g_governor;
 static TrayIcon          g_tray;
 static IpcServer         g_ipc;
+static LockScreenManager g_lockscreen;
 
 static std::mutex        g_decoder_mutex; // Guards g_decoder and g_current_frame against race conditions
 
@@ -287,7 +289,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
 
     // Auto-repair registry startup path if portable folder was moved
     if (cfg.run_on_startup) {
-        WindowsAutostart::AutoRepairIfMoved();
+        WindowsAutostart::AutoRepairIfMoved(cfg.startup_priority);
     }
 
     // 2. Register Background Render Window Class
@@ -561,6 +563,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     if (!g_first_frame_captured) {
                         g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
                         g_first_frame_captured = true;
+
+                        // Wallpaper Engine Secret #1: Auto-sync first frame as native Windows desktop wallpaper for instant 0s boot visual
+                        if (cfg.sync_static_desktop) {
+                            g_lockscreen.SetNativeDesktopWallpaper(
+                                g_presenter.GetDevice(),
+                                g_presenter.GetContext(),
+                                g_current_frame.texture,
+                                g_current_frame.texture_index
+                            );
+                        }
+
+                        // Auto-update Windows lock screen if configured
+                        if (cfg.update_lockscreen) {
+                            g_lockscreen.CaptureAndSetLockScreen(
+                                g_presenter.GetDevice(),
+                                g_presenter.GetContext(),
+                                g_current_frame.texture,
+                                g_current_frame.texture_index
+                            );
+                        }
                     }
 
                     // Calculate Auto Smooth Loop crossfade blend alpha & dynamic speed ramp
