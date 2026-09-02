@@ -236,10 +236,13 @@ bool WindowsAutostart::IsEnabled() {
     return (res == ERROR_SUCCESS);
 }
 
-bool WindowsAutostart::SetEnabled(bool enable, int priority) {
+bool WindowsAutostart::SetEnabled(bool enable, int /*priority*/) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring exeStr(exePath);
+
+    // Always clean up legacy startup folder shortcut to prevent double entries in Task Manager
+    RemoveLegacyStartupShortcut();
 
     if (enable) {
         // 1. Set standard Registry HKCU\Run entry with quoted path and --startup flag
@@ -267,13 +270,6 @@ bool WindowsAutostart::SetEnabled(bool enable, int priority) {
             RegSetValueExW(hSerializeKey, L"StartupDelayInMSec", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&delay), sizeof(delay));
             RegCloseKey(hSerializeKey);
         }
-
-        // 4. High Priority: Add shell:startup .lnk shortcut for early parallel Explorer execution
-        if (priority == 1) {
-            CreateStartupShortcut(exeStr, L"--startup");
-        } else {
-            RemoveLegacyStartupShortcut();
-        }
     } else {
         // Remove from Registry HKCU\Run
         HKEY hKey = nullptr;
@@ -288,9 +284,6 @@ bool WindowsAutostart::SetEnabled(bool enable, int priority) {
             RegDeleteValueW(hApprovedRun, L"LiteWallpaper");
             RegCloseKey(hApprovedRun);
         }
-
-        // Clean up shortcut
-        RemoveLegacyStartupShortcut();
     }
 
     return true;
@@ -300,6 +293,9 @@ void WindowsAutostart::AutoRepairIfMoved(int priority) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring currentExe(exePath);
+
+    // Clean up any legacy shortcut if still on disk
+    RemoveLegacyStartupShortcut();
 
     bool needsRepair = false;
 
@@ -316,14 +312,6 @@ void WindowsAutostart::AutoRepairIfMoved(int priority) {
         }
         RegCloseKey(hKey);
     } else {
-        needsRepair = true;
-    }
-
-    std::wstring shortcutPath = GetStartupShortcutPath();
-    bool shortcutExists = (!shortcutPath.empty() && GetFileAttributesW(shortcutPath.c_str()) != INVALID_FILE_ATTRIBUTES);
-    if (priority == 1 && !shortcutExists) {
-        needsRepair = true;
-    } else if (priority == 0 && shortcutExists) {
         needsRepair = true;
     }
 

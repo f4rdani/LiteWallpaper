@@ -857,29 +857,12 @@ static void RenderSettingsPanel() {
     }
 
     if (ImGui::Checkbox("Start LiteWallpaper automatically on Windows Boot", &startup_enabled)) {
-        WindowsAutostart::SetEnabled(startup_enabled, cfg.startup_priority);
+        WindowsAutostart::SetEnabled(startup_enabled, 0);
         cfg.run_on_startup = startup_enabled;
         g_config.Save();
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Launches LiteWallpaper silently in the background when Windows starts, seamlessly resuming your wallpaper.");
-    }
-
-    if (startup_enabled) {
-        ImGui::Indent(24.0f);
-        const char* priority_modes[] = {
-            "Normal (Standard Windows Registry Queue)",
-            "High Priority (Instant Dual Launch: Registry + Shell:Startup - Recommended)"
-        };
-        ImGui::SetNextItemWidth(sliderW);
-        if (ImGui::Combo("Startup Priority", &cfg.startup_priority, priority_modes, IM_ARRAYSIZE(priority_modes))) {
-            WindowsAutostart::SetEnabled(startup_enabled, cfg.startup_priority);
-            g_config.Save();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("High Priority launches LiteWallpaper in parallel with Windows Explorer startup for fastest possible initialization.");
-        }
-        ImGui::Unindent(24.0f);
     }
 
     ImGui::Spacing();

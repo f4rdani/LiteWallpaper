@@ -337,6 +337,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     if (g_inject_ok) {
         ShowWindow(g_main_hwnd, SW_SHOW);
         UpdateWindow(g_main_hwnd);
+    } else {
+        ShowWindow(g_main_hwnd, SW_HIDE);
     }
     Logger::Info("Attach: ", g_inject_ok ? "OK" : "FAILED",
                  " workerw=0x", reinterpret_cast<size_t>(g_injector.GetWorkerW()),
@@ -412,14 +414,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
         }
 
         // Re-attach if desktop was rebuilt, or retry injection if it initially failed (runs UN-GATED so it never misses boot)
+        // Re-attach if desktop was rebuilt, or retry injection if it initially failed
         static uint64_t last_inject_check_us = 0;
-        static uint64_t startup_time_us = g_clock.GetCurrentTimeMicros();
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
         bool has_active_wallpaper = (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty() && !g_paused);
 
-        // During the first 20 seconds after boot, poll every 200ms to immediately catch when Explorer spawns WorkerW
-        uint64_t check_interval_us = (now_us - startup_time_us < 20000000) ? 200000 : 500000;
-        if (has_active_wallpaper && g_main_hwnd && (now_us - last_inject_check_us >= check_interval_us)) {
+        if (has_active_wallpaper && g_main_hwnd && (now_us - last_inject_check_us >= 1000000)) {
             last_inject_check_us = now_us;
 
             if (!g_inject_ok) {
@@ -430,7 +430,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                                  reinterpret_cast<size_t>(g_injector.GetWorkerW()));
                     g_last_error.clear();
                     ShowWindow(g_main_hwnd, SW_SHOW);
-                    // Resize swap chain to match desktop dimensions
+                    UpdateWindow(g_main_hwnd);
                     RECT rc;
                     if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
                         g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
@@ -438,17 +438,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                 }
             } else if (!g_injector.IsAttachedValid()) {
                 // Desktop hierarchy changed, re-attach
-                Logger::Info("Desktop hierarchy changed, re-attaching wallpaper");
+                Logger::Info("Desktop hierarchy changed, re-attaching wallpaper to active WorkerW");
                 g_injector.Reattach(g_main_hwnd);
                 g_inject_ok = g_injector.IsAttached();
                 if (g_inject_ok && g_main_hwnd) {
                     ShowWindow(g_main_hwnd, SW_SHOW);
+                    UpdateWindow(g_main_hwnd);
                     RECT rc;
                     if (GetClientRect(g_main_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
                         g_presenter.Resize(rc.right - rc.left, rc.bottom - rc.top);
                     }
                 }
             }
+        }
+
+        // Window guard: Never render to a detached top-level window (prevents white empty window)
+        if (!g_inject_ok) {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+            continue;
         }
 
         PowerState power = g_governor.GetCurrentState(cfg.pause_on_maximized);
