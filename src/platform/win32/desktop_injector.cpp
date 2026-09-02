@@ -49,7 +49,8 @@ HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
     if (progman) {
         // 2. Send message 0x052C to Progman to spawn WorkerW behind desktop icons
         DWORD_PTR result = 0;
-        SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
+        SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &result);
+        SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &result);
 
         // 3. Strategy A (classic, Win10/11): top-level WorkerW that is the sibling following
         //    the window containing SHELLDLL_DefView (behind desktop icons).
@@ -67,20 +68,7 @@ HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
         }, reinterpret_cast<LPARAM>(&workerw));
         if (workerw) return workerw;
 
-        // 4. Strategy B: Any top-level WorkerW that does NOT contain icons
-        EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
-            wchar_t cls[64] = {};
-            if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"WorkerW") == 0) {
-                if (FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) == nullptr) {
-                    *reinterpret_cast<HWND*>(lparam) = hwnd;
-                    return FALSE;
-                }
-            }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&workerw));
-        if (workerw) return workerw;
-
-        // 5. Strategy C (Win11 24H2+): Child WorkerW under Progman
+        // 4. Strategy C (Win11 24H2+): Child WorkerW under Progman
         EnumChildWindows(progman, [](HWND hwnd, LPARAM lparam) -> BOOL {
             wchar_t cls[64] = {};
             if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"WorkerW") == 0) {
@@ -93,7 +81,7 @@ HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
         }, reinterpret_cast<LPARAM>(&workerw));
         if (workerw) return workerw;
 
-        // 6. Fallback: attach directly to Progman (desktop icons hidden case or early boot)
+        // 5. Fallback: attach directly to Progman (desktop icons hidden case or early boot)
         if (out_is_fallback) *out_is_fallback = true;
         return progman;
     }
@@ -122,10 +110,6 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
 
     // Set WorkerW as parent
     SetParent(renderHwnd, m_workerw);
-
-    // Ensure WorkerW is shown and visible
-    ShowWindow(m_workerw, SW_SHOW);
-    UpdateWindow(m_workerw);
 
     // Resize child to cover the parent WorkerW client area
     RECT rc;
@@ -159,10 +143,6 @@ void DesktopInjector::Detach() {
         SetWindowLongPtrW(m_render_hwnd, GWL_STYLE, style);
         SetParent(m_render_hwnd, nullptr);
         m_render_hwnd = nullptr;
-    }
-    if (m_workerw) {
-        InvalidateRect(m_workerw, nullptr, TRUE);
-        UpdateWindow(m_workerw);
     }
     m_workerw = nullptr;
     m_is_fallback = false;
