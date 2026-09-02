@@ -236,17 +236,19 @@ void DesktopInjector::RegisterExplorerRestart(HWND targetHwnd) {
         wc.lpszClassName = L"LiteWallpaper_MsgReceiver";
         RegisterClassExW(&wc);
 
-        // Top-level hidden window (WS_POPUP) to reliably receive HWND_BROADCAST TaskbarCreated
+        // Top-level hidden window placed far off-screen with layered transparent style (0 visual artifacts)
         m_msg_receiver = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
             L"LiteWallpaper_MsgReceiver",
             L"",
             WS_POPUP,
-            0, 0, 0, 0,
+            -32000, -32000, 0, 0,
             nullptr, nullptr, wc.hInstance, nullptr
         );
 
         if (m_msg_receiver) {
+            SetLayeredWindowAttributes(m_msg_receiver, 0, 0, LWA_ALPHA);
+            ShowWindow(m_msg_receiver, SW_HIDE);
             SetWindowLongPtrW(m_msg_receiver, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(targetHwnd));
         }
     }

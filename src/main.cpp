@@ -785,15 +785,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DISPLAYCHANGE: {
-            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-            int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            if (g_main_hwnd && vw > 0 && vh > 0) {
-                SetWindowPos(g_main_hwnd, HWND_BOTTOM, vx, vy, vw, vh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                g_presenter.Resize(vw, vh);
+            RECT rc = {};
+            int w = 0, h = 0;
+            HWND parent = g_injector.GetWorkerW();
+            if (parent && GetClientRect(parent, &rc) && rc.right > 0 && rc.bottom > 0) {
+                w = rc.right - rc.left;
+                h = rc.bottom - rc.top;
+            } else {
+                w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
             }
-            Logger::Info("WM_DISPLAYCHANGE: adapted resolution to ", vw, "x", vh);
+            if (g_main_hwnd && w > 0 && h > 0) {
+                SetWindowPos(g_main_hwnd, HWND_BOTTOM, 0, 0, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                g_presenter.Resize(w, h);
+            }
+            Logger::Info("WM_DISPLAYCHANGE: adapted resolution to ", w, "x", h);
             return 0;
         }
 
