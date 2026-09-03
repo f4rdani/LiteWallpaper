@@ -56,6 +56,7 @@ LiteWallpaper is engineered in native **C++20** and **DirectX 11 (D3D11VA)** fro
 - 🔋 **Smart Dual-GPU Power Routing**: Automatically renders on the energy-efficient **Integrated GPU (iGPU / Intel UHD / AMD APU)**, leaving discrete NVIDIA/AMD gaming GPUs in complete deep sleep (0% load).
 - 🎮 **Intelligent Power Governor**:
   - **Auto-Pause on Fullscreen**: Automatically suspends playback and video decoding when a fullscreen game or application is active.
+  - **Smart Resource Governor (Gaming & Heavy Load Sleep)**: Automatically puts wallpaper into Deep Sleep (0% CPU, 0 MB VRAM) when overall system RAM or GPU VRAM reaches threshold (e.g. $\ge 80\%$) during windowed gaming, and auto-resumes when memory pressure drops.
   - **Battery Saver Mode**: Dynamically reduces frame rates or pauses when running on laptop battery.
   - **Workstation Lock Detection**: Instantly sleeps when Windows is locked (`Win + L`) to preserve power.
 - ⚡ **Integrated 1080p Video Optimizer**: Built-in GPU pre-scaler that converts heavy 4K/high-bitrate videos into lightweight 1080p NV12 hardware streams, saving up to ~75% GPU load.

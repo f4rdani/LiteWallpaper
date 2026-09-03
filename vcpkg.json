@@ -1,6 +1,6 @@
 {
   "name": "litewallpaper",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "dependencies": [
     "nlohmann-json",
     "mimalloc",
