@@ -461,22 +461,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             }
         }
 
+        PowerState power = g_governor.GetCurrentState(
+            cfg.pause_on_maximized,
+            cfg.pause_on_resource_heavy,
+            cfg.resource_ram_threshold_pct,
+            cfg.resource_vram_threshold_pct,
+            g_presenter.GetDevice()
+        );
+
         // Window guard: Never render to a detached top-level window (prevents white empty window)
         if (!g_inject_ok) {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
         }
 
-        PowerState power = g_governor.GetCurrentState(cfg.pause_on_maximized);
         bool fullscreen_active = (power == PowerState::Paused && cfg.pause_on_fullscreen);
         bool occluded_active = (power == PowerState::Occluded && cfg.pause_on_maximized);
         bool battery_pause_active = (power == PowerState::Reduced && cfg.pause_on_battery);
         bool lock_pause_active = (power == PowerState::Sleeping && cfg.pause_on_lock);
+        bool resource_pause_active = (power == PowerState::ResourceHeavy && cfg.pause_on_resource_heavy);
 
-        if (fullscreen_active || occluded_active || battery_pause_active || lock_pause_active) {
+        if (fullscreen_active || occluded_active || battery_pause_active || lock_pause_active || resource_pause_active) {
             if (!g_fullscreen_paused) {
                 std::string detail = g_governor.GetLastTriggerInfo();
-                if (occluded_active) {
+                if (resource_pause_active) {
+                    SuspendWallpaper("High system load (Gaming Auto-Sleep)", detail);
+                } else if (occluded_active) {
                     SuspendWallpaper("Maximized window / desktop covered", detail);
                 } else if (fullscreen_active) {
                     SuspendWallpaper("Fullscreen app / 3D game", detail);
@@ -487,8 +497,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                 }
             }
 
-            // Deep Suspend: If paused for more than 5 seconds, flush GPU surfaces & trim RAM
-            if (!g_deep_suspended && g_pause_start_us > 0 && (now_us - g_pause_start_us >= 5000000)) {
+            // Deep Suspend: If paused due to resource load, trigger immediately! Or if paused for >5s
+            bool trigger_deep_suspend = resource_pause_active || (g_pause_start_us > 0 && (now_us - g_pause_start_us >= 5000000));
+            if (!g_deep_suspended && trigger_deep_suspend) {
                 g_deep_suspended = true;
                 {
                     std::lock_guard<std::mutex> lock(g_decoder_mutex);
@@ -542,6 +553,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             g_shared_engine_state.ram_mb.store(ram);
             g_shared_engine_state.vram_mb.store(vram);
             g_shared_engine_state.cpu_percent.store(cpu);
+            g_shared_engine_state.system_ram_percent.store(g_governor.GetSystemRamPercent());
+            g_shared_engine_state.gpu_vram_percent.store(g_governor.GetGpuVramPercent());
+            g_shared_engine_state.resource_heavy_sleep.store(g_governor.IsInResourceSleep());
             g_shared_engine_state.frames_rendered.store(g_frames_rendered);
             g_shared_engine_state.frames_decoded.store(g_frames_decoded);
             g_shared_engine_state.frame_skip.store(g_frame_skip);
@@ -947,6 +961,9 @@ std::string OnIpcRequest(const std::string& request_json) {
             {"ram_mb", ram},
             {"injected", g_inject_ok},
             {"hw_decode", g_decoder_hw},
+            {"system_ram_pct", g_governor.GetSystemRamPercent()},
+            {"gpu_vram_pct", g_governor.GetGpuVramPercent()},
+            {"resource_sleep", g_governor.IsInResourceSleep()},
             {"frames_rendered", g_frames_rendered},
             {"frames_decoded", g_frames_decoded},
             {"frame_skip", g_frame_skip},

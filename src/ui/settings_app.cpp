@@ -823,6 +823,63 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GAUGE_HIGH "  Smart Resource Governor (Gaming & Heavy Load Auto-Sleep)");
+
+    if (ImGui::Checkbox("Auto-Sleep when System RAM or GPU VRAM is under heavy load", &cfg.pause_on_resource_heavy)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Essential for windowed gaming! When a heavy game or app pushes RAM or VRAM above the threshold, wallpaper enters Deep Sleep (0% CPU, 0 MB VRAM) to yield maximum performance to your game.");
+    }
+
+    if (cfg.pause_on_resource_heavy) {
+        ImGui::Indent(18.0f);
+
+        ImGui::SetNextItemWidth(sliderW - 18.0f);
+        if (ImGui::SliderInt("System RAM Threshold", &cfg.resource_ram_threshold_pct, 60, 95, "%d%%")) {
+            g_config.Save();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Triggers auto-sleep when overall PC system RAM usage hits this percentage (default 80%).");
+        }
+
+        ImGui::SetNextItemWidth(sliderW - 18.0f);
+        if (ImGui::SliderInt("GPU VRAM Threshold", &cfg.resource_vram_threshold_pct, 60, 95, "%d%%")) {
+            g_config.Save();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Triggers auto-sleep when GPU dedicated video memory usage hits this percentage (default 80%).");
+        }
+
+        int cur_ram = g_shared_engine_state.system_ram_percent.load();
+        int cur_vram = g_shared_engine_state.gpu_vram_percent.load();
+        bool is_sleeping = g_shared_engine_state.resource_heavy_sleep.load();
+
+        char ram_buf[64], vram_buf[64];
+        snprintf(ram_buf, sizeof(ram_buf), "Live RAM: %d%% (Limit: %d%%)", cur_ram, cfg.resource_ram_threshold_pct);
+        snprintf(vram_buf, sizeof(vram_buf), "Live VRAM: %d%% (Limit: %d%%)", cur_vram, cfg.resource_vram_threshold_pct);
+
+        ImVec4 ramColor = (cur_ram >= cfg.resource_ram_threshold_pct) ? ImVec4(0.95f, 0.35f, 0.35f, 1.0f) : ImVec4(0.35f, 0.85f, 0.45f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ramColor);
+        ImGui::ProgressBar(static_cast<float>(cur_ram) / 100.0f, ImVec2(sliderW - 18.0f, 18.0f), ram_buf);
+        ImGui::PopStyleColor();
+
+        if (cur_vram > 0) {
+            ImVec4 vramColor = (cur_vram >= cfg.resource_vram_threshold_pct) ? ImVec4(0.95f, 0.35f, 0.35f, 1.0f) : ImVec4(0.35f, 0.85f, 0.45f, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vramColor);
+            ImGui::ProgressBar(static_cast<float>(cur_vram) / 100.0f, ImVec2(sliderW - 18.0f, 18.0f), vram_buf);
+            ImGui::PopStyleColor();
+        }
+
+        if (is_sleeping) {
+            ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.20f, 1.00f), ICON_FA_EYE_SLASH "  Auto-Sleep Active: Releasing 100% VRAM & pausing rendering for active game");
+        }
+
+        ImGui::Unindent(18.0f);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_VOLUME_HIGH "  Audio Configuration");
 
     static float volume = 0.0f;

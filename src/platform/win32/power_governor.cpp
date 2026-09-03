@@ -1,8 +1,12 @@
 #include "power_governor.h"
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
 #include <sstream>
 #include <iomanip>
+
+using Microsoft::WRL::ComPtr;
 
 namespace litewp {
 
@@ -101,7 +105,7 @@ bool PowerGovernor::Init(HWND messageHwnd) {
     return true;
 }
 
-PowerState PowerGovernor::GetCurrentState(bool check_maximized) {
+PowerState PowerGovernor::GetCurrentState(bool check_maximized, bool check_resources, int ram_threshold, int vram_threshold, ID3D11Device* d3d_device) {
     // Priority 1: Workstation Locked → Sleep (Immediate 0% CPU)
     if (m_is_locked) {
         m_last_trigger_info = "Workstation Locked (Session Sleep)";
@@ -109,25 +113,69 @@ PowerState PowerGovernor::GetCurrentState(bool check_maximized) {
     }
 
     uint64_t now = GetTickCount64();
+
+    // Resource Pressure Check (Throttled to once every 1000ms = 1s for zero CPU overhead)
+    if (check_resources && (now - m_last_resource_check_tick >= 1000)) {
+        m_last_resource_check_tick = now;
+        m_last_ram_pct = QuerySystemRamPercent();
+        m_last_vram_pct = QueryGpuVramPercent(d3d_device);
+
+        if (!m_in_resource_sleep) {
+            bool over_ram = (ram_threshold > 0 && m_last_ram_pct >= ram_threshold);
+            bool over_vram = (vram_threshold > 0 && m_last_vram_pct >= vram_threshold);
+            if (over_ram || over_vram) {
+                m_over_threshold_counter++;
+                if (m_over_threshold_counter >= 2) { // 2 consecutive seconds over threshold
+                    m_in_resource_sleep = true;
+                }
+            } else {
+                m_over_threshold_counter = 0;
+            }
+        } else {
+            // Hysteresis of 8% to prevent rapid flapping/toggling
+            int recover_ram = (ram_threshold > 10) ? (ram_threshold - 8) : ram_threshold;
+            int recover_vram = (vram_threshold > 10) ? (vram_threshold - 8) : vram_threshold;
+            bool safe_ram = (m_last_ram_pct <= recover_ram);
+            bool safe_vram = (m_last_vram_pct <= recover_vram);
+            if (safe_ram && safe_vram) {
+                m_in_resource_sleep = false;
+                m_over_threshold_counter = 0;
+            }
+        }
+    }
+
+    // Priority 2: Resource Heavy Sleep (Gaming in Windowed Mode / High RAM or VRAM load)
+    if (check_resources && m_in_resource_sleep) {
+        std::ostringstream oss;
+        oss << "High system load [RAM: " << m_last_ram_pct << "% >= " << ram_threshold << "%";
+        if (m_last_vram_pct > 0) {
+            oss << ", VRAM: " << m_last_vram_pct << "% >= " << vram_threshold << "%";
+        }
+        oss << "]";
+        m_last_trigger_info = oss.str();
+        m_cached_state = PowerState::ResourceHeavy;
+        return m_cached_state;
+    }
+
     // Throttle Win32 window queries to once every 250ms
     if (now - m_last_check_tick < 250) {
         return m_cached_state;
     }
     m_last_check_tick = now;
 
-    // Priority 2: Fullscreen 3D Game / App Running → Pause
+    // Priority 3: Fullscreen 3D Game / App Running → Pause
     if (IsFullscreenAppRunning()) {
         m_cached_state = PowerState::Paused;
         return m_cached_state;
     }
 
-    // Priority 3: Desktop Occluded by Maximized Window → Occluded
+    // Priority 4: Desktop Occluded by Maximized Window → Occluded
     if (check_maximized && IsDesktopOccluded()) {
         m_cached_state = PowerState::Occluded;
         return m_cached_state;
     }
 
-    // Priority 4: On Battery → Reduced FPS
+    // Priority 5: On Battery → Reduced FPS
     if (IsOnBattery()) {
         m_cached_state = PowerState::Reduced;
         m_last_trigger_info = "Running on Battery (Throttled FPS)";
@@ -283,6 +331,44 @@ void PowerGovernor::Shutdown() {
         WTSUnRegisterSessionNotification(m_hwnd);
         m_hwnd = nullptr;
     }
+}
+
+int PowerGovernor::QuerySystemRamPercent() {
+    MEMORYSTATUSEX mem = {};
+    mem.dwLength = sizeof(mem);
+    if (GlobalMemoryStatusEx(&mem)) {
+        return static_cast<int>(mem.dwMemoryLoad);
+    }
+    return 0;
+}
+
+int PowerGovernor::QueryGpuVramPercent(ID3D11Device* d3d_device) {
+    if (!d3d_device) return 0;
+    ComPtr<IDXGIDevice> dxgiDevice;
+    if (FAILED(d3d_device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+        return 0;
+    }
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
+        return 0;
+    }
+    ComPtr<IDXGIAdapter3> adapter3;
+    if (SUCCEEDED(adapter.As(&adapter3))) {
+        DXGI_ADAPTER_DESC desc = {};
+        adapter->GetDesc(&desc);
+        DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
+        if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo))) {
+            if (desc.DedicatedVideoMemory > 0 && memInfo.Budget > 0) {
+                double totalDedicated = static_cast<double>(desc.DedicatedVideoMemory);
+                double availableBudget = static_cast<double>(memInfo.Budget);
+                double pressure = (1.0 - (availableBudget / totalDedicated)) * 100.0;
+                if (pressure < 0.0) pressure = 0.0;
+                if (pressure > 100.0) pressure = 100.0;
+                return static_cast<int>(pressure);
+            }
+        }
+    }
+    return 0;
 }
 
 } // namespace litewp

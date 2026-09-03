@@ -26,6 +26,9 @@ struct AppConfig {
     bool pause_on_maximized = true; // Auto-pause when an app is maximized / covers the desktop (0% CPU/GPU)
     bool pause_on_battery = false; // true = pause, false = reduce FPS
     bool pause_on_lock = true;
+    bool pause_on_resource_heavy = true;   // Auto-sleep wallpaper when system RAM or VRAM exceeds threshold (Gaming/Heavy load)
+    int resource_ram_threshold_pct = 80;   // RAM threshold percentage (default 80%)
+    int resource_vram_threshold_pct = 80;  // VRAM threshold percentage (default 80%)
     bool update_lockscreen = true; // Capture frame for lock screen
     bool auto_downscale_highres = true; // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
     bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
@@ -138,6 +141,9 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"pause_on_battery", c.pause_on_battery},
         {"battery_fps", c.battery_fps},
         {"pause_on_lock", c.pause_on_lock},
+        {"pause_on_resource_heavy", c.pause_on_resource_heavy},
+        {"resource_ram_threshold_pct", c.resource_ram_threshold_pct},
+        {"resource_vram_threshold_pct", c.resource_vram_threshold_pct},
         {"update_lockscreen", c.update_lockscreen},
         {"auto_downscale_highres", c.auto_downscale_highres},
         {"prompt_downscale", c.prompt_downscale},
@@ -165,6 +171,9 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("pause_on_battery")) j.at("pause_on_battery").get_to(c.pause_on_battery);
     if (j.contains("battery_fps")) j.at("battery_fps").get_to(c.battery_fps);
     if (j.contains("pause_on_lock")) j.at("pause_on_lock").get_to(c.pause_on_lock);
+    if (j.contains("pause_on_resource_heavy")) j.at("pause_on_resource_heavy").get_to(c.pause_on_resource_heavy);
+    if (j.contains("resource_ram_threshold_pct")) j.at("resource_ram_threshold_pct").get_to(c.resource_ram_threshold_pct);
+    if (j.contains("resource_vram_threshold_pct")) j.at("resource_vram_threshold_pct").get_to(c.resource_vram_threshold_pct);
     if (j.contains("update_lockscreen")) j.at("update_lockscreen").get_to(c.update_lockscreen);
     if (j.contains("auto_downscale_highres")) j.at("auto_downscale_highres").get_to(c.auto_downscale_highres);
     if (j.contains("prompt_downscale")) j.at("prompt_downscale").get_to(c.prompt_downscale);

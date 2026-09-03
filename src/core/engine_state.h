@@ -25,6 +25,9 @@ struct EngineState {
     std::atomic<uint64_t> frames_decoded{0};
     std::atomic<int>      frame_skip{1};
     std::atomic<int>      active_gpu_index{0}; // -1 = CPU (Software), 0 = GPU 1, 1 = GPU 2, etc.
+    std::atomic<int>      system_ram_percent{0};
+    std::atomic<int>      gpu_vram_percent{0};
+    std::atomic<bool>     resource_heavy_sleep{false};
 
     // Thread-safe string fields (protected by str_mutex)
     mutable std::mutex str_mutex;
