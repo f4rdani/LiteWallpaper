@@ -6,11 +6,12 @@
 
   **Ultra-Lightweight, High-Performance Animated Video Wallpaper Engine for Windows**
 
+  [![Version](https://img.shields.io/badge/Version-v1.0.3-blue.svg)](https://github.com/f4rdani/LiteWallpaper/releases/tag/v1.0.3)
   [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
   [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=c%2B%2B)](https://en.wikipedia.org/wiki/C%2B%2B20)
   [![DirectX](https://img.shields.io/badge/DirectX-11%20HW%20Accelerated-green.svg)](https://learn.microsoft.com/windows/win32/direct3d11/direct3d-11-graphics)
   [![Platform](https://img.shields.io/badge/Windows-7%20%7C%208%20%7C%2010%20%7C%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-  [![RAM Usage](https://img.shields.io/badge/RAM%20Usage-~4.4%20--%2012%20MB-brightgreen.svg)]()
+  [![RAM Usage](https://img.shields.io/badge/RAM%20Usage-~11%20--%2015%20MB-brightgreen.svg)]()
   [![CPU Usage](https://img.shields.io/badge/CPU%20Usage-%3C%201.0%25-brightgreen.svg)]()
 
   <p align="center">
@@ -21,16 +22,19 @@
 
 ---
 
-## ⚡ Performance Benchmarks
+## ⚡ Performance Benchmarks (v1.0.3)
 
-LiteWallpaper is engineered in native **C++20** and **DirectX 11 (D3D11VA)** from the ground up, completely eliminating web runtimes (Chromium/CEF/Electron/WPF) to achieve an unprecedented low-resource footprint:
+LiteWallpaper is engineered in native **C++20** and **DirectX 11 (D3D11VA)** from the ground up, completely eliminating heavy web runtimes (Chromium/CEF/Electron/WPF) to achieve an unprecedented low-resource footprint:
 
-| Metric | 🚀 **LiteWallpaper** | Lively Wallpaper | Wallpaper Engine |
-| :--- | :---: | :---: | :---: |
-| **RAM (Working Set)** | **`4.4 MB - 12 MB`** | ~350 MB - 600 MB | ~250 MB - 350 MB |
-| **CPU Usage** | **`0.0% - 1.1%`** | ~3% - 8% | ~2% - 5% |
-| **dGPU Power Saving** | 🟢 **Deep Sleep (0% NVIDIA)** | Variable | Variable |
-| **Architecture** | **Native C++20 / DirectX 11** | C# / .NET / WinUI | C++ / CEF / Chromium |
+| Operational Metric | 🚀 **LiteWallpaper (v1.0.3)** | State / Verification Details |
+| :--- | :---: | :--- |
+| **RAM (Working Set - Active)** | **`11.0 MB - 15.5 MB`** | 1080p 60 FPS hardware playback |
+| **RAM (Deep Suspend / Idle)** | **`~10.0 MB`** | Automatic working set trim |
+| **CPU Usage** | **`0.0% - 1.0%`** (avg `0.44%`) | Decoded entirely on GPU hardware ASIC (NVDEC / Intel QSV) |
+| **Dedicated VRAM** | **`~50 MB - 61 MB`** | Optimized 4–6 surface pool (drops to 0 MB on pause) |
+| **3D Graphics Core Load** | **`~3.0%`** | 3D rendering cores remain ~97% free for games |
+| **dGPU Power Saving** | 🟢 **Deep Sleep (0% dGPU load)** | Automatic routing to iGPU or deep suspend during gaming |
+| **Process Architecture** | **Native C++20 / Direct3D 11** | Zero external runtime dependencies, pure Win32 |
 
 ### 📸 Real-World Telemetry
 
