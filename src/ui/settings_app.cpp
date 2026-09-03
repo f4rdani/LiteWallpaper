@@ -516,6 +516,7 @@ static void RenderGalleryTab() {
 
         std::string opt_path = VideoOptimizer::GetOptimizedPath(path, target_w, target_h);
         bool has_opt = VideoOptimizer::HasOptimizedCache(path, target_w, target_h);
+        bool is_already_optimal = (probe.valid && probe.width <= screen_w && probe.height <= screen_h && probe.fps <= 60.5);
 
         bool is_playing_opt = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == opt_path);
         bool is_playing_ori = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == path);
@@ -553,58 +554,42 @@ static void RenderGalleryTab() {
         ImGui::SameLine();
         ImGui::BeginGroup();
 
+        float innerW = cardWidth - thumbW - 28.0f;
+        float delW = 28.0f;
+        float itemPad = ImGui::GetStyle().ItemSpacing.x;
+
+        // Title and Status
         if (is_current) {
             if (is_playing_opt) {
-                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY " [ ACTIVE: OPTIMIZED ]");
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "[ ACTIVE: OPTIMIZED ]");
             } else {
-                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_PLAY " [ ACTIVE: ORIGINAL ]");
+                ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "[ ACTIVE: ORIGINAL ]");
             }
+        } else if (has_opt) {
+            ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), "[ Optimized Ready ]");
+        } else if (is_already_optimal) {
+            ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.50f, 1.00f), "[ 1080p Optimal ]");
         } else {
-            if (has_opt) {
-                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_COMPACT_DISC " [ Optimized Ready ]");
-            } else {
-                ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM " Video File");
-            }
+            ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM " Video File");
         }
 
-        std::string display_name = filename;
-        if (display_name.length() > 32) {
-            display_name = display_name.substr(0, 29) + "...";
-        }
-        ImGui::TextUnformatted(display_name.c_str());
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", path.c_str());
-        }
+        std::string displayTitle = filename;
+        if (displayTitle.length() > 28) displayTitle = displayTitle.substr(0, 25) + "...";
+        ImGui::TextUnformatted(displayTitle.c_str());
 
-        ImGui::Spacing();
-
-        float innerW = ImGui::GetContentRegionAvail().x;
-        float itemPad = ImGui::GetStyle().ItemSpacing.x;
-        float delW = 30.0f;
-
+        // Buttons
         if (is_current) {
-            float stopW = (innerW - delW - (2 * itemPad)) * 0.42f;
+            float stopW = (innerW - delW - (2 * itemPad)) * 0.48f;
             float switchW = innerW - delW - stopW - (2 * itemPad);
-            if (stopW < 65.0f) stopW = 65.0f;
-            if (switchW < 80.0f) switchW = 80.0f;
 
-            if (g_daemonPaused) {
-                if (ImGui::Button(ICON_FA_PLAY " Resume", ImVec2(stopW, 26))) {
-                    RequestApplyVideo(path, "resume");
-                }
-            } else {
-                if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
-                    RequestApplyVideo(path, "stop");
-                }
+            if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
+                ApplyAction("", "stop");
             }
 
             ImGui::SameLine();
             if (is_playing_opt) {
                 if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(switchW, 26))) {
                     ApplyAction(path, "wallpaper");
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Switch playback to original high-resolution video");
                 }
             } else {
                 if (has_opt) {
@@ -613,6 +598,13 @@ static void RenderGalleryTab() {
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Switch playback to optimized version (Saves GPU & VRAM)");
+                    }
+                } else if (is_already_optimal) {
+                    ImGui::BeginDisabled();
+                    ImGui::Button("Native 1080p", ImVec2(switchW, 26));
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        ImGui::SetTooltip("This video is already at optimal resolution (<= 1080p, <= 60 FPS). No transcoding needed.");
                     }
                 } else {
                     if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 26))) {
@@ -637,15 +629,20 @@ static void RenderGalleryTab() {
                 if (ImGui::Button(ICON_FA_PLAY " Optimized", ImVec2(halfW, 26))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Play optimized version (Saves VRAM & GPU load)");
-                }
                 ImGui::SameLine();
                 if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Play original high-resolution video");
+                }
+            } else if (is_already_optimal) {
+                float playW = innerW - delW - itemPad;
+                if (ImGui::Button(ICON_FA_PLAY " Play", ImVec2(playW, 26))) {
+                    RequestApplyVideo(path, "wallpaper");
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Play native 1080p video directly (Zero extra disk or memory usage)");
                 }
             } else {
                 float playW = (innerW - delW - (2 * itemPad)) * 0.68f;

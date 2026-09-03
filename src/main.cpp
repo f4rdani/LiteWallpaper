@@ -228,9 +228,13 @@ static bool OpenWallpaperVideo(const std::string& path) {
     return true;
 }
 
+static uint64_t g_pause_start_us = 0;
+static bool g_deep_suspended = false;
+
 static void SuspendWallpaper(const std::string& reason = "Fullscreen app", const std::string& detail = "") {
     if (g_fullscreen_paused) return;
     g_fullscreen_paused = true;
+    g_pause_start_us = g_clock.GetCurrentTimeMicros();
     g_audio.Stop();
     if (!detail.empty()) {
         Logger::Info("Playback auto-paused: ", reason, " [", detail, "]");
@@ -243,6 +247,11 @@ static void ResumeWallpaper() {
     if (!g_fullscreen_paused) return;
     g_fullscreen_paused = false;
     g_shared_engine_state.paused.store(false);
+    g_pause_start_us = 0;
+    if (g_deep_suspended) {
+        g_deep_suspended = false;
+        Logger::Info("Resumed from deep suspend (VRAM/RAM restored)");
+    }
 
     auto& cfg = g_config.Get();
     if (!cfg.wallpapers.empty() && cfg.wallpapers[0].audio_enabled && cfg.wallpapers[0].volume > 0.0f) {
@@ -477,6 +486,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     SuspendWallpaper("Battery saver", detail);
                 }
             }
+
+            // Deep Suspend: If paused for more than 5 seconds, flush GPU surfaces & trim RAM
+            if (!g_deep_suspended && g_pause_start_us > 0 && (now_us - g_pause_start_us >= 5000000)) {
+                g_deep_suspended = true;
+                {
+                    std::lock_guard<std::mutex> lock(g_decoder_mutex);
+                    g_decoder.FlushBuffers();
+                    g_current_frame = VideoFrame{};
+                    g_presenter.ResetStartFrame();
+                }
+                TrimWorkingSetMemory();
+                Logger::Info("Deep suspend active: released decoder VRAM & trimmed working set");
+            }
+
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
         } else if (g_fullscreen_paused) {
@@ -538,8 +561,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                             g_paused;
 
         if (should_pause) {
+            if (g_pause_start_us == 0) {
+                g_pause_start_us = now_us;
+            }
+            if (!g_deep_suspended && (now_us - g_pause_start_us >= 5000000)) {
+                g_deep_suspended = true;
+                {
+                    std::lock_guard<std::mutex> lock(g_decoder_mutex);
+                    g_decoder.FlushBuffers();
+                    g_current_frame = VideoFrame{};
+                    g_presenter.ResetStartFrame();
+                }
+                TrimWorkingSetMemory();
+                Logger::Info("Deep suspend active: released decoder VRAM & trimmed working set");
+            }
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
             continue;
+        } else if (!g_fullscreen_paused && g_deep_suspended) {
+            g_deep_suspended = false;
+            g_pause_start_us = 0;
+            Logger::Info("Resumed from deep suspend");
         }
 
         int display_fps_cap = (power == PowerState::Reduced) ? cfg.battery_fps : cfg.target_fps;

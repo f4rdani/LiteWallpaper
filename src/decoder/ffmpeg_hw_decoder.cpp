@@ -27,9 +27,9 @@ static AVPixelFormat GetHWFormat(AVCodecContext* ctx, const AVPixelFormat* pix_f
                     int h = ctx->coded_height > 0 ? ctx->coded_height : (ctx->height > 0 ? ctx->height : 1080);
                     frames_ctx->width = FFALIGN(w, 16);
                     frames_ctx->height = FFALIGN(h, 16);
-                    // Stable surface pool size for buttery smooth 30/60 FPS hardware decoding
-                    int ref_frames = ctx->refs > 0 ? ctx->refs : 4;
-                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 4, 8, 16);
+                    // Ultra-compact surface pool for looping video wallpaper (saves 20-30MB VRAM)
+                    int ref_frames = ctx->refs > 0 ? ctx->refs : 2;
+                    frames_ctx->initial_pool_size = std::clamp(ref_frames + 2, 4, 6);
 
                     auto* d3d11_frames = reinterpret_cast<AVD3D11VAFramesContext*>(frames_ctx->hwctx);
                     d3d11_frames->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
@@ -366,6 +366,19 @@ void FFmpegHWDecoder::SeekToStart() {
     if (m_audio_frame) av_frame_unref(m_audio_frame);
 
     av_seek_frame(m_fmt_ctx, m_video_stream_idx, 0, AVSEEK_FLAG_BACKWARD);
+    if (m_video_codec_ctx) {
+        avcodec_flush_buffers(m_video_codec_ctx);
+    }
+    if (m_audio_codec_ctx) {
+        avcodec_flush_buffers(m_audio_codec_ctx);
+    }
+}
+
+void FFmpegHWDecoder::FlushBuffers() {
+    // Release VRAM slice held by last decoded frame to free GPU surface
+    if (m_hw_frame) av_frame_unref(m_hw_frame);
+    if (m_audio_frame) av_frame_unref(m_audio_frame);
+
     if (m_video_codec_ctx) {
         avcodec_flush_buffers(m_video_codec_ctx);
     }

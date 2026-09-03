@@ -50,6 +50,9 @@ public:
     virtual int DecodeAudioSamples(float* buffer, int max_samples) = 0;
     
     virtual void Close() = 0;
+
+    // Release cached frames and flush codec buffers (for deep suspend)
+    virtual void FlushBuffers() {}
 };
 
 } // namespace litewp

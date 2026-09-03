@@ -31,6 +31,7 @@ public:
     bool HasAudio() const override;
     int DecodeAudioSamples(float* buffer, int max_samples) override;
     void Close() override;
+    void FlushBuffers() override;
 
     // True if the decoder is using D3D11VA hardware acceleration.
     bool IsHWAccelerated() const { return m_is_hw_accelerated; }
