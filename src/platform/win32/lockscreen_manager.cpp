@@ -8,6 +8,11 @@
 #include <algorithm>
 #include <thread>
 
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Storage.h>
+#include <winrt/Windows.System.UserProfile.h>
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 
@@ -380,6 +385,27 @@ void LockScreenManager::PreCacheLockScreenAsync(
 
 bool LockScreenManager::SetLockScreenImage(const std::wstring& imagePath) {
     if (imagePath.empty()) return false;
+
+    // 0. Official Windows 10/11 WinRT LockScreen API
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        auto file = winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(imagePath).get();
+        winrt::Windows::System::UserProfile::LockScreen::SetImageFileAsync(file).get();
+    } catch (...) {
+        // Fallback to registry if WinRT call fails or is restricted
+    }
+
+    // Disable Windows Spotlight override on Lock Screen so Picture mode takes precedence
+    HKEY hCdm = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", 0, KEY_SET_VALUE, &hCdm) == ERROR_SUCCESS) {
+        DWORD zero = 0;
+        RegSetValueExW(hCdm, L"RotatingLockScreenEnabled", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+        RegSetValueExW(hCdm, L"RotatingLockScreenOverlayEnabled", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+        RegSetValueExW(hCdm, L"SubscribedContent-338387Enabled", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+        RegSetValueExW(hCdm, L"SubscribedContent-338388Enabled", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+        RegSetValueExW(hCdm, L"SubscribedContent-338389Enabled", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+        RegCloseKey(hCdm);
+    }
 
     // 1. Creative key (Windows 10/11 LockApp.exe)
     HKEY hKey = nullptr;

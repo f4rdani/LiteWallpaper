@@ -61,7 +61,7 @@ target_link_libraries(LiteWallpaper PRIVATE
     # Windows system libs
     d3d11 dxgi d3dcompiler
     dwmapi user32 gdi32 shell32 ole32 uuid
-    winmm wtsapi32 psapi comdlg32 advapi32 imm32
+    winmm wtsapi32 psapi comdlg32 advapi32 imm32 windowsapp
 )
 
 # Automatically generate LiteWallpaper.scr companion screensaver binary
