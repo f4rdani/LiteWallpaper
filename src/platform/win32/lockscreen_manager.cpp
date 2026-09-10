@@ -7,6 +7,7 @@
 #include <fstream>
 #include <algorithm>
 #include <thread>
+#include "core/logger.h"
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -41,6 +42,14 @@ static std::string WideToUtf8(const std::wstring& wstr) {
     std::string str(size_needed, 0);
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
     return str;
+}
+
+static std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
+    std::wstring wstr(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size_needed);
+    return wstr;
 }
 
 LockScreenManager::LockScreenManager() = default;
@@ -412,139 +421,170 @@ void LockScreenManager::SyncFromVideoAsync(
                  lockSlotPath, lockCanonical, lockBmp,
                  syncLockScreen, syncNativeDesktop]() {
 
-        AVFormatContext* fmt_ctx = nullptr;
-        if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) < 0) {
-            m_is_caching = false;
-            return;
-        }
+        std::string primaryJpg = syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
+        bool extraction_done = false;
 
-        if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-            avformat_close_input(&fmt_ctx);
-            m_is_caching = false;
-            return;
-        }
-
-        int video_stream_idx = -1;
-        for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
-            if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                video_stream_idx = static_cast<int>(i);
-                break;
+        // 1. Primary: Use ffmpeg CLI (fastest, pristine 100% quality, zero codec/color quirks)
+        std::wstring wCmd = L"ffmpeg -y -ss 00:00:01 -i \"" + Utf8ToWide(video_path) + L"\" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
+        STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi = {};
+        if (CreateProcessW(nullptr, wCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, 3000);
+            DWORD exitCode = 1;
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            if (exitCode == 0) {
+                WIN32_FILE_ATTRIBUTE_DATA fad;
+                if (GetFileAttributesExW(Utf8ToWide(primaryJpg).c_str(), GetFileExInfoStandard, &fad) && fad.nFileSizeLow > 5000) {
+                    extraction_done = true;
+                    Logger::Info("SyncFromVideoAsync: Frame extracted via ffmpeg CLI successfully (", fad.nFileSizeLow, " bytes)");
+                }
             }
         }
 
-        if (video_stream_idx < 0) {
-            avformat_close_input(&fmt_ctx);
-            m_is_caching = false;
-            return;
-        }
-
-        AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_idx]->codecpar;
-        const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
-        if (!decoder) {
-            avformat_close_input(&fmt_ctx);
-            m_is_caching = false;
-            return;
-        }
-
-        AVCodecContext* codec_ctx = avcodec_alloc_context3(decoder);
-        if (!codec_ctx) {
-            avformat_close_input(&fmt_ctx);
-            m_is_caching = false;
-            return;
-        }
-
-        if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0 ||
-            avcodec_open2(codec_ctx, decoder, nullptr) < 0) {
-            avcodec_free_context(&codec_ctx);
-            avformat_close_input(&fmt_ctx);
-            m_is_caching = false;
-            return;
-        }
-
-        // Seek to ~1 sec or 0 to skip intro black frames
-        av_seek_frame(fmt_ctx, video_stream_idx, 1 * AV_TIME_BASE, AVSEEK_FLAG_BACKWARD);
-        avcodec_flush_buffers(codec_ctx);
-
-        AVPacket* pkt = av_packet_alloc();
-        AVFrame* frame = av_frame_alloc();
-        AVFrame* rgb_frame = av_frame_alloc();
-
-        rgb_frame->format = AV_PIX_FMT_RGB24;
-        rgb_frame->width = target_w;
-        rgb_frame->height = target_h;
-        av_frame_get_buffer(rgb_frame, 32);
-
-        SwsContext* sws_ctx = nullptr;
-        bool frame_decoded = false;
-
-        while (av_read_frame(fmt_ctx, pkt) >= 0) {
-            if (pkt->stream_index == video_stream_idx) {
-                if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
-                    if (avcodec_receive_frame(codec_ctx, frame) >= 0) {
-                        sws_ctx = sws_getContext(
-                            frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-                            target_w, target_h, AV_PIX_FMT_RGB24,
-                            SWS_BILINEAR, nullptr, nullptr, nullptr
-                        );
-                        if (sws_ctx) {
-                            sws_scale(
-                                sws_ctx,
-                                frame->data, frame->linesize,
-                                0, frame->height,
-                                rgb_frame->data, rgb_frame->linesize
-                            );
-                            frame_decoded = true;
-                            sws_freeContext(sws_ctx);
-                            sws_ctx = nullptr;
+        // 2. Fallback: In-process FFmpeg C API with luma validation
+        if (!extraction_done) {
+            AVFormatContext* fmt_ctx = nullptr;
+            if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) >= 0) {
+                if (avformat_find_stream_info(fmt_ctx, nullptr) >= 0) {
+                    int video_stream_idx = -1;
+                    for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
+                        if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                            video_stream_idx = static_cast<int>(i);
+                            break;
                         }
-                        av_packet_unref(pkt);
-                        break;
                     }
+
+                    if (video_stream_idx >= 0) {
+                        AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_idx]->codecpar;
+                        const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
+                        if (decoder) {
+                            AVCodecContext* codec_ctx = avcodec_alloc_context3(decoder);
+                            if (codec_ctx) {
+                                if (avcodec_parameters_to_context(codec_ctx, codecpar) >= 0 &&
+                                    avcodec_open2(codec_ctx, decoder, nullptr) >= 0) {
+
+                                    int64_t target_ts = 0;
+                                    if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
+                                        int64_t one_sec_ts = av_rescale_q(1 * AV_TIME_BASE, AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+                                        int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
+                                        if (dur > 0 && one_sec_ts < dur) {
+                                            target_ts = one_sec_ts;
+                                        }
+                                    }
+                                    av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
+                                    avcodec_flush_buffers(codec_ctx);
+
+                                    AVPacket* pkt = av_packet_alloc();
+                                    AVFrame* frame = av_frame_alloc();
+                                    AVFrame* rgb_frame = av_frame_alloc();
+
+                                    rgb_frame->format = AV_PIX_FMT_RGB24;
+                                    rgb_frame->width = target_w;
+                                    rgb_frame->height = target_h;
+                                    av_frame_get_buffer(rgb_frame, 32);
+
+                                    SwsContext* sws_ctx = nullptr;
+                                    int frames_received = 0;
+
+                                    while (av_read_frame(fmt_ctx, pkt) >= 0) {
+                                        if (pkt->stream_index == video_stream_idx) {
+                                            if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
+                                                while (avcodec_receive_frame(codec_ctx, frame) >= 0) {
+                                                    if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
+                                                        frames_received++;
+
+                                                        // Check luma to avoid intro black frames
+                                                        int luma_sum = 0;
+                                                        if (frame->data[0]) {
+                                                            for (int i = 0; i < 100; ++i) {
+                                                                int sx = (i % 10) * (frame->width / 10);
+                                                                int sy = (i / 10) * (frame->height / 10);
+                                                                luma_sum += frame->data[0][sy * frame->linesize[0] + sx];
+                                                            }
+                                                        }
+                                                        int avg_luma = luma_sum / 100;
+
+                                                        if (avg_luma > 20 || frames_received > 60) {
+                                                            if (!sws_ctx) {
+                                                                sws_ctx = sws_getContext(
+                                                                    frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                                                                    target_w, target_h, AV_PIX_FMT_RGB24,
+                                                                    SWS_BILINEAR, nullptr, nullptr, nullptr
+                                                                );
+                                                            }
+                                                            if (sws_ctx) {
+                                                                int scaled = sws_scale(
+                                                                    sws_ctx,
+                                                                    frame->data, frame->linesize,
+                                                                    0, frame->height,
+                                                                    rgb_frame->data, rgb_frame->linesize
+                                                                );
+                                                                if (scaled == target_h && rgb_frame->data[0]) {
+                                                                    std::vector<uint8_t> rgbData(static_cast<size_t>(target_w) * target_h * 3);
+                                                                    for (int y = 0; y < target_h; ++y) {
+                                                                        memcpy(
+                                                                            rgbData.data() + (static_cast<size_t>(y) * target_w * 3),
+                                                                            rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
+                                                                            static_cast<size_t>(target_w) * 3
+                                                                        );
+                                                                    }
+                                                                    if (stbi_write_jpg(primaryJpg.c_str(), target_w, target_h, 3, rgbData.data(), 92)) {
+                                                                        extraction_done = true;
+                                                                        Logger::Info("SyncFromVideoAsync: Frame extracted via in-process FFmpeg successfully");
+                                                                    }
+                                                                }
+                                                            }
+                                                            av_frame_unref(frame);
+                                                            break;
+                                                        }
+                                                    }
+                                                    av_frame_unref(frame);
+                                                }
+                                                if (extraction_done) break;
+                                            }
+                                        }
+                                        av_packet_unref(pkt);
+                                        if (extraction_done) break;
+                                    }
+
+                                    if (sws_ctx) sws_freeContext(sws_ctx);
+                                    av_packet_free(&pkt);
+                                    av_frame_free(&frame);
+                                    av_frame_free(&rgb_frame);
+                                }
+                                avcodec_free_context(&codec_ctx);
+                            }
+                        }
+                    }
+                    avformat_close_input(&fmt_ctx);
                 }
             }
-            av_packet_unref(pkt);
         }
 
-        av_packet_free(&pkt);
-        av_frame_free(&frame);
-        avcodec_free_context(&codec_ctx);
-        avformat_close_input(&fmt_ctx);
+        if (extraction_done) {
+            HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            if (FAILED(hrCo)) hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-        if (frame_decoded && rgb_frame->data[0]) {
-            std::vector<uint8_t> rgbData(static_cast<size_t>(target_w) * target_h * 3);
-            for (int y = 0; y < target_h; ++y) {
-                memcpy(
-                    rgbData.data() + (static_cast<size_t>(y) * target_w * 3),
-                    rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
-                    static_cast<size_t>(target_w) * 3
-                );
+            if (syncNativeDesktop) {
+                CopyFileW(desktopSlotPath.c_str(), desktopCanonical.c_str(), FALSE);
+                SetNativeDesktopWallpaperFile(desktopSlotPath);
             }
-            av_frame_free(&rgb_frame);
-
-            HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-
-            std::string primaryJpg = syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
-            if (stbi_write_jpg(primaryJpg.c_str(), target_w, target_h, 3, rgbData.data(), 92)) {
+            if (syncLockScreen) {
                 if (syncNativeDesktop) {
-                    CopyFileW(desktopSlotPath.c_str(), desktopCanonical.c_str(), FALSE);
-                    SetNativeDesktopWallpaperFile(desktopSlotPath);
+                    CopyFileW(desktopSlotPath.c_str(), lockSlotPath.c_str(), FALSE);
                 }
-                if (syncLockScreen) {
-                    if (syncNativeDesktop) {
-                        CopyFileW(desktopSlotPath.c_str(), lockSlotPath.c_str(), FALSE);
-                    }
-                    CopyFileW(lockSlotPath.c_str(), lockCanonical.c_str(), FALSE);
-                    SaveRgbAsBmp(rgbData, target_w, target_h, lockBmp);
-                    SetLockScreenImage(lockSlotPath);
-                    SetLockScreenImageWin7(lockSlotPath);
-                }
+                CopyFileW(lockSlotPath.c_str(), lockCanonical.c_str(), FALSE);
+                SetLockScreenImage(lockSlotPath);
+                SetLockScreenImageWin7(lockSlotPath);
             }
 
             if (SUCCEEDED(hrCo)) {
                 CoUninitialize();
             }
-        } else {
-            if (rgb_frame) av_frame_free(&rgb_frame);
         }
 
         m_is_caching = false;

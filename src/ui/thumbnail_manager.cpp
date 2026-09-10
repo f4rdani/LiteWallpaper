@@ -171,8 +171,16 @@ bool ThumbnailManager::ExtractFrameToBGRA(const std::string& video_path, std::ve
         return false;
     }
 
-    // Seek to ~1 sec in or 0 for short clips
-    av_seek_frame(fmt_ctx, video_stream_idx, 1 * AV_TIME_BASE, AVSEEK_FLAG_BACKWARD);
+    // Seek to ~1 sec in (or 0) using stream time_base to avoid seeking past EOF
+    int64_t target_ts = 0;
+    if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
+        int64_t one_sec_ts = av_rescale_q(1 * AV_TIME_BASE, AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+        int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
+        if (dur > 0 && one_sec_ts < dur) {
+            target_ts = one_sec_ts;
+        }
+    }
+    av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(codec_ctx);
 
     AVPacket* pkt = av_packet_alloc();
