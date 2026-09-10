@@ -26,6 +26,7 @@
 #include "core/engine_state.h"
 #include "core/video_optimizer.h"
 #include "platform/win32/hardware_info.h"
+#include "platform/win32/lockscreen_manager.h"
 #include "thumbnail_manager.h"
 #include "icons_fontawesome6.h"
 
@@ -917,6 +918,50 @@ static void RenderSettingsPanel() {
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Launches LiteWallpaper silently in the background when Windows starts, seamlessly resuming your wallpaper.");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_LOCK "  Lock Screen & Screensaver Integration");
+
+    if (ImGui::Checkbox("Auto-Sync Windows Lock Screen Wallpaper", &cfg.update_lockscreen)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Pre-caches a crystal-clear high-definition snapshot of your active wallpaper and synchronizes it with the Windows Lock Screen (0ms visual transition on Win+L with 0% CPU/VRAM usage).");
+    }
+
+    static bool scr_checked = false;
+    static bool scr_installed = false;
+    if (!scr_checked) {
+        scr_installed = LockScreenManager::IsScreensaverInstalled();
+        scr_checked = true;
+    }
+
+    if (ImGui::Checkbox("Enable LiteWallpaper as Windows Screensaver", &scr_installed)) {
+        if (scr_installed) {
+            wchar_t exePathBuf[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+            std::wstring exePath(exePathBuf);
+            std::wstring scrPath = exePath.substr(0, exePath.find_last_of(L'.')) + L".scr";
+            if (!fs::exists(scrPath)) {
+                CopyFileW(exePath.c_str(), scrPath.c_str(), FALSE);
+            }
+            LockScreenManager::InstallScreensaver(scrPath, 300, true);
+        } else {
+            LockScreenManager::UninstallScreensaver();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Plays your live video wallpaper at full 60 FPS when your computer is idle! When waking the PC, it transitions seamlessly to the Windows logon screen.");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Configure Screensaver...")) {
+        LockScreenManager::OpenWindowsScreensaverSettings();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Opens the official Windows Screen Saver Settings dialog to adjust wait timeout and resume security.");
     }
 
     ImGui::Spacing();

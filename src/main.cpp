@@ -274,6 +274,148 @@ static void ResumeWallpaper() {
     Logger::Info("Playback auto-resumed: Desktop is visible and active");
 }
 
+static POINT g_scr_mouse_init = {};
+static bool g_scr_mouse_init_set = false;
+
+static LRESULT CALLBACK ScreensaverWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE: {
+            GetCursorPos(&g_scr_mouse_init);
+            g_scr_mouse_init_set = true;
+            return 0;
+        }
+        case WM_SETCURSOR: {
+            SetCursor(nullptr);
+            return TRUE;
+        }
+        case WM_MOUSEMOVE: {
+            if (!g_scr_mouse_init_set) {
+                GetCursorPos(&g_scr_mouse_init);
+                g_scr_mouse_init_set = true;
+                return 0;
+            }
+            POINT pt;
+            GetCursorPos(&pt);
+            if (abs(pt.x - g_scr_mouse_init.x) > 15 || abs(pt.y - g_scr_mouse_init.y) > 15) {
+                PostQuitMessage(0);
+            }
+            return 0;
+        }
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+            PostQuitMessage(0);
+            return 0;
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static int RunScreensaverMode(HINSTANCE hInstance) {
+    timeBeginPeriod(1);
+
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    WNDCLASSEXW wc = { sizeof(wc) };
+    wc.lpfnWndProc = ScreensaverWndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = L"LiteWallpaper_Screensaver";
+    wc.hCursor = nullptr;
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOPMOST,
+        wc.lpszClassName,
+        L"LiteWallpaper Screensaver",
+        WS_POPUP | WS_VISIBLE,
+        vx, vy, vw, vh,
+        nullptr, nullptr, hInstance, nullptr
+    );
+
+    if (!hwnd) {
+        timeEndPeriod(1);
+        return 1;
+    }
+
+    ShowCursor(FALSE);
+
+    D3D11Presenter presenter;
+    if (!presenter.Init(hwnd, vw, vh)) {
+        ShowCursor(TRUE);
+        DestroyWindow(hwnd);
+        timeEndPeriod(1);
+        return 1;
+    }
+
+    Config config;
+    config.Load();
+    auto& cfg = config.Get();
+    std::string video_path = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+    if (video_path.empty() || !fs::exists(video_path)) {
+        ShowCursor(TRUE);
+        DestroyWindow(hwnd);
+        timeEndPeriod(1);
+        return 0;
+    }
+
+    FFmpegHWDecoder decoder;
+    if (!decoder.Open(video_path.c_str(), presenter.GetDevice(), vw, vh)) {
+        ShowCursor(TRUE);
+        DestroyWindow(hwnd);
+        timeEndPeriod(1);
+        return 1;
+    }
+
+    PlaybackClock clock;
+    clock.SetTargetFPS((cfg.target_fps > 0) ? cfg.target_fps : 60);
+
+    VideoFrame frame;
+    MSG msg = {};
+    bool running = true;
+    while (running) {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                running = false;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (!running) break;
+
+        if (clock.ShouldRenderFrame()) {
+            if (decoder.DecodeNextFrame(frame)) {
+                if (frame.texture) {
+                    presenter.RenderFrame(frame.texture, frame.texture_index, cfg.scaling_mode);
+                    presenter.Present(1);
+                }
+            } else {
+                decoder.SeekToStart();
+                clock.Reset();
+            }
+        } else {
+            uint32_t sleep_ms = clock.GetSleepDurationMs();
+            if (sleep_ms > 0) Sleep(sleep_ms);
+            else YieldProcessor();
+        }
+    }
+
+    ShowCursor(TRUE);
+    decoder.Close();
+    presenter.Cleanup();
+    if (IsWindow(hwnd)) DestroyWindow(hwnd);
+    UnregisterClassW(wc.lpszClassName, hInstance);
+    timeEndPeriod(1);
+    return 0;
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int /*nCmdShow*/) {
     // 0. Explicitly lock Current Working Directory to executable directory
     wchar_t exePathBuf[MAX_PATH] = {};
@@ -281,6 +423,50 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     fs::path exeDirPath = fs::path(exePathBuf).parent_path();
     if (!exeDirPath.empty()) {
         SetCurrentDirectoryW(exeDirPath.c_str());
+    }
+
+    // Helper for exact command-line switch matching (e.g. /s, -s, /c, -c, /p, -p)
+    auto MatchArg = [](const wchar_t* cmd, const wchar_t* arg) -> bool {
+        if (!cmd || !arg) return false;
+        const wchar_t* p = cmd;
+        size_t len = wcslen(arg);
+        while ((p = wcsstr(p, arg)) != nullptr) {
+            bool start_ok = (p == cmd || *(p - 1) == L' ' || *(p - 1) == L'\t');
+            wchar_t next = *(p + len);
+            bool end_ok = (next == L'\0' || next == L' ' || next == L'\t' || next == L':');
+            if (start_ok && end_ok) return true;
+            p += len;
+        }
+        return false;
+    };
+
+    // Handle Windows Screensaver switches (/s, /c, /p)
+    if (lpCmdLine) {
+        if (MatchArg(lpCmdLine, L"/s") || MatchArg(lpCmdLine, L"/S") ||
+            MatchArg(lpCmdLine, L"-s") || MatchArg(lpCmdLine, L"-S")) {
+            return RunScreensaverMode(hInstance);
+        }
+        if (MatchArg(lpCmdLine, L"/c") || MatchArg(lpCmdLine, L"/C") ||
+            MatchArg(lpCmdLine, L"-c") || MatchArg(lpCmdLine, L"-C")) {
+            IpcClient client;
+            std::string resp = client.SendRequest("{\"cmd\":\"open_settings\"}");
+            if (!resp.empty()) {
+                return 0;
+            }
+            SettingsUI::Open(hInstance);
+            MSG msg;
+            while (SettingsUI::IsOpen() && GetMessageW(&msg, nullptr, 0, 0)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+                SettingsUI::RenderFrame();
+            }
+            SettingsUI::Shutdown();
+            return 0;
+        }
+        if (MatchArg(lpCmdLine, L"/p") || MatchArg(lpCmdLine, L"/P") ||
+            MatchArg(lpCmdLine, L"-p") || MatchArg(lpCmdLine, L"-P")) {
+            return 0;
+        }
     }
 
     bool is_silent_boot = (lpCmdLine && (wcsstr(lpCmdLine, L"--startup") != nullptr || wcsstr(lpCmdLine, L"-startup") != nullptr));
@@ -632,6 +818,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     if (!g_first_frame_captured) {
                         g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
                         g_first_frame_captured = true;
+                        if (cfg.update_lockscreen) {
+                            g_lockscreen.PreCacheLockScreenAsync(
+                                g_presenter.GetDevice(),
+                                g_presenter.GetContext(),
+                                g_current_frame.texture,
+                                g_current_frame.texture_index
+                            );
+                        }
+                    }
+
+                    static uint64_t last_lock_precache_us = 0;
+                    if (cfg.update_lockscreen && (now_us - last_lock_precache_us >= 60000000)) {
+                        last_lock_precache_us = now_us;
+                        g_lockscreen.PreCacheLockScreenAsync(
+                            g_presenter.GetDevice(),
+                            g_presenter.GetContext(),
+                            g_current_frame.texture,
+                            g_current_frame.texture_index
+                        );
                     }
 
                     // Calculate Auto Smooth Loop crossfade blend alpha & dynamic speed ramp

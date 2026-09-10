@@ -63,3 +63,11 @@ target_link_libraries(LiteWallpaper PRIVATE
     dwmapi user32 gdi32 shell32 ole32 uuid
     winmm wtsapi32 psapi comdlg32 advapi32 imm32
 )
+
+# Automatically generate LiteWallpaper.scr companion screensaver binary
+add_custom_command(TARGET LiteWallpaper POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "$<TARGET_FILE:LiteWallpaper>"
+    "$<TARGET_FILE_DIR:LiteWallpaper>/LiteWallpaper.scr"
+    COMMENT "Creating LiteWallpaper.scr screensaver binary"
+)

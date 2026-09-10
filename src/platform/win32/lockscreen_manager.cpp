@@ -1,10 +1,12 @@
 #include "lockscreen_manager.h"
 #include <windows.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <wrl/client.h>
 #include <vector>
 #include <fstream>
 #include <algorithm>
+#include <thread>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
@@ -281,22 +283,149 @@ bool LockScreenManager::SetNativeDesktopWallpaper(
     return false;
 }
 
+void LockScreenManager::PreCacheLockScreenAsync(
+    ID3D11Device* device,
+    ID3D11DeviceContext* ctx,
+    ID3D11Texture2D* currentFrame,
+    int arrayIndex
+) {
+    if (!device || !ctx || !currentFrame) return;
+
+    // Prevent concurrent duplicate workers
+    if (m_is_caching.exchange(true)) return;
+
+    D3D11_TEXTURE2D_DESC desc;
+    currentFrame->GetDesc(&desc);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.ArraySize = 1;
+    stagingDesc.MipLevels = 1;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+
+    ComPtr<ID3D11Texture2D> stagingTexture;
+    HRESULT hr = device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
+    if (FAILED(hr)) {
+        m_is_caching = false;
+        return;
+    }
+
+    UINT subresource = D3D11CalcSubresource(0, arrayIndex, desc.MipLevels);
+    ctx->CopySubresourceRegion(stagingTexture.Get(), 0, 0, 0, 0, currentFrame, subresource, nullptr);
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    hr = ctx->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(hr)) {
+        m_is_caching = false;
+        return;
+    }
+
+    int width = desc.Width;
+    int height = desc.Height;
+    std::vector<uint8_t> rgbData(static_cast<size_t>(width) * height * 3, 0);
+
+    if (desc.Format == DXGI_FORMAT_NV12) {
+        const uint8_t* yPlane = reinterpret_cast<const uint8_t*>(mapped.pData);
+        const uint8_t* uvPlane = yPlane + (mapped.RowPitch * height);
+
+        for (int y = 0; y < height; ++y) {
+            const uint8_t* yLine = yPlane + (y * mapped.RowPitch);
+            const uint8_t* uvLine = uvPlane + ((y / 2) * mapped.RowPitch);
+
+            for (int x = 0; x < width; ++x) {
+                int yVal = yLine[x];
+                int uVal = uvLine[(x / 2) * 2] - 128;
+                int vVal = uvLine[(x / 2) * 2 + 1] - 128;
+
+                int r = static_cast<int>(yVal + 1.402f * vVal);
+                int g = static_cast<int>(yVal - 0.344136f * uVal - 0.714136f * vVal);
+                int b = static_cast<int>(yVal + 1.772f * uVal);
+
+                size_t outIdx = (static_cast<size_t>(y) * width + x) * 3;
+                rgbData[outIdx + 0] = static_cast<uint8_t>(std::clamp(r, 0, 255));
+                rgbData[outIdx + 1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
+                rgbData[outIdx + 2] = static_cast<uint8_t>(std::clamp(b, 0, 255));
+            }
+        }
+    } else {
+        const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(mapped.pData);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                size_t srcIdx = static_cast<size_t>(x) * 4;
+                size_t dstIdx = (static_cast<size_t>(y) * width + x) * 3;
+                rgbData[dstIdx + 0] = srcRow[srcIdx + 2];
+                rgbData[dstIdx + 1] = srcRow[srcIdx + 1];
+                rgbData[dstIdx + 2] = srcRow[srcIdx + 0];
+            }
+            srcRow += mapped.RowPitch;
+        }
+    }
+
+    ctx->Unmap(stagingTexture.Get(), 0);
+
+    std::wstring imgPathJpg = GetTempImagePathJpg();
+
+    // Offload compression and registry commit to background worker thread
+    std::thread([this, rgb = std::move(rgbData), width, height, imgPathJpg]() {
+        std::string utf8Path = WideToUtf8(imgPathJpg);
+        if (stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgb.data(), 85)) {
+            SetLockScreenImage(imgPathJpg);
+            SetLockScreenImageWin7(imgPathJpg);
+        }
+        m_is_caching = false;
+    }).detach();
+}
+
 bool LockScreenManager::SetLockScreenImage(const std::wstring& imagePath) {
-    HKEY hKey;
-    if (RegOpenKeyExW(
+    if (imagePath.empty()) return false;
+
+    // 1. Creative key (Windows 10/11 LockApp.exe)
+    HKEY hKey = nullptr;
+    if (RegCreateKeyExW(
         HKEY_CURRENT_USER,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Lock Screen\\Creative",
-        0,
-        KEY_SET_VALUE,
-        &hKey
+        0, nullptr, 0, KEY_SET_VALUE, nullptr, &hKey, nullptr
     ) == ERROR_SUCCESS) {
         RegSetValueExW(
-            hKey,
-            L"LockScreenImage",
-            0,
-            REG_SZ,
+            hKey, L"LockScreenImage", 0, REG_SZ,
             reinterpret_cast<const BYTE*>(imagePath.c_str()),
             static_cast<DWORD>((imagePath.length() + 1) * sizeof(wchar_t))
+        );
+        RegSetValueExW(
+            hKey, L"LandscapeAssetPath", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(imagePath.c_str()),
+            static_cast<DWORD>((imagePath.length() + 1) * sizeof(wchar_t))
+        );
+        RegSetValueExW(
+            hKey, L"PortraitAssetPath", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(imagePath.c_str()),
+            static_cast<DWORD>((imagePath.length() + 1) * sizeof(wchar_t))
+        );
+        RegCloseKey(hKey);
+    }
+
+    // 2. PersonalizationCSP key (Windows 10/11 Personalization Settings)
+    if (RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\PersonalizationCSP",
+        0, nullptr, 0, KEY_SET_VALUE, nullptr, &hKey, nullptr
+    ) == ERROR_SUCCESS) {
+        DWORD status = 1;
+        RegSetValueExW(
+            hKey, L"LockScreenImagePath", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(imagePath.c_str()),
+            static_cast<DWORD>((imagePath.length() + 1) * sizeof(wchar_t))
+        );
+        RegSetValueExW(
+            hKey, L"LockScreenImageUrl", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(imagePath.c_str()),
+            static_cast<DWORD>((imagePath.length() + 1) * sizeof(wchar_t))
+        );
+        RegSetValueExW(
+            hKey, L"LockScreenImageStatus", 0, REG_DWORD,
+            reinterpret_cast<const BYTE*>(&status), sizeof(status)
         );
         RegCloseKey(hKey);
     }
@@ -313,7 +442,7 @@ bool LockScreenManager::SetLockScreenImageWin7(const std::wstring& imagePath) {
     std::wstring oobeFile = oobeDir + L"\\backgroundDefault.jpg";
     CopyFileW(imagePath.c_str(), oobeFile.c_str(), FALSE);
 
-    HKEY hKey;
+    HKEY hKey = nullptr;
     if (RegOpenKeyExW(
         HKEY_LOCAL_MACHINE,
         L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI\\Background",
@@ -327,6 +456,71 @@ bool LockScreenManager::SetLockScreenImageWin7(const std::wstring& imagePath) {
         return true;
     }
     return false;
+}
+
+bool LockScreenManager::InstallScreensaver(const std::wstring& scrPath, int timeoutSeconds, bool secureOnResume) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    // Set SCRNSAVE.EXE path
+    RegSetValueExW(hKey, L"SCRNSAVE.EXE", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(scrPath.c_str()),
+        static_cast<DWORD>((scrPath.length() + 1) * sizeof(wchar_t)));
+
+    // Set ScreenSaveActive = "1"
+    const wchar_t* active = L"1";
+    RegSetValueExW(hKey, L"ScreenSaveActive", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(active), static_cast<DWORD>((wcslen(active) + 1) * sizeof(wchar_t)));
+
+    // Set ScreenSaverIsSecure = "1" (locks session upon wake up)
+    const wchar_t* secure = secureOnResume ? L"1" : L"0";
+    RegSetValueExW(hKey, L"ScreenSaverIsSecure", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(secure), static_cast<DWORD>((wcslen(secure) + 1) * sizeof(wchar_t)));
+
+    // Set ScreenSaveTimeOut (in seconds)
+    std::wstring timeoutStr = std::to_wstring(timeoutSeconds);
+    RegSetValueExW(hKey, L"ScreenSaveTimeOut", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(timeoutStr.c_str()), static_cast<DWORD>((timeoutStr.length() + 1) * sizeof(wchar_t)));
+
+    RegCloseKey(hKey);
+
+    SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, TRUE, nullptr, SPIF_SENDCHANGE);
+    return true;
+}
+
+bool LockScreenManager::UninstallScreensaver() {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegDeleteValueW(hKey, L"SCRNSAVE.EXE");
+        RegCloseKey(hKey);
+    }
+    SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, FALSE, nullptr, SPIF_SENDCHANGE);
+    return true;
+}
+
+bool LockScreenManager::IsScreensaverInstalled(std::wstring* outPath) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    wchar_t path[MAX_PATH] = {};
+    DWORD size = sizeof(path);
+    DWORD type = REG_SZ;
+    LSTATUS res = RegQueryValueExW(hKey, L"SCRNSAVE.EXE", nullptr, &type, reinterpret_cast<BYTE*>(path), &size);
+    RegCloseKey(hKey);
+
+    if (res == ERROR_SUCCESS && wcslen(path) > 0) {
+        if (outPath) *outPath = path;
+        return true;
+    }
+    return false;
+}
+
+void LockScreenManager::OpenWindowsScreensaverSettings() {
+    ShellExecuteW(nullptr, L"open", L"control.exe", L"desk.cpl,,@screensaver", nullptr, SW_SHOWNORMAL);
 }
 
 } // namespace litewp
