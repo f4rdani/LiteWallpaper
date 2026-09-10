@@ -818,24 +818,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     if (!g_first_frame_captured) {
                         g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
                         g_first_frame_captured = true;
-                        if (cfg.update_lockscreen) {
-                            g_lockscreen.PreCacheLockScreenAsync(
+                        if (cfg.update_lockscreen || cfg.update_desktop_wallpaper) {
+                            g_lockscreen.SyncVisualsAsync(
                                 g_presenter.GetDevice(),
                                 g_presenter.GetContext(),
                                 g_current_frame.texture,
-                                g_current_frame.texture_index
+                                g_current_frame.texture_index,
+                                cfg.update_lockscreen,
+                                cfg.update_desktop_wallpaper
                             );
                         }
                     }
 
                     static uint64_t last_lock_precache_us = 0;
-                    if (cfg.update_lockscreen && (now_us - last_lock_precache_us >= 60000000)) {
+                    if ((cfg.update_lockscreen || cfg.update_desktop_wallpaper) && (now_us - last_lock_precache_us >= 60000000)) {
                         last_lock_precache_us = now_us;
-                        g_lockscreen.PreCacheLockScreenAsync(
+                        g_lockscreen.SyncVisualsAsync(
                             g_presenter.GetDevice(),
                             g_presenter.GetContext(),
                             g_current_frame.texture,
-                            g_current_frame.texture_index
+                            g_current_frame.texture_index,
+                            cfg.update_lockscreen,
+                            false // Periodic 60s update only updates lock screen cache
                         );
                     }
 
@@ -1145,6 +1149,20 @@ std::string OnIpcRequest(const std::string& request_json) {
         g_config.Get().scaling_mode = mode;
         g_config.Save();
         return "{\"ok\":true}";
+    } else if (cmd == "sync_desktop_wallpaper") {
+        std::lock_guard<std::mutex> lock(g_decoder_mutex);
+        if (g_current_frame.texture) {
+            g_lockscreen.SyncVisualsAsync(
+                g_presenter.GetDevice(),
+                g_presenter.GetContext(),
+                g_current_frame.texture,
+                g_current_frame.texture_index,
+                g_config.Get().update_lockscreen,
+                true // Explicitly sync native desktop wallpaper!
+            );
+            return "{\"ok\":true}";
+        }
+        return "{\"ok\":false,\"error\":\"no active frame\"}";
     } else if (cmd == "get_status") {
         size_t ram = GetProcessMemoryUsageMB();
         std::lock_guard<std::mutex> lock(g_decoder_mutex);

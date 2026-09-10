@@ -922,7 +922,25 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_LOCK "  Lock Screen & Screensaver Integration");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_IMAGE "  Desktop & Lock Screen Visual Synchronization");
+
+    if (ImGui::Checkbox("Auto-Set Windows Desktop Wallpaper from Video (0s Boot Visual)", &cfg.update_desktop_wallpaper)) {
+        g_config.Save();
+        if (cfg.update_desktop_wallpaper) {
+            SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\"}");
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Injects the active video frame directly into the native Windows Desktop Wallpaper. When Windows boots or restarts, your wallpaper appears instantly in 0.0s without black screen or visual flicker, even before LiteWallpaper launches!");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Sync Desktop Now")) {
+        SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\"}");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Immediately captures the current video frame and sets it as your native Windows desktop wallpaper.");
+    }
 
     if (ImGui::Checkbox("Auto-Sync Windows Lock Screen Wallpaper", &cfg.update_lockscreen)) {
         g_config.Save();

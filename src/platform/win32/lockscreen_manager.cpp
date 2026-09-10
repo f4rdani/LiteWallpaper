@@ -292,9 +292,22 @@ void LockScreenManager::PreCacheLockScreenAsync(
     ID3D11Device* device,
     ID3D11DeviceContext* ctx,
     ID3D11Texture2D* currentFrame,
-    int arrayIndex
+    int arrayIndex,
+    bool syncNativeDesktop
+) {
+    SyncVisualsAsync(device, ctx, currentFrame, arrayIndex, true, syncNativeDesktop);
+}
+
+void LockScreenManager::SyncVisualsAsync(
+    ID3D11Device* device,
+    ID3D11DeviceContext* ctx,
+    ID3D11Texture2D* currentFrame,
+    int arrayIndex,
+    bool syncLockScreen,
+    bool syncNativeDesktop
 ) {
     if (!device || !ctx || !currentFrame) return;
+    if (!syncLockScreen && !syncNativeDesktop) return;
 
     // Prevent concurrent duplicate workers
     if (m_is_caching.exchange(true)) return;
@@ -371,13 +384,25 @@ void LockScreenManager::PreCacheLockScreenAsync(
     ctx->Unmap(stagingTexture.Get(), 0);
 
     std::wstring imgPathJpg = GetTempImagePathJpg();
+    std::wstring desktopPathJpg = GetDesktopPlaceholderImagePathJpg();
 
-    // Offload compression and registry commit to background worker thread
-    std::thread([this, rgb = std::move(rgbData), width, height, imgPathJpg]() {
+    // Offload compression, lock screen registry commit, and SPI_SETDESKWALLPAPER to background worker thread
+    std::thread([this, rgb = std::move(rgbData), width, height, imgPathJpg, desktopPathJpg, syncLockScreen, syncNativeDesktop]() {
         std::string utf8Path = WideToUtf8(imgPathJpg);
-        if (stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgb.data(), 85)) {
-            SetLockScreenImage(imgPathJpg);
-            SetLockScreenImageWin7(imgPathJpg);
+        if (stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgb.data(), 88)) {
+            if (syncLockScreen) {
+                SetLockScreenImage(imgPathJpg);
+                SetLockScreenImageWin7(imgPathJpg);
+            }
+            if (syncNativeDesktop) {
+                CopyFileW(imgPathJpg.c_str(), desktopPathJpg.c_str(), FALSE);
+                SystemParametersInfoW(
+                    SPI_SETDESKWALLPAPER,
+                    0,
+                    reinterpret_cast<void*>(const_cast<wchar_t*>(desktopPathJpg.c_str())),
+                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+                );
+            }
         }
         m_is_caching = false;
     }).detach();

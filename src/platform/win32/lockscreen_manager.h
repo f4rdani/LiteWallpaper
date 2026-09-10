@@ -23,7 +23,18 @@ public:
         ID3D11Device* device,
         ID3D11DeviceContext* ctx,
         ID3D11Texture2D* currentFrame,
-        int arrayIndex
+        int arrayIndex,
+        bool syncNativeDesktop = false
+    );
+
+    // Synchronize current frame to both Lock Screen and native Windows Desktop Wallpaper asynchronously
+    void SyncVisualsAsync(
+        ID3D11Device* device,
+        ID3D11DeviceContext* ctx,
+        ID3D11Texture2D* currentFrame,
+        int arrayIndex,
+        bool syncLockScreen = true,
+        bool syncNativeDesktop = true
     );
 
     // Capture current frame from D3D11 texture and set as native Windows desktop wallpaper for instant 0s boot visual
