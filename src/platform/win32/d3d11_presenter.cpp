@@ -635,7 +635,7 @@ static std::string WideToUtf8Presenter(const std::wstring& wstr) {
     return str;
 }
 
-bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int quality) {
+bool D3D11Presenter::CaptureBackBufferRGB(std::vector<uint8_t>& outRgb, int& outWidth, int& outHeight) {
     if (!m_swapchain || !m_device || !m_context) return false;
 
     ComPtr<ID3D11Texture2D> backBuffer;
@@ -646,42 +646,58 @@ bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int 
     D3D11_TEXTURE2D_DESC desc;
     backBuffer->GetDesc(&desc);
 
-    D3D11_TEXTURE2D_DESC stagingDesc = desc;
-    stagingDesc.ArraySize = 1;
-    stagingDesc.MipLevels = 1;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.MiscFlags = 0;
+    // Reuse or create staging texture to prevent GPU VRAM churn
+    if (!m_capture_staging_texture || m_capture_width != desc.Width || m_capture_height != desc.Height) {
+        m_capture_staging_texture.Reset();
+        D3D11_TEXTURE2D_DESC stagingDesc = desc;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.MipLevels = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
 
-    ComPtr<ID3D11Texture2D> stagingTexture;
-    if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture))) {
-        return false;
+        if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &m_capture_staging_texture))) {
+            return false;
+        }
+        m_capture_width = desc.Width;
+        m_capture_height = desc.Height;
     }
 
-    m_context->CopyResource(stagingTexture.Get(), backBuffer.Get());
+    m_context->CopyResource(m_capture_staging_texture.Get(), backBuffer.Get());
 
     D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(m_context->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+    if (FAILED(m_context->Map(m_capture_staging_texture.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
         return false;
     }
 
     int width = static_cast<int>(desc.Width);
     int height = static_cast<int>(desc.Height);
-    std::vector<uint8_t> rgbData(static_cast<size_t>(width) * height * 3);
+    outRgb.resize(static_cast<size_t>(width) * height * 3);
 
     const uint8_t* src = reinterpret_cast<const uint8_t*>(mapped.pData);
     for (int y = 0; y < height; ++y) {
         const uint8_t* rowSrc = src + y * mapped.RowPitch;
         size_t rowDst = static_cast<size_t>(y) * width * 3;
         for (int x = 0; x < width; ++x) {
-            rgbData[rowDst + x * 3 + 0] = rowSrc[x * 4 + 2]; // R
-            rgbData[rowDst + x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-            rgbData[rowDst + x * 3 + 2] = rowSrc[x * 4 + 0]; // B
+            outRgb[rowDst + x * 3 + 0] = rowSrc[x * 4 + 2]; // R
+            outRgb[rowDst + x * 3 + 1] = rowSrc[x * 4 + 1]; // G
+            outRgb[rowDst + x * 3 + 2] = rowSrc[x * 4 + 0]; // B
         }
     }
 
-    m_context->Unmap(stagingTexture.Get(), 0);
+    m_context->Unmap(m_capture_staging_texture.Get(), 0);
+    outWidth = width;
+    outHeight = height;
+    return true;
+}
+
+bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int quality) {
+    std::vector<uint8_t> rgbData;
+    int width = 0, height = 0;
+    if (!CaptureBackBufferRGB(rgbData, width, height)) {
+        return false;
+    }
 
     std::string utf8Path = WideToUtf8Presenter(outputPath);
     return stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgbData.data(), quality) != 0;
@@ -689,6 +705,9 @@ bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int 
 
 void D3D11Presenter::Cleanup() {
     ResetStartFrame();
+    m_capture_staging_texture.Reset();
+    m_capture_width = 0;
+    m_capture_height = 0;
     m_frame_latency_waitable_object = nullptr;
     m_srv_uv.Reset();
     m_srv_y.Reset();

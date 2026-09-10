@@ -12,6 +12,14 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.System.UserProfile.h>
+#include <shobjidl.h>
+
+#ifndef CLSID_DesktopWallpaper
+static const CLSID CLSID_DesktopWallpaper = {0xC2CF3110, 0x460E, 0x4fc1, {0xB9, 0xD0, 0x8A, 0x1C, 0x0C, 0x9C, 0xC4, 0xBD}};
+#endif
+#ifndef IID_IDesktopWallpaper
+static const IID IID_IDesktopWallpaper = {0xB92B56A9, 0x8B55, 0x4E14, {0x9A, 0x89, 0x01, 0x99, 0xBB, 0xB6, 0xF9, 0x3B}};
+#endif
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
@@ -42,24 +50,30 @@ std::wstring LockScreenManager::GetTempImagePathBmp() const {
     return L"lockscreen_capture.bmp";
 }
 
-std::wstring LockScreenManager::GetTempImagePathJpg() const {
+std::wstring LockScreenManager::GetTempImagePathJpg(int slot) const {
     wchar_t appDataPath[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
         std::wstring dir = std::wstring(appDataPath) + L"\\LiteWallpaper";
         CreateDirectoryW(dir.c_str(), NULL);
+        if (slot >= 0) {
+            return dir + L"\\lockscreen_capture_" + std::to_wstring(slot) + L".jpg";
+        }
         return dir + L"\\lockscreen_capture.jpg";
     }
-    return L"lockscreen_capture.jpg";
+    return (slot >= 0) ? (L"lockscreen_capture_" + std::to_wstring(slot) + L".jpg") : L"lockscreen_capture.jpg";
 }
 
-std::wstring LockScreenManager::GetDesktopPlaceholderImagePathJpg() const {
+std::wstring LockScreenManager::GetDesktopPlaceholderImagePathJpg(int slot) const {
     wchar_t appDataPath[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
         std::wstring dir = std::wstring(appDataPath) + L"\\LiteWallpaper";
         CreateDirectoryW(dir.c_str(), NULL);
+        if (slot >= 0) {
+            return dir + L"\\active_wallpaper_placeholder_" + std::to_wstring(slot) + L".jpg";
+        }
         return dir + L"\\active_wallpaper_placeholder.jpg";
     }
-    return L"active_wallpaper_placeholder.jpg";
+    return (slot >= 0) ? (L"active_wallpaper_placeholder_" + std::to_wstring(slot) + L".jpg") : L"active_wallpaper_placeholder.jpg";
 }
 
 bool LockScreenManager::SaveTextureAsBmp(
@@ -266,6 +280,73 @@ bool LockScreenManager::CaptureAndSetLockScreen(
     return true;
 }
 
+bool LockScreenManager::SaveRgbAsBmp(
+    const std::vector<uint8_t>& rgb,
+    int width,
+    int height,
+    const std::wstring& outputPath
+) {
+    if (rgb.empty() || width <= 0 || height <= 0) return false;
+
+    size_t rowStride = ((static_cast<size_t>(width) * 3 + 3) / 4) * 4;
+    std::vector<uint8_t> bgrData(rowStride * height, 0);
+
+    for (int y = 0; y < height; ++y) {
+        size_t rowStart = static_cast<size_t>(height - 1 - y) * rowStride;
+        for (int x = 0; x < width; ++x) {
+            size_t srcIdx = (static_cast<size_t>(y) * width + x) * 3;
+            bgrData[rowStart + x * 3 + 0] = rgb[srcIdx + 2]; // B
+            bgrData[rowStart + x * 3 + 1] = rgb[srcIdx + 1]; // G
+            bgrData[rowStart + x * 3 + 2] = rgb[srcIdx + 0]; // R
+        }
+    }
+
+    std::ofstream bmpFile(outputPath, std::ios::binary);
+    if (!bmpFile.is_open()) return false;
+
+    BITMAPFILEHEADER bfh = {};
+    bfh.bfType = 0x4D42; // "BM"
+    bfh.bfSize = static_cast<DWORD>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + bgrData.size());
+    bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+    BITMAPINFOHEADER bih = {};
+    bih.biSize = sizeof(BITMAPINFOHEADER);
+    bih.biWidth = width;
+    bih.biHeight = height;
+    bih.biPlanes = 1;
+    bih.biBitCount = 24;
+    bih.biCompression = BI_RGB;
+    bih.biSizeImage = static_cast<DWORD>(bgrData.size());
+
+    bmpFile.write(reinterpret_cast<const char*>(&bfh), sizeof(bfh));
+    bmpFile.write(reinterpret_cast<const char*>(&bih), sizeof(bih));
+    bmpFile.write(reinterpret_cast<const char*>(bgrData.data()), bgrData.size());
+    return true;
+}
+
+bool LockScreenManager::SetNativeDesktopWallpaperFile(const std::wstring& imagePath) {
+    if (imagePath.empty()) return false;
+
+    // 1. Modern Windows 8/10/11 IDesktopWallpaper COM interface
+    ComPtr<IDesktopWallpaper> pDesktopWallpaper;
+    HRESULT hr = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&pDesktopWallpaper));
+    if (SUCCEEDED(hr) && pDesktopWallpaper) {
+        pDesktopWallpaper->SetWallpaper(nullptr, imagePath.c_str());
+    }
+
+    // 2. Win32 SystemParametersInfoW for boot persistence and legacy fallback
+    SystemParametersInfoW(
+        SPI_SETDESKWALLPAPER,
+        0,
+        reinterpret_cast<void*>(const_cast<wchar_t*>(imagePath.c_str())),
+        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+    );
+
+    // 3. Broadcast setting change to notify Explorer immediately
+    PostMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETDESKWALLPAPER, 0);
+    return true;
+}
+
 bool LockScreenManager::SetNativeDesktopWallpaper(
     ID3D11Device* device,
     ID3D11DeviceContext* ctx,
@@ -274,16 +355,9 @@ bool LockScreenManager::SetNativeDesktopWallpaper(
 ) {
     if (!device || !ctx || !currentFrame) return false;
 
-    std::wstring placeholderPath = GetDesktopPlaceholderImagePathJpg();
+    std::wstring placeholderPath = GetDesktopPlaceholderImagePathJpg(-1);
     if (SaveTextureAsJpg(device, ctx, currentFrame, arrayIndex, placeholderPath, 92)) {
-        // Set native Windows desktop wallpaper for instant 0s boot visual
-        SystemParametersInfoW(
-            SPI_SETDESKWALLPAPER,
-            0,
-            reinterpret_cast<void*>(const_cast<wchar_t*>(placeholderPath.c_str())),
-            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
-        );
-        return true;
+        return SetNativeDesktopWallpaperFile(placeholderPath);
     }
     return false;
 }
@@ -298,6 +372,58 @@ void LockScreenManager::PreCacheLockScreenAsync(
     SyncVisualsAsync(device, ctx, currentFrame, arrayIndex, true, syncNativeDesktop);
 }
 
+void LockScreenManager::SyncVisualsRGBAsync(
+    std::vector<uint8_t> rgbData,
+    int width,
+    int height,
+    bool syncLockScreen,
+    bool syncNativeDesktop
+) {
+    if (rgbData.empty() || width <= 0 || height <= 0) return;
+    if (!syncLockScreen && !syncNativeDesktop) return;
+
+    if (m_is_caching.exchange(true)) return;
+
+    int deskSlot = m_desktop_slot.fetch_xor(1);
+    int lockSlot = m_lock_slot.fetch_xor(1);
+
+    std::wstring desktopSlotPath = GetDesktopPlaceholderImagePathJpg(deskSlot);
+    std::wstring desktopCanonical = GetDesktopPlaceholderImagePathJpg(-1);
+    std::wstring lockSlotPath = GetTempImagePathJpg(lockSlot);
+    std::wstring lockCanonical = GetTempImagePathJpg(-1);
+    std::wstring lockBmp = GetTempImagePathBmp();
+
+    std::thread([this, rgb = std::move(rgbData), width, height,
+                 desktopSlotPath, desktopCanonical,
+                 lockSlotPath, lockCanonical, lockBmp,
+                 syncLockScreen, syncNativeDesktop]() {
+
+        HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+        std::string primaryJpg = syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
+        if (stbi_write_jpg(primaryJpg.c_str(), width, height, 3, rgb.data(), 92)) {
+            if (syncNativeDesktop) {
+                CopyFileW(desktopSlotPath.c_str(), desktopCanonical.c_str(), FALSE);
+                SetNativeDesktopWallpaperFile(desktopSlotPath);
+            }
+            if (syncLockScreen) {
+                if (syncNativeDesktop) {
+                    CopyFileW(desktopSlotPath.c_str(), lockSlotPath.c_str(), FALSE);
+                }
+                CopyFileW(lockSlotPath.c_str(), lockCanonical.c_str(), FALSE);
+                SaveRgbAsBmp(rgb, width, height, lockBmp);
+                SetLockScreenImage(lockSlotPath);
+                SetLockScreenImageWin7(lockSlotPath);
+            }
+        }
+
+        if (SUCCEEDED(hrCo)) {
+            CoUninitialize();
+        }
+        m_is_caching = false;
+    }).detach();
+}
+
 void LockScreenManager::SyncVisualsAsync(
     ID3D11Device* device,
     ID3D11DeviceContext* ctx,
@@ -308,9 +434,6 @@ void LockScreenManager::SyncVisualsAsync(
 ) {
     if (!device || !ctx || !currentFrame) return;
     if (!syncLockScreen && !syncNativeDesktop) return;
-
-    // Prevent concurrent duplicate workers
-    if (m_is_caching.exchange(true)) return;
 
     D3D11_TEXTURE2D_DESC desc;
     currentFrame->GetDesc(&desc);
@@ -325,47 +448,30 @@ void LockScreenManager::SyncVisualsAsync(
 
     ComPtr<ID3D11Texture2D> stagingTexture;
     HRESULT hr = device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
-    if (FAILED(hr)) {
-        m_is_caching = false;
-        return;
-    }
+    if (FAILED(hr)) return;
 
     UINT subresource = D3D11CalcSubresource(0, arrayIndex, desc.MipLevels);
     ctx->CopySubresourceRegion(stagingTexture.Get(), 0, 0, 0, 0, currentFrame, subresource, nullptr);
 
     D3D11_MAPPED_SUBRESOURCE mapped;
     hr = ctx->Map(stagingTexture.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(hr)) {
-        m_is_caching = false;
-        return;
-    }
+    if (FAILED(hr)) return;
 
     int width = desc.Width;
     int height = desc.Height;
     std::vector<uint8_t> rgbData(static_cast<size_t>(width) * height * 3, 0);
 
-    if (desc.Format == DXGI_FORMAT_NV12) {
-        const uint8_t* yPlane = reinterpret_cast<const uint8_t*>(mapped.pData);
-        const uint8_t* uvPlane = yPlane + (mapped.RowPitch * height);
-
+    if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) {
+        const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(mapped.pData);
         for (int y = 0; y < height; ++y) {
-            const uint8_t* yLine = yPlane + (y * mapped.RowPitch);
-            const uint8_t* uvLine = uvPlane + ((y / 2) * mapped.RowPitch);
-
             for (int x = 0; x < width; ++x) {
-                int yVal = yLine[x];
-                int uVal = uvLine[(x / 2) * 2] - 128;
-                int vVal = uvLine[(x / 2) * 2 + 1] - 128;
-
-                int r = static_cast<int>(yVal + 1.402f * vVal);
-                int g = static_cast<int>(yVal - 0.344136f * uVal - 0.714136f * vVal);
-                int b = static_cast<int>(yVal + 1.772f * uVal);
-
-                size_t outIdx = (static_cast<size_t>(y) * width + x) * 3;
-                rgbData[outIdx + 0] = static_cast<uint8_t>(std::clamp(r, 0, 255));
-                rgbData[outIdx + 1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
-                rgbData[outIdx + 2] = static_cast<uint8_t>(std::clamp(b, 0, 255));
+                size_t srcIdx = static_cast<size_t>(x) * 4;
+                size_t dstIdx = (static_cast<size_t>(y) * width + x) * 3;
+                rgbData[dstIdx + 0] = srcRow[srcIdx + 2]; // R
+                rgbData[dstIdx + 1] = srcRow[srcIdx + 1]; // G
+                rgbData[dstIdx + 2] = srcRow[srcIdx + 0]; // B
             }
+            srcRow += mapped.RowPitch;
         }
     } else {
         const uint8_t* srcRow = reinterpret_cast<const uint8_t*>(mapped.pData);
@@ -373,9 +479,9 @@ void LockScreenManager::SyncVisualsAsync(
             for (int x = 0; x < width; ++x) {
                 size_t srcIdx = static_cast<size_t>(x) * 4;
                 size_t dstIdx = (static_cast<size_t>(y) * width + x) * 3;
-                rgbData[dstIdx + 0] = srcRow[srcIdx + 2];
+                rgbData[dstIdx + 0] = srcRow[srcIdx + 0];
                 rgbData[dstIdx + 1] = srcRow[srcIdx + 1];
-                rgbData[dstIdx + 2] = srcRow[srcIdx + 0];
+                rgbData[dstIdx + 2] = srcRow[srcIdx + 2];
             }
             srcRow += mapped.RowPitch;
         }
@@ -383,29 +489,7 @@ void LockScreenManager::SyncVisualsAsync(
 
     ctx->Unmap(stagingTexture.Get(), 0);
 
-    std::wstring imgPathJpg = GetTempImagePathJpg();
-    std::wstring desktopPathJpg = GetDesktopPlaceholderImagePathJpg();
-
-    // Offload compression, lock screen registry commit, and SPI_SETDESKWALLPAPER to background worker thread
-    std::thread([this, rgb = std::move(rgbData), width, height, imgPathJpg, desktopPathJpg, syncLockScreen, syncNativeDesktop]() {
-        std::string utf8Path = WideToUtf8(imgPathJpg);
-        if (stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgb.data(), 88)) {
-            if (syncLockScreen) {
-                SetLockScreenImage(imgPathJpg);
-                SetLockScreenImageWin7(imgPathJpg);
-            }
-            if (syncNativeDesktop) {
-                CopyFileW(imgPathJpg.c_str(), desktopPathJpg.c_str(), FALSE);
-                SystemParametersInfoW(
-                    SPI_SETDESKWALLPAPER,
-                    0,
-                    reinterpret_cast<void*>(const_cast<wchar_t*>(desktopPathJpg.c_str())),
-                    SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
-                );
-            }
-        }
-        m_is_caching = false;
-    }).detach();
+    SyncVisualsRGBAsync(std::move(rgbData), width, height, syncLockScreen, syncNativeDesktop);
 }
 
 bool LockScreenManager::SetLockScreenImage(const std::wstring& imagePath) {
@@ -414,6 +498,8 @@ bool LockScreenManager::SetLockScreenImage(const std::wstring& imagePath) {
     // 0. Official Windows 10/11 WinRT LockScreen API
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    } catch (...) {}
+    try {
         auto file = winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(imagePath).get();
         winrt::Windows::System::UserProfile::LockScreen::SetImageFileAsync(file).get();
     } catch (...) {

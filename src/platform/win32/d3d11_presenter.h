@@ -41,6 +41,9 @@ public:
     // Present frame to screen (syncInterval 0 for software pacing, 1 for monitor VSync)
     HRESULT Present(UINT syncInterval = 0);
 
+    // Capture pixel-perfect RGB buffer directly from DirectX 11 Back Buffer
+    bool CaptureBackBufferRGB(std::vector<uint8_t>& outRgb, int& outWidth, int& outHeight);
+
     // Capture pixel-perfect RGB JPEG snapshot directly from DirectX 11 Back Buffer
     bool CaptureBackBufferAsJpg(const std::wstring& outputPath, int quality = 92);
 
@@ -91,6 +94,11 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_start_srv_uv;
     UINT                             m_start_width = 0;
     UINT                             m_start_height = 0;
+
+    // Cached staging texture for backbuffer RGB snapshot (prevents VRAM churn)
+    ComPtr<ID3D11Texture2D>          m_capture_staging_texture;
+    UINT                             m_capture_width = 0;
+    UINT                             m_capture_height = 0;
     
     HWND m_hwnd = nullptr;
     int m_width = 0;

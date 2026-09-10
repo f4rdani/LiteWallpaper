@@ -1,6 +1,8 @@
 #pragma once
 #include <d3d11.h>
 #include <string>
+#include <vector>
+#include <cstdint>
 #include <atomic>
 
 namespace litewp {
@@ -27,6 +29,15 @@ public:
         bool syncNativeDesktop = false
     );
 
+    // Synchronize visual state to both Lock Screen and native Windows Desktop Wallpaper asynchronously from pristine RGB buffer
+    void SyncVisualsRGBAsync(
+        std::vector<uint8_t> rgbData,
+        int width,
+        int height,
+        bool syncLockScreen = true,
+        bool syncNativeDesktop = true
+    );
+
     // Synchronize current frame to both Lock Screen and native Windows Desktop Wallpaper asynchronously
     void SyncVisualsAsync(
         ID3D11Device* device,
@@ -36,6 +47,9 @@ public:
         bool syncLockScreen = true,
         bool syncNativeDesktop = true
     );
+
+    // Set native Windows desktop wallpaper from image file (IDesktopWallpaper COM + SystemParametersInfoW)
+    static bool SetNativeDesktopWallpaperFile(const std::wstring& imagePath);
 
     // Capture current frame from D3D11 texture and set as native Windows desktop wallpaper for instant 0s boot visual
     bool SetNativeDesktopWallpaper(
@@ -52,8 +66,8 @@ public:
     bool SetLockScreenImageWin7(const std::wstring& imagePath);
 
     std::wstring GetTempImagePathBmp() const;
-    std::wstring GetTempImagePathJpg() const;
-    std::wstring GetDesktopPlaceholderImagePathJpg() const;
+    std::wstring GetTempImagePathJpg(int slot = -1) const;
+    std::wstring GetDesktopPlaceholderImagePathJpg(int slot = -1) const;
 
     // Windows Native Screensaver integration helpers
     static bool InstallScreensaver(const std::wstring& scrPath, int timeoutSeconds = 300, bool secureOnResume = true);
@@ -63,6 +77,15 @@ public:
 
 private:
     std::atomic<bool> m_is_caching{false};
+    std::atomic<int>  m_desktop_slot{0};
+    std::atomic<int>  m_lock_slot{0};
+
+    static bool SaveRgbAsBmp(
+        const std::vector<uint8_t>& rgb,
+        int width,
+        int height,
+        const std::wstring& outputPath
+    );
 
     bool SaveTextureAsBmp(
         ID3D11Device* device,
