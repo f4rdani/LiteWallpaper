@@ -29,6 +29,15 @@ public:
         bool syncNativeDesktop = false
     );
 
+    // Synchronize visual state to both Lock Screen and native Windows Desktop Wallpaper directly from video file (100% glitch-free)
+    void SyncFromVideoAsync(
+        const std::string& video_path,
+        int target_w = 0,
+        int target_h = 0,
+        bool syncLockScreen = true,
+        bool syncNativeDesktop = true
+    );
+
     // Synchronize visual state to both Lock Screen and native Windows Desktop Wallpaper asynchronously from pristine RGB buffer
     void SyncVisualsRGBAsync(
         std::vector<uint8_t> rgbData,

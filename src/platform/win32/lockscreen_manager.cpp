@@ -24,6 +24,13 @@ static const IID IID_IDesktopWallpaper = {0xB92B56A9, 0x8B55, 0x4E14, {0x9A, 0x8
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+}
+
 using Microsoft::WRL::ComPtr;
 
 namespace litewp {
@@ -370,6 +377,178 @@ void LockScreenManager::PreCacheLockScreenAsync(
     bool syncNativeDesktop
 ) {
     SyncVisualsAsync(device, ctx, currentFrame, arrayIndex, true, syncNativeDesktop);
+}
+
+void LockScreenManager::SyncFromVideoAsync(
+    const std::string& video_path,
+    int target_w,
+    int target_h,
+    bool syncLockScreen,
+    bool syncNativeDesktop
+) {
+    if (video_path.empty()) return;
+    if (!syncLockScreen && !syncNativeDesktop) return;
+
+    if (m_is_caching.exchange(true)) return;
+
+    if (target_w <= 0 || target_h <= 0) {
+        target_w = GetSystemMetrics(SM_CXSCREEN);
+        target_h = GetSystemMetrics(SM_CYSCREEN);
+        if (target_w <= 0) target_w = 1920;
+        if (target_h <= 0) target_h = 1080;
+    }
+
+    int deskSlot = m_desktop_slot.fetch_xor(1);
+    int lockSlot = m_lock_slot.fetch_xor(1);
+
+    std::wstring desktopSlotPath = GetDesktopPlaceholderImagePathJpg(deskSlot);
+    std::wstring desktopCanonical = GetDesktopPlaceholderImagePathJpg(-1);
+    std::wstring lockSlotPath = GetTempImagePathJpg(lockSlot);
+    std::wstring lockCanonical = GetTempImagePathJpg(-1);
+    std::wstring lockBmp = GetTempImagePathBmp();
+
+    std::thread([this, video_path, target_w, target_h,
+                 desktopSlotPath, desktopCanonical,
+                 lockSlotPath, lockCanonical, lockBmp,
+                 syncLockScreen, syncNativeDesktop]() {
+
+        AVFormatContext* fmt_ctx = nullptr;
+        if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) < 0) {
+            m_is_caching = false;
+            return;
+        }
+
+        if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
+            avformat_close_input(&fmt_ctx);
+            m_is_caching = false;
+            return;
+        }
+
+        int video_stream_idx = -1;
+        for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
+            if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                video_stream_idx = static_cast<int>(i);
+                break;
+            }
+        }
+
+        if (video_stream_idx < 0) {
+            avformat_close_input(&fmt_ctx);
+            m_is_caching = false;
+            return;
+        }
+
+        AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_idx]->codecpar;
+        const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
+        if (!decoder) {
+            avformat_close_input(&fmt_ctx);
+            m_is_caching = false;
+            return;
+        }
+
+        AVCodecContext* codec_ctx = avcodec_alloc_context3(decoder);
+        if (!codec_ctx) {
+            avformat_close_input(&fmt_ctx);
+            m_is_caching = false;
+            return;
+        }
+
+        if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0 ||
+            avcodec_open2(codec_ctx, decoder, nullptr) < 0) {
+            avcodec_free_context(&codec_ctx);
+            avformat_close_input(&fmt_ctx);
+            m_is_caching = false;
+            return;
+        }
+
+        // Seek to ~1 sec or 0 to skip intro black frames
+        av_seek_frame(fmt_ctx, video_stream_idx, 1 * AV_TIME_BASE, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(codec_ctx);
+
+        AVPacket* pkt = av_packet_alloc();
+        AVFrame* frame = av_frame_alloc();
+        AVFrame* rgb_frame = av_frame_alloc();
+
+        rgb_frame->format = AV_PIX_FMT_RGB24;
+        rgb_frame->width = target_w;
+        rgb_frame->height = target_h;
+        av_frame_get_buffer(rgb_frame, 32);
+
+        SwsContext* sws_ctx = nullptr;
+        bool frame_decoded = false;
+
+        while (av_read_frame(fmt_ctx, pkt) >= 0) {
+            if (pkt->stream_index == video_stream_idx) {
+                if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
+                    if (avcodec_receive_frame(codec_ctx, frame) >= 0) {
+                        sws_ctx = sws_getContext(
+                            frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                            target_w, target_h, AV_PIX_FMT_RGB24,
+                            SWS_BILINEAR, nullptr, nullptr, nullptr
+                        );
+                        if (sws_ctx) {
+                            sws_scale(
+                                sws_ctx,
+                                frame->data, frame->linesize,
+                                0, frame->height,
+                                rgb_frame->data, rgb_frame->linesize
+                            );
+                            frame_decoded = true;
+                            sws_freeContext(sws_ctx);
+                            sws_ctx = nullptr;
+                        }
+                        av_packet_unref(pkt);
+                        break;
+                    }
+                }
+            }
+            av_packet_unref(pkt);
+        }
+
+        av_packet_free(&pkt);
+        av_frame_free(&frame);
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+
+        if (frame_decoded && rgb_frame->data[0]) {
+            std::vector<uint8_t> rgbData(static_cast<size_t>(target_w) * target_h * 3);
+            for (int y = 0; y < target_h; ++y) {
+                memcpy(
+                    rgbData.data() + (static_cast<size_t>(y) * target_w * 3),
+                    rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
+                    static_cast<size_t>(target_w) * 3
+                );
+            }
+            av_frame_free(&rgb_frame);
+
+            HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+            std::string primaryJpg = syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
+            if (stbi_write_jpg(primaryJpg.c_str(), target_w, target_h, 3, rgbData.data(), 92)) {
+                if (syncNativeDesktop) {
+                    CopyFileW(desktopSlotPath.c_str(), desktopCanonical.c_str(), FALSE);
+                    SetNativeDesktopWallpaperFile(desktopSlotPath);
+                }
+                if (syncLockScreen) {
+                    if (syncNativeDesktop) {
+                        CopyFileW(desktopSlotPath.c_str(), lockSlotPath.c_str(), FALSE);
+                    }
+                    CopyFileW(lockSlotPath.c_str(), lockCanonical.c_str(), FALSE);
+                    SaveRgbAsBmp(rgbData, target_w, target_h, lockBmp);
+                    SetLockScreenImage(lockSlotPath);
+                    SetLockScreenImageWin7(lockSlotPath);
+                }
+            }
+
+            if (SUCCEEDED(hrCo)) {
+                CoUninitialize();
+            }
+        } else {
+            if (rgb_frame) av_frame_free(&rgb_frame);
+        }
+
+        m_is_caching = false;
+    }).detach();
 }
 
 void LockScreenManager::SyncVisualsRGBAsync(

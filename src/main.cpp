@@ -193,7 +193,6 @@ static void OpenWallpaperDialog() {
 
 static bool g_first_frame_captured = false;
 static bool g_desktop_snapshot_synced = false;
-static std::atomic<bool> g_sync_desktop_requested{false};
 
 static bool OpenWallpaperVideo(const std::string& path) {
     auto& cfg = g_config.Get();
@@ -204,7 +203,6 @@ static bool OpenWallpaperVideo(const std::string& path) {
     g_presenter.ResetStartFrame();
     g_first_frame_captured = false;
     g_desktop_snapshot_synced = false;
-    g_sync_desktop_requested.store(false);
     g_decoder.Close();
     g_decoder.SetAudioEnabled(audio_on);
     g_decoder.SetForceSoftware(cfg.gpu_device_index == -1);
@@ -560,6 +558,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     // 5. Open video if available
     if (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty()) {
         OpenWallpaperVideo(cfg.wallpapers[0].video_path);
+        if (cfg.update_desktop_wallpaper || cfg.update_lockscreen) {
+            int sw = GetSystemMetrics(SM_CXSCREEN);
+            int sh = GetSystemMetrics(SM_CYSCREEN);
+            g_lockscreen.SyncFromVideoAsync(cfg.wallpapers[0].video_path, sw, sh, cfg.update_lockscreen, cfg.update_desktop_wallpaper);
+        }
     }
 
     // 6. Setup audio parameters
@@ -730,7 +733,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
 
             g_shared_engine_state.connected.store(true);
             g_shared_engine_state.playing.store(!g_paused && !cur_vid.empty() && !g_fullscreen_paused);
-            g_shared_engine_state.paused.store(g_paused);
+            g_shared_engine_state.paused.store(g_paused && !cur_vid.empty());
             g_shared_engine_state.injected.store(g_inject_ok);
             g_shared_engine_state.hw_decode.store(g_decoder_hw);
             g_shared_engine_state.fps.store(g_clock.GetTargetFPS());
@@ -763,37 +766,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                             g_paused;
 
         if (should_pause) {
-            if (g_sync_desktop_requested.load()) {
-                std::lock_guard<std::mutex> lock(g_decoder_mutex);
-                if (g_current_frame.texture) {
-                    std::vector<DisplayViewport> target_vps;
-                    if (!cfg.target_displays.empty()) {
-                        auto all_displays = HardwareDetector::GetDisplayList();
-                        int virt_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                        int virt_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                        for (int disp_idx : cfg.target_displays) {
-                            if (disp_idx >= 0 && disp_idx < static_cast<int>(all_displays.size())) {
-                                const auto& d = all_displays[disp_idx];
-                                target_vps.push_back({
-                                    static_cast<float>(d.pos_x - virt_x),
-                                    static_cast<float>(d.pos_y - virt_y),
-                                    static_cast<float>(d.width),
-                                    static_cast<float>(d.height)
-                                });
-                            }
-                        }
-                    }
-                    g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode, target_vps, 0.0f);
-                    std::vector<uint8_t> rgbData;
-                    int capW = 0, capH = 0;
-                    if (g_presenter.CaptureBackBufferRGB(rgbData, capW, capH)) {
-                        g_sync_desktop_requested.store(false);
-                        g_lockscreen.SyncVisualsRGBAsync(std::move(rgbData), capW, capH, cfg.update_lockscreen, true);
-                    }
-                    g_presenter.Present(0);
-                }
-            }
-
             if (g_pause_start_us == 0) {
                 g_pause_start_us = now_us;
             }
@@ -947,29 +919,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
 
                     g_presenter.RenderFrame(g_current_frame.texture, g_current_frame.texture_index, cfg.scaling_mode, target_vps, blend_alpha);
 
-                    // Synchronize visual state to native Windows Desktop Wallpaper & Lock Screen using rendered backbuffer
-                    bool sync_requested = g_sync_desktop_requested.exchange(false);
-                    bool need_first_sync = !g_first_frame_captured;
-                    static uint64_t last_lock_precache_us = 0;
-                    bool need_periodic_sync = cfg.update_lockscreen && (now_us - last_lock_precache_us >= 60000000);
-
-                    if (need_first_sync) {
-                        g_first_frame_captured = true;
-                    }
-
-                    if (sync_requested || (need_first_sync && (cfg.update_lockscreen || cfg.update_desktop_wallpaper)) || need_periodic_sync) {
-                        if (need_periodic_sync) {
-                            last_lock_precache_us = now_us;
-                        }
-                        std::vector<uint8_t> rgbData;
-                        int capW = 0, capH = 0;
-                        if (g_presenter.CaptureBackBufferRGB(rgbData, capW, capH)) {
-                            bool sync_lock = cfg.update_lockscreen;
-                            bool sync_desktop = sync_requested || (need_first_sync && cfg.update_desktop_wallpaper);
-                            g_lockscreen.SyncVisualsRGBAsync(std::move(rgbData), capW, capH, sync_lock, sync_desktop);
-                        }
-                    }
-
                     if (FAILED(g_presenter.Present(0))) {
                         if (g_last_error.empty()) {
                             g_last_error = "Present() failed (DXGI error)";
@@ -1065,9 +1014,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_injector.Detach();
             ShowWindow(g_main_hwnd, SW_HIDE);
             g_inject_ok = false;
-            // Force Windows Desktop to immediately repaint its native wallpaper
-            SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, nullptr, SPIF_SENDCHANGE);
+            // Repaint the desktop window hierarchy to reveal the underlying native desktop
+            HWND shell = GetShellWindow();
+            if (shell) InvalidateRect(shell, nullptr, TRUE);
             InvalidateRect(GetDesktopWindow(), nullptr, TRUE);
+            RedrawWindow(nullptr, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
         }
         return 0;
     }
@@ -1171,6 +1122,11 @@ std::string OnIpcRequest(const std::string& request_json) {
                 if (ok && g_main_hwnd) {
                     PostMessageW(g_main_hwnd, WM_APP_ATTACH, 0, 0);
                 }
+                if (ok && (cfg.update_desktop_wallpaper || cfg.update_lockscreen)) {
+                    int sw = GetSystemMetrics(SM_CXSCREEN);
+                    int sh = GetSystemMetrics(SM_CYSCREEN);
+                    g_lockscreen.SyncFromVideoAsync(path, sw, sh, cfg.update_lockscreen, cfg.update_desktop_wallpaper);
+                }
             }
             return nlohmann::json{{"ok", ok}, {"hw", g_decoder_hw}}.dump();
         }
@@ -1183,7 +1139,13 @@ std::string OnIpcRequest(const std::string& request_json) {
         g_config.Save();
         return "{\"ok\":true}";
     } else if (cmd == "sync_desktop_wallpaper") {
-        g_sync_desktop_requested.store(true);
+        auto& cfg = g_config.Get();
+        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+        if (!cur_vid.empty()) {
+            int sw = GetSystemMetrics(SM_CXSCREEN);
+            int sh = GetSystemMetrics(SM_CYSCREEN);
+            g_lockscreen.SyncFromVideoAsync(cur_vid, sw, sh, cfg.update_lockscreen, true);
+        }
         return "{\"ok\":true}";
     } else if (cmd == "get_status") {
         size_t ram = GetProcessMemoryUsageMB();
@@ -1194,7 +1156,7 @@ std::string OnIpcRequest(const std::string& request_json) {
         return nlohmann::json{
             {"ok", true},
             {"playing", !g_paused && !current_video.empty() && !g_fullscreen_paused},
-            {"paused", g_paused},
+            {"paused", g_paused && !current_video.empty()},
             {"fullscreen_paused", g_fullscreen_paused},
             {"current_video", current_video},
             {"fps", g_clock.GetTargetFPS()},
@@ -1225,6 +1187,7 @@ std::string OnIpcRequest(const std::string& request_json) {
         }
         return "{\"ok\":true}";
     } else if (cmd == "stop") {
+        g_audio.Stop();
         std::lock_guard<std::mutex> lock(g_decoder_mutex);
         g_decoder.Close();
         g_current_frame = VideoFrame{};
@@ -1238,6 +1201,8 @@ std::string OnIpcRequest(const std::string& request_json) {
         g_shared_engine_state.playing.store(false);
         g_shared_engine_state.paused.store(false);
         g_shared_engine_state.SetCurrentVideo("");
+        g_shared_engine_state.fps.store(0);
+        g_shared_engine_state.video_fps.store(0.0);
         if (g_main_hwnd) {
             PostMessageW(g_main_hwnd, WM_APP_DEATTACH, 0, 0);
         }

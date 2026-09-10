@@ -220,6 +220,25 @@ static void SendIpcAsync(const std::string& request_json) {
 }
 
 static void ApplyAction(std::string utf8_path, std::string action) {
+    if (action == "stop") {
+        SendIpcAsync("{\"cmd\":\"stop\"}");
+        g_daemonPlaying = false;
+        g_daemonPaused = false;
+        g_daemonCurrentVideo.clear();
+        auto& cfg = g_config.Get();
+        if (!cfg.wallpapers.empty()) {
+            cfg.wallpapers[0].video_path = "";
+            g_config.Save();
+        }
+        return;
+    }
+    if (action == "resume") {
+        SendIpcAsync("{\"cmd\":\"resume\"}");
+        g_daemonPlaying = true;
+        g_daemonPaused = false;
+        return;
+    }
+
     if (utf8_path.empty()) return;
     if (utf8_path.find("\\LiteWallpaper\\optimized\\") == std::string::npos &&
         utf8_path.find("/LiteWallpaper/optimized/") == std::string::npos &&
@@ -232,10 +251,6 @@ static void ApplyAction(std::string utf8_path, std::string action) {
     if (action == "wallpaper") {
         nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
         SendIpcAsync(req.dump());
-    } else if (action == "stop") {
-        SendIpcAsync("{\"cmd\":\"stop\"}");
-    } else if (action == "resume") {
-        SendIpcAsync("{\"cmd\":\"resume\"}");
     }
 }
 
@@ -259,11 +274,11 @@ static void StartVideoOptimization(const std::string& input_path, int target_w, 
 }
 
 static void RequestApplyVideo(std::string utf8_path, std::string action) {
-    if (utf8_path.empty()) return;
     if (action == "stop" || action == "resume") {
         ApplyAction(utf8_path, action);
         return;
     }
+    if (utf8_path.empty()) return;
 
     // Always ensure source path is in gallery
     g_config.Get().AddToGallery(utf8_path);
@@ -616,6 +631,9 @@ static void RenderGalleryTab() {
 
             ImGui::SameLine();
             if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 26))) {
+                if (is_current) {
+                    ApplyAction("", "stop");
+                }
                 ThumbnailManager::DeleteThumbnailCache(path);
                 VideoOptimizer::DeleteOptimizedCache(path);
                 cfg.RemoveFromGallery(path);
