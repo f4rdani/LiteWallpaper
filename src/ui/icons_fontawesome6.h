@@ -45,4 +45,5 @@
 #define ICON_FA_CHECK              "\xef\x80\x8c" // U+f00c
 #define ICON_FA_CROSSHAIRS         "\xef\x81\x9b" // U+f05b
 #define ICON_FA_TRIANGLE_EXCLAMATION "\xef\x81\xb1" // U+f071
+#define ICON_FA_BOLT               "\xef\x83\xa7" // U+f0e7
 
