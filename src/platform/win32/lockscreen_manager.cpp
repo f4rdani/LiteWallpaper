@@ -454,9 +454,14 @@ void LockScreenManager::ProcessSyncTask(const VideoSyncTask& task) {
     bool extraction_done = false;
 
     // 1. Primary: Use ffmpeg CLI (fastest, pristine 100% quality, zero codec/color quirks)
-    wchar_t tsBuf[64] = {};
-    swprintf_s(tsBuf, L"%.2f", (std::max)(0.0, task.timestamp_sec));
-    std::wstring wCmd = L"ffmpeg -y -ss " + std::wstring(tsBuf) + L" -i \"" + Utf8ToWide(task.video_path) + L"\" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
+    double ts = (std::max)(0.0, task.timestamp_sec);
+    double fast_ss = (std::max)(0.0, ts - 2.0);
+    double fine_ss = ts - fast_ss;
+    wchar_t fastBuf[64] = {}, fineBuf[64] = {};
+    swprintf_s(fastBuf, L"%.3f", fast_ss);
+    swprintf_s(fineBuf, L"%.3f", fine_ss);
+    std::wstring wCmd = L"ffmpeg -y -ss " + std::wstring(fastBuf) + L" -i \"" + Utf8ToWide(task.video_path) +
+                        L"\" -ss " + std::wstring(fineBuf) + L" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
     STARTUPINFOW si = { sizeof(si) };
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
@@ -498,18 +503,26 @@ void LockScreenManager::ProcessSyncTask(const VideoSyncTask& task) {
                             if (avcodec_parameters_to_context(codec_ctx, codecpar) >= 0 &&
                                 avcodec_open2(codec_ctx, decoder, nullptr) >= 0) {
 
+                                AVRational stream_tb = fmt_ctx->streams[video_stream_idx]->time_base;
+                                AVRational frame_rate = fmt_ctx->streams[video_stream_idx]->avg_frame_rate;
+                                if (frame_rate.num <= 0 || frame_rate.den <= 0) {
+                                    frame_rate = fmt_ctx->streams[video_stream_idx]->r_frame_rate;
+                                }
+                                double fps = (frame_rate.num > 0 && frame_rate.den > 0) ? (static_cast<double>(frame_rate.num) / frame_rate.den) : 30.0;
+                                if (fps <= 0.0) fps = 30.0;
+
                                 int64_t target_ts = 0;
-                                if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
-                                    int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, task.timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+                                if (stream_tb.den > 0) {
+                                    int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, task.timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, stream_tb);
                                     int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
-                                    if (dur > 0 && req_ts < dur) {
-                                        target_ts = req_ts;
-                                    } else if (dur > 0 && req_ts >= dur) {
-                                        target_ts = 0;
+                                    if (dur > 0 && req_ts >= dur) {
+                                        target_ts = (dur > 0) ? (dur - 1) : 0;
                                     } else {
                                         target_ts = req_ts;
                                     }
                                 }
+                                int64_t half_frame_ts = (stream_tb.den > 0) ? static_cast<int64_t>((0.5 / fps) * stream_tb.den / stream_tb.num) : 0;
+
                                 av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
                                 avcodec_flush_buffers(codec_ctx);
 
@@ -532,6 +545,14 @@ void LockScreenManager::ProcessSyncTask(const VideoSyncTask& task) {
                                                 if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
                                                     frames_received++;
 
+                                                    int64_t pts = (frame->best_effort_timestamp != AV_NOPTS_VALUE) ? frame->best_effort_timestamp : frame->pts;
+                                                    if (pts != AV_NOPTS_VALUE) {
+                                                        if (pts + half_frame_ts < target_ts && frames_received < 600) {
+                                                            av_frame_unref(frame);
+                                                            continue;
+                                                        }
+                                                    }
+
                                                     // Check luma to avoid intro black frames when using default 1.0s auto-sync
                                                     int luma_sum = 0;
                                                     if (frame->data[0]) {
@@ -543,7 +564,7 @@ void LockScreenManager::ProcessSyncTask(const VideoSyncTask& task) {
                                                     }
                                                     int avg_luma = luma_sum / 100;
 
-                                                    bool accept_frame = (task.timestamp_sec != 1.0) ? (frames_received >= 1) : (avg_luma > 20 || frames_received > 60);
+                                                    bool accept_frame = (task.timestamp_sec != 1.0) ? true : (avg_luma > 20 || frames_received > 60);
                                                     if (accept_frame) {
                                                         if (!sws_ctx) {
                                                             sws_ctx = sws_getContext(

@@ -112,6 +112,10 @@ static std::vector<uint8_t> g_captureModalPreviewBgra;
 static int g_captureModalPreviewW = 320;
 static int g_captureModalPreviewH = 180;
 static std::atomic<bool> g_captureModalPreviewWorkerActive{false};
+static std::atomic<bool> g_captureModalPreviewQueued{false};
+static std::atomic<float> g_captureModalQueuedSec{0.0f};
+static bool g_captureModalAutoPreviewRequested = false;
+static uint64_t g_captureModalLastChangeTick = 0;
 
 static void SetupImGuiStyle() {
     ImGuiStyle& style = ImGui::GetStyle();
@@ -1602,7 +1606,12 @@ static void RenderPerformancePanel() {
 }
 
 static void RequestCaptureModalPreview() {
-    if (g_captureModalPreviewWorkerActive.load() || g_captureModalPath.empty()) return;
+    if (g_captureModalPath.empty()) return;
+    if (g_captureModalPreviewWorkerActive.load()) {
+        g_captureModalQueuedSec.store(g_captureModalTimeSec);
+        g_captureModalPreviewQueued.store(true);
+        return;
+    }
     g_captureModalPreviewWorkerActive.store(true);
 
     std::string vpath = g_captureModalPath;
@@ -1611,11 +1620,19 @@ static void RequestCaptureModalPreview() {
     int ph = g_captureModalPreviewH;
 
     std::thread([vpath, timeSec, pw, ph]() {
-        std::vector<uint8_t> bgra;
-        if (ThumbnailManager::ExtractFrameToBGRA(vpath, bgra, pw, ph, static_cast<double>(timeSec))) {
-            g_captureModalPreviewBgra = std::move(bgra);
-            g_captureModalPreviewPending.store(true);
-            g_captureModalPreviewSec = timeSec;
+        float currentTargetSec = timeSec;
+        while (true) {
+            std::vector<uint8_t> bgra;
+            if (ThumbnailManager::ExtractFrameToBGRA(vpath, bgra, pw, ph, static_cast<double>(currentTargetSec))) {
+                g_captureModalPreviewBgra = std::move(bgra);
+                g_captureModalPreviewPending.store(true);
+                g_captureModalPreviewSec = currentTargetSec;
+            }
+            if (g_captureModalPreviewQueued.exchange(false)) {
+                currentTargetSec = g_captureModalQueuedSec.load();
+            } else {
+                break;
+            }
         }
         g_captureModalPreviewWorkerActive.store(false);
     }).detach();
@@ -1670,6 +1687,9 @@ static void OpenCaptureModal(const std::string& video_path, int targetFilter) {
     g_captureModalStatus.clear();
     g_captureModalPreviewSRV.Reset();
     g_captureModalPreviewSec = -1.0f;
+    g_captureModalAutoPreviewRequested = false;
+    g_captureModalLastChangeTick = 0;
+    g_captureModalPreviewQueued.store(false);
     g_showCaptureModal = true;
 }
 
@@ -1678,6 +1698,14 @@ static void RenderCaptureFrameModal() {
         ImGui::OpenPopup("Capture Static Wallpaper / Lock Screen Frame");
         if (!g_captureModalPreviewSRV && !g_captureModalPreviewWorkerActive.load() && g_captureModalPreviewSec < 0.0f) {
             RequestCaptureModalPreview();
+        }
+
+        if (g_captureModalAutoPreviewRequested) {
+            uint64_t nowTick = GetTickCount64();
+            if (nowTick >= g_captureModalLastChangeTick + 150) {
+                g_captureModalAutoPreviewRequested = false;
+                RequestCaptureModalPreview();
+            }
         }
     }
 
@@ -1779,6 +1807,12 @@ static void RenderCaptureFrameModal() {
         ImGui::SetNextItemWidth(520.0f);
         if (ImGui::SliderFloat("##TimeSlider", &g_captureModalTimeSec, 0.0f, maxTime, sliderFmt)) {
             g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            g_captureModalAutoPreviewRequested = true;
+            g_captureModalLastChangeTick = GetTickCount64();
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g_captureModalAutoPreviewRequested = false;
+            RequestCaptureModalPreview();
         }
 
         // Two-way Synced Numeric Inputs
@@ -1786,12 +1820,24 @@ static void RenderCaptureFrameModal() {
         if (ImGui::InputFloat("Time (seconds)", &g_captureModalTimeSec, 0.1f, 1.0f, "%.2f s")) {
             g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
             g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            g_captureModalAutoPreviewRequested = true;
+            g_captureModalLastChangeTick = GetTickCount64();
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g_captureModalAutoPreviewRequested = false;
+            RequestCaptureModalPreview();
         }
         ImGui::SameLine();
         if (ImGui::InputInt("Frame Number", &g_captureModalFrameNum, 1, 10)) {
             g_captureModalFrameNum = std::clamp(g_captureModalFrameNum, 0, (std::max)(1, totalFrames));
             g_captureModalTimeSec = static_cast<float>(g_captureModalFrameNum / g_captureModalFps);
             g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
+            g_captureModalAutoPreviewRequested = true;
+            g_captureModalLastChangeTick = GetTickCount64();
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g_captureModalAutoPreviewRequested = false;
+            RequestCaptureModalPreview();
         }
         ImGui::PopItemWidth();
 
@@ -1849,19 +1895,33 @@ static void RenderCaptureFrameModal() {
         ImGui::Spacing();
         float previewBoxW = 320.0f;
         float previewBoxH = 180.0f;
+        bool isLoadingPreview = g_captureModalPreviewWorkerActive.load() || g_captureModalAutoPreviewRequested;
+
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.75f, 1.0f), "Frame Preview (Selected Time: %.2f s | Frame #%d):", g_captureModalTimeSec, g_captureModalFrameNum);
+        ImGui::SameLine();
+        if (isLoadingPreview) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 1.0f, 1.0f), ICON_FA_ROTATE " Loading preview...");
+        }
+
+        ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImVec2 p1 = ImVec2(p0.x + previewBoxW, p0.y + previewBoxH);
+
         if (g_captureModalPreviewSRV) {
             ImGui::Image((ImTextureID)g_captureModalPreviewSRV.Get(), ImVec2(previewBoxW, previewBoxH));
+            if (isLoadingPreview) {
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                draw_list->AddRectFilled(p0, p1, IM_COL32(10, 12, 16, 140), 4.0f);
+                draw_list->AddRect(p0, p1, IM_COL32(70, 160, 240, 180), 4.0f);
+                draw_list->AddText(ImVec2(p0.x + 95.0f, p0.y + 80.0f), IM_COL32(100, 210, 255, 255), ICON_FA_ROTATE " Loading Frame...");
+            }
         } else {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            ImVec2 p0 = ImGui::GetCursorScreenPos();
-            ImVec2 p1 = ImVec2(p0.x + previewBoxW, p0.y + previewBoxH);
             draw_list->AddRectFilled(p0, p1, IM_COL32(20, 22, 28, 255), 4.0f);
             draw_list->AddRect(p0, p1, IM_COL32(45, 50, 62, 255), 4.0f);
-            if (g_captureModalPreviewWorkerActive.load()) {
-                draw_list->AddText(ImVec2(p0.x + 80.0f, p0.y + 80.0f), IM_COL32(100, 200, 255, 255), "Extracting Preview...");
+            if (isLoadingPreview) {
+                draw_list->AddText(ImVec2(p0.x + 80.0f, p0.y + 80.0f), IM_COL32(100, 200, 255, 255), ICON_FA_ROTATE " Extracting Preview...");
             } else {
-                draw_list->AddText(ImVec2(p0.x + 70.0f, p0.y + 80.0f), IM_COL32(140, 145, 155, 255), "Click 'Preview' to view frame");
+                draw_list->AddText(ImVec2(p0.x + 65.0f, p0.y + 80.0f), IM_COL32(140, 145, 155, 255), "Drag slider to preview frame");
             }
             ImGui::Dummy(ImVec2(previewBoxW, previewBoxH));
         }

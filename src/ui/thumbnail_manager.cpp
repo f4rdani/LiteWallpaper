@@ -179,19 +179,29 @@ bool ThumbnailManager::ExtractFrameToBGRA(
         return false;
     }
 
-    // Seek to requested timestamp (or ~1 sec in by default) using stream time_base to avoid seeking past EOF
+    // Calculate stream frame rate and tolerance
+    AVRational stream_tb = fmt_ctx->streams[video_stream_idx]->time_base;
+    AVRational frame_rate = fmt_ctx->streams[video_stream_idx]->avg_frame_rate;
+    if (frame_rate.num <= 0 || frame_rate.den <= 0) {
+        frame_rate = fmt_ctx->streams[video_stream_idx]->r_frame_rate;
+    }
+    double fps = (frame_rate.num > 0 && frame_rate.den > 0) ? (static_cast<double>(frame_rate.num) / frame_rate.den) : 30.0;
+    if (fps <= 0.0) fps = 30.0;
+
     int64_t target_ts = 0;
-    if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
-        int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+    if (stream_tb.den > 0) {
+        int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, stream_tb);
         int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
-        if (dur > 0 && req_ts < dur) {
-            target_ts = req_ts;
-        } else if (dur > 0 && req_ts >= dur) {
-            target_ts = (dur > 0) ? (dur / 2) : 0;
+        if (dur > 0 && req_ts >= dur) {
+            target_ts = (dur > 0) ? (dur - 1) : 0;
         } else {
             target_ts = req_ts;
         }
     }
+
+    // Half frame duration tolerance in stream timebase
+    int64_t half_frame_ts = (stream_tb.den > 0) ? static_cast<int64_t>((0.5 / fps) * stream_tb.den / stream_tb.num) : 0;
+
     av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(codec_ctx);
 
@@ -205,35 +215,60 @@ bool ThumbnailManager::ExtractFrameToBGRA(
 
     SwsContext* sws_ctx = nullptr;
     bool found = false;
+    int frames_decoded = 0;
+
+    auto ConvertToBGRA = [&](AVFrame* src_frame) {
+        sws_ctx = sws_getContext(
+            src_frame->width, src_frame->height, (AVPixelFormat)src_frame->format,
+            width, height, AV_PIX_FMT_BGRA,
+            SWS_BILINEAR, nullptr, nullptr, nullptr
+        );
+        if (sws_ctx) {
+            sws_scale(
+                sws_ctx,
+                src_frame->data, src_frame->linesize,
+                0, src_frame->height,
+                rgb_frame->data, rgb_frame->linesize
+            );
+
+            for (int y = 0; y < height; ++y) {
+                memcpy(
+                    out_bgra.data() + (static_cast<size_t>(y) * width * 4),
+                    rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
+                    static_cast<size_t>(width) * 4
+                );
+            }
+            sws_freeContext(sws_ctx);
+            sws_ctx = nullptr;
+            found = true;
+        }
+    };
+
+    AVFrame* last_decoded_frame = av_frame_alloc();
+    bool has_last_frame = false;
 
     while (av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == video_stream_idx) {
             if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
                 while (avcodec_receive_frame(codec_ctx, frame) >= 0) {
                     if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
-                        sws_ctx = sws_getContext(
-                            frame->width, frame->height, (AVPixelFormat)frame->format,
-                            width, height, AV_PIX_FMT_BGRA,
-                            SWS_BILINEAR, nullptr, nullptr, nullptr
-                        );
-                        if (sws_ctx) {
-                            sws_scale(
-                                sws_ctx,
-                                frame->data, frame->linesize,
-                                0, frame->height,
-                                rgb_frame->data, rgb_frame->linesize
-                            );
+                        frames_decoded++;
 
-                            for (int y = 0; y < height; ++y) {
-                                memcpy(
-                                    out_bgra.data() + (static_cast<size_t>(y) * width * 4),
-                                    rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
-                                    static_cast<size_t>(width) * 4
-                                );
+                        av_frame_unref(last_decoded_frame);
+                        av_frame_ref(last_decoded_frame, frame);
+                        has_last_frame = true;
+
+                        int64_t pts = (frame->best_effort_timestamp != AV_NOPTS_VALUE) ? frame->best_effort_timestamp : frame->pts;
+
+                        // Accurate seek: keep decoding forward toward target timestamp
+                        if (pts != AV_NOPTS_VALUE) {
+                            if (pts + half_frame_ts < target_ts && frames_decoded < 600) {
+                                av_frame_unref(frame);
+                                continue;
                             }
-                            found = true;
-                            sws_freeContext(sws_ctx);
                         }
+
+                        ConvertToBGRA(frame);
                         av_frame_unref(frame);
                         break;
                     }
@@ -248,6 +283,11 @@ bool ThumbnailManager::ExtractFrameToBGRA(
         av_packet_unref(pkt);
     }
 
+    if (!found && has_last_frame) {
+        ConvertToBGRA(last_decoded_frame);
+    }
+
+    av_frame_free(&last_decoded_frame);
     av_frame_free(&frame);
     av_frame_free(&rgb_frame);
     av_packet_free(&pkt);
