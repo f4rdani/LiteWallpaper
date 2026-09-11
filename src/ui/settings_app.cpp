@@ -764,7 +764,7 @@ static void RenderLockscreenTab() {
     auto& cfg = g_config.Get();
 
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_LOCK "  Lock Screen & Static Wallpaper Management");
-    ImGui::TextColored(ImVec4(0.68f, 0.72f, 0.80f, 1.00f), "Configure instant 0s Windows boot visuals and lock screen transitions with 0% ongoing CPU & battery load.");
+    ImGui::TextColored(ImVec4(0.68f, 0.72f, 0.80f, 1.00f), "Configure instant 0s Windows boot visuals and lock screen transitions with zero continuous CPU load.");
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
@@ -1946,12 +1946,19 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
     };
     RegisterClassExW(&wc);
 
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    int winW = 960;
+    int winH = 700;
+    int winX = (sw > winW) ? (sw - winW) / 2 : 100;
+    int winY = (sh > winH) ? (sh - winH) / 2 : 100;
+
     g_hWnd = CreateWindowExW(
         0,
         wc.lpszClassName,
         L"LiteWallpaper Control Panel",
         WS_OVERLAPPEDWINDOW,
-        150, 150, 860, 680,
+        winX, winY, winW, winH,
         nullptr, nullptr, wc.hInstance, nullptr
     );
 
