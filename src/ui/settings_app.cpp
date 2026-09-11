@@ -429,7 +429,7 @@ static void FetchDaemonStatus() {
     g_vramHistory.push_back(static_cast<float>(g_daemonVramMB));
 }
 
-static void OpenCaptureModal(const std::string& video_path);
+static void OpenCaptureModal(const std::string& video_path, int targetFilter = 0);
 
 static void RenderGalleryTab() {
     auto& cfg = g_config.Get();
@@ -984,50 +984,144 @@ static void RenderSettingsPanel() {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_IMAGE "  Desktop & Lock Screen Visual Synchronization");
+    ImGui::TextColored(ImVec4(0.65f, 0.68f, 0.75f, 1.00f), "Set independent static wallpapers for 0s Windows boot and Win+L lock transitions (0% ongoing CPU).");
+    ImGui::Spacing();
 
-    if (ImGui::Checkbox("Auto-Set Windows Desktop Wallpaper from Video (0s Boot Visual)", &cfg.update_desktop_wallpaper)) {
+    // SECTION 1: Windows Desktop Wallpaper
+    ImGui::PushID("DesktopVisualSyncSection");
+    ImGui::BeginGroup();
+    if (ImGui::Checkbox("Enable Windows Desktop Static Wallpaper (0s Instant Boot Visual)", &cfg.update_desktop_wallpaper)) {
         g_config.Save();
         if (cfg.update_desktop_wallpaper) {
-            SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":true,\"lockscreen\":false}");
+            if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
+                nlohmann::json req{
+                    {"cmd", "sync_desktop_wallpaper"},
+                    {"path", cfg.desktop_static_video_path},
+                    {"desktop", true},
+                    {"lockscreen", false},
+                    {"timestamp", cfg.desktop_static_timestamp}
+                };
+                SendIpcAsync(req.dump());
+            } else {
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":true,\"lockscreen\":false}");
+            }
         }
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Injects the active video frame directly into the native Windows Desktop Wallpaper. When Windows boots or restarts, your wallpaper appears instantly in 0.0s without black screen or visual flicker, even before LiteWallpaper launches!");
+        ImGui::SetTooltip("Injects a clean static frame directly into Windows Desktop Wallpaper. When Windows boots, your wallpaper appears instantly in 0.0s without black screen or delay.");
     }
 
-    if (ImGui::Checkbox("Auto-Sync Windows Lock Screen Wallpaper (Win + L Seamless Transition)", &cfg.update_lockscreen)) {
+    if (cfg.update_desktop_wallpaper) {
+        ImGui::Indent(24.0f);
+        if (cfg.desktop_static_source_mode == 0) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.95f, 1.0f), ICON_FA_ROTATE " Mode: Auto-Sync (Dynamically follows active live wallpaper)");
+        } else {
+            fs::path p(cfg.desktop_static_video_path);
+            std::string vidName = p.filename().string();
+            if (vidName.empty()) vidName = cfg.desktop_static_video_path;
+            int curMin = static_cast<int>(cfg.desktop_static_timestamp) / 60;
+            float curSec = static_cast<float>(cfg.desktop_static_timestamp) - curMin * 60.0f;
+            ImGui::TextColored(ImVec4(0.40f, 0.95f, 0.50f, 1.0f), ICON_FA_IMAGE " Mode: Fixed Custom Frame [%s @ %02d:%05.2f]", vidName.c_str(), curMin, curSec);
+            
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset to Auto-Sync")) {
+                cfg.desktop_static_source_mode = 0;
+                g_config.Save();
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_desktop_auto\":true}");
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Switch back to automatically updating desktop wallpaper with whichever live video is currently playing");
+            }
+        }
+
+        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
+        if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
+            cur_vid = cfg.desktop_static_video_path;
+        }
+        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
+            cur_vid = cfg.gallery_history[0];
+        }
+        if (ImGui::Button(ICON_FA_CAMERA "  Choose Custom Frame for Desktop...", ImVec2(300, 26))) {
+            if (!cur_vid.empty()) {
+                OpenCaptureModal(cur_vid, 1);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Select a specific video and exact timestamp/frame specifically for the Desktop Wallpaper");
+        }
+        ImGui::Unindent(24.0f);
+    }
+    ImGui::EndGroup();
+    ImGui::PopID();
+
+    ImGui::Spacing();
+
+    // SECTION 2: Windows Lock Screen
+    ImGui::PushID("LockscreenVisualSyncSection");
+    ImGui::BeginGroup();
+    if (ImGui::Checkbox("Enable Windows Lock Screen Wallpaper (Win + L Seamless Transition)", &cfg.update_lockscreen)) {
         g_config.Save();
         if (cfg.update_lockscreen) {
-            SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":false,\"lockscreen\":true}");
+            if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
+                nlohmann::json req{
+                    {"cmd", "sync_desktop_wallpaper"},
+                    {"path", cfg.lockscreen_video_path},
+                    {"desktop", false},
+                    {"lockscreen", true},
+                    {"timestamp", cfg.lockscreen_timestamp}
+                };
+                SendIpcAsync(req.dump());
+            } else {
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":false,\"lockscreen\":true}");
+            }
         }
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Pre-caches a crystal-clear high-definition snapshot of your active wallpaper and synchronizes it with the Windows Lock Screen (0ms visual transition on Win+L with 0% CPU/VRAM usage).");
+        ImGui::SetTooltip("Pre-caches a pristine high-definition frame for the Windows Lock Screen (0ms visual transition on Win+L with 0% CPU/VRAM).");
     }
 
-    // Action buttons
-    if (ImGui::Button(ICON_FA_ROTATE "  Sync Active Frame to Selected Target(s) Now", ImVec2(320, 28))) {
-        nlohmann::json req{
-            {"cmd", "sync_desktop_wallpaper"},
-            {"desktop", cfg.update_desktop_wallpaper},
-            {"lockscreen", cfg.update_lockscreen}
-        };
-        SendIpcAsync(req.dump());
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Captures a clean frame from the active video and applies it immediately to the selected targets (Desktop, Lock Screen, or Both).");
-    }
+    if (cfg.update_lockscreen) {
+        ImGui::Indent(24.0f);
+        if (cfg.lockscreen_source_mode == 0) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.95f, 1.0f), ICON_FA_ROTATE " Mode: Auto-Sync (Dynamically follows active live wallpaper)");
+        } else {
+            fs::path p(cfg.lockscreen_video_path);
+            std::string vidName = p.filename().string();
+            if (vidName.empty()) vidName = cfg.lockscreen_video_path;
+            int curMin = static_cast<int>(cfg.lockscreen_timestamp) / 60;
+            float curSec = static_cast<float>(cfg.lockscreen_timestamp) - curMin * 60.0f;
+            ImGui::TextColored(ImVec4(0.40f, 0.95f, 0.50f, 1.0f), ICON_FA_IMAGE " Mode: Fixed Custom Frame [%s @ %02d:%05.2f]", vidName.c_str(), curMin, curSec);
+            
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset to Auto-Sync")) {
+                cfg.lockscreen_source_mode = 0;
+                g_config.Save();
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_lockscreen_auto\":true}");
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Switch back to automatically updating lock screen wallpaper with whichever live video is currently playing");
+            }
+        }
 
-    ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_CAMERA "  Choose Specific Frame from Video...", ImVec2(270, 28))) {
         std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
-        if (!cur_vid.empty()) {
-            OpenCaptureModal(cur_vid);
+        if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
+            cur_vid = cfg.lockscreen_video_path;
         }
+        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
+            cur_vid = cfg.gallery_history[0];
+        }
+        if (ImGui::Button(ICON_FA_CAMERA "  Choose Custom Frame for Lock Screen...", ImVec2(300, 26))) {
+            if (!cur_vid.empty()) {
+                OpenCaptureModal(cur_vid, 2);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Select a specific video and exact timestamp/frame specifically for the Windows Lock Screen");
+        }
+        ImGui::Unindent(24.0f);
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Opens the frame picker dialog to select an exact timestamp / frame number from video and choose injection target (Desktop, Lock Screen, or Both).");
-    }
+    ImGui::EndGroup();
+    ImGui::PopID();
 
     static bool scr_checked = false;
     static bool scr_installed = false;
@@ -1327,7 +1421,7 @@ static void RequestCaptureModalPreview() {
     }).detach();
 }
 
-static void OpenCaptureModal(const std::string& video_path) {
+static void OpenCaptureModal(const std::string& video_path, int targetFilter) {
     if (video_path.empty()) return;
 
     g_captureModalPath = video_path;
@@ -1345,14 +1439,26 @@ static void OpenCaptureModal(const std::string& video_path) {
     }
 
     auto& cfg = g_config.Get();
-    g_captureModalTargetDesktop = cfg.update_desktop_wallpaper;
-    g_captureModalTargetLockscreen = cfg.update_lockscreen;
-    if (!g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) {
+    if (targetFilter == 1) {
         g_captureModalTargetDesktop = true;
+        g_captureModalTargetLockscreen = false;
+    } else if (targetFilter == 2) {
+        g_captureModalTargetDesktop = false;
+        g_captureModalTargetLockscreen = true;
+    } else {
+        g_captureModalTargetDesktop = cfg.update_desktop_wallpaper;
+        g_captureModalTargetLockscreen = cfg.update_lockscreen;
+        if (!g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) {
+            g_captureModalTargetDesktop = true;
+        }
     }
 
-    // Default time: if current active video matches, snap to current time; otherwise 1.0s
-    if (!g_daemonCurrentVideo.empty() && (g_daemonCurrentVideo == video_path || g_daemonCurrentVideo.find(fs::path(video_path).stem().string()) != std::string::npos)) {
+    // Default time: if this video matches configured custom desktop/lockscreen or active video, snap to that timestamp
+    if (targetFilter == 1 && cfg.desktop_static_source_mode == 1 && cfg.desktop_static_video_path == video_path) {
+        g_captureModalTimeSec = static_cast<float>(cfg.desktop_static_timestamp);
+    } else if (targetFilter == 2 && cfg.lockscreen_source_mode == 1 && cfg.lockscreen_video_path == video_path) {
+        g_captureModalTimeSec = static_cast<float>(cfg.lockscreen_timestamp);
+    } else if (!g_daemonCurrentVideo.empty() && (g_daemonCurrentVideo == video_path || g_daemonCurrentVideo.find(fs::path(video_path).stem().string()) != std::string::npos)) {
         g_captureModalTimeSec = static_cast<float>(g_daemonCurrentTimeSec);
     } else {
         g_captureModalTimeSec = 1.0f;
@@ -1397,12 +1503,38 @@ static void RenderCaptureFrameModal() {
         std::string filename = p.filename().string();
         if (filename.empty()) filename = g_captureModalPath;
 
+        auto& cfg = g_config.Get();
+        if (!cfg.gallery_history.empty()) {
+            int currentIdx = -1;
+            for (size_t i = 0; i < cfg.gallery_history.size(); ++i) {
+                if (cfg.gallery_history[i] == g_captureModalPath) {
+                    currentIdx = static_cast<int>(i);
+                    break;
+                }
+            }
+            std::string currentLabel = (currentIdx >= 0) ? fs::path(cfg.gallery_history[currentIdx]).filename().string() : filename;
+            ImGui::SetNextItemWidth(450.0f);
+            if (ImGui::BeginCombo("Select Video Source", currentLabel.c_str())) {
+                for (size_t i = 0; i < cfg.gallery_history.size(); ++i) {
+                    bool isSel = (static_cast<int>(i) == currentIdx);
+                    std::string itemLabel = fs::path(cfg.gallery_history[i]).filename().string();
+                    if (ImGui::Selectable(itemLabel.c_str(), isSel)) {
+                        int filter = (g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) ? 1 :
+                                     (!g_captureModalTargetDesktop && g_captureModalTargetLockscreen) ? 2 : 0;
+                        OpenCaptureModal(cfg.gallery_history[i], filter);
+                    }
+                    if (isSel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.0f), "Video Source: %s", filename.c_str());
+        }
+
         // Video info row
         int durMin = static_cast<int>(g_captureModalDuration) / 60;
         float durSec = static_cast<float>(g_captureModalDuration) - durMin * 60.0f;
         int totalFrames = static_cast<int>(g_captureModalDuration * g_captureModalFps);
-
-        ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.0f), "Video Source: %s", filename.c_str());
         ImGui::TextColored(ImVec4(0.65f, 0.68f, 0.75f, 1.0f), "Resolution: %dx%d  |  Framerate: %.1f FPS  |  Duration: %02d:%05.2f (%d frames)",
             g_captureModalSourceW, g_captureModalSourceH, g_captureModalFps, durMin, durSec, totalFrames);
         ImGui::Spacing();
@@ -1548,12 +1680,27 @@ static void RenderCaptureFrameModal() {
         bool canApply = (g_captureModalTargetDesktop || g_captureModalTargetLockscreen);
         if (!canApply) ImGui::BeginDisabled();
         if (ImGui::Button(ICON_FA_CHECK "  Capture & Apply Static Wallpaper", ImVec2(320, 36))) {
+            if (g_captureModalTargetDesktop) {
+                cfg.desktop_static_source_mode = 1;
+                cfg.desktop_static_video_path = g_captureModalPath;
+                cfg.desktop_static_timestamp = static_cast<double>(g_captureModalTimeSec);
+                cfg.update_desktop_wallpaper = true;
+            }
+            if (g_captureModalTargetLockscreen) {
+                cfg.lockscreen_source_mode = 1;
+                cfg.lockscreen_video_path = g_captureModalPath;
+                cfg.lockscreen_timestamp = static_cast<double>(g_captureModalTimeSec);
+                cfg.update_lockscreen = true;
+            }
+            g_config.Save();
+
             nlohmann::json req{
                 {"cmd", "sync_desktop_wallpaper"},
                 {"path", g_captureModalPath},
                 {"desktop", g_captureModalTargetDesktop},
                 {"lockscreen", g_captureModalTargetLockscreen},
-                {"timestamp", static_cast<double>(g_captureModalTimeSec)}
+                {"timestamp", static_cast<double>(g_captureModalTimeSec)},
+                {"save_mode", 1}
             };
             SendIpcAsync(req.dump());
 

@@ -52,9 +52,18 @@ static std::wstring Utf8ToWide(const std::string& str) {
     return wstr;
 }
 
-LockScreenManager::LockScreenManager() = default;
+LockScreenManager::LockScreenManager() {
+    m_worker_running = true;
+    m_worker_thread = std::thread(&LockScreenManager::WorkerLoop, this);
+}
 
-LockScreenManager::~LockScreenManager() = default;
+LockScreenManager::~LockScreenManager() {
+    m_worker_running = false;
+    m_queue_cv.notify_all();
+    if (m_worker_thread.joinable()) {
+        m_worker_thread.join();
+    }
+}
 
 std::wstring LockScreenManager::GetTempImagePathBmp() const {
     wchar_t appDataPath[MAX_PATH];
@@ -399,8 +408,6 @@ void LockScreenManager::SyncFromVideoAsync(
     if (video_path.empty()) return;
     if (!syncLockScreen && !syncNativeDesktop) return;
 
-    if (m_is_caching.exchange(true)) return;
-
     if (target_w <= 0 || target_h <= 0) {
         target_w = GetSystemMetrics(SM_CXSCREEN);
         target_h = GetSystemMetrics(SM_CYSCREEN);
@@ -408,6 +415,32 @@ void LockScreenManager::SyncFromVideoAsync(
         if (target_h <= 0) target_h = 1080;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        m_queue.push({video_path, target_w, target_h, syncLockScreen, syncNativeDesktop, timestamp_sec});
+    }
+    m_queue_cv.notify_one();
+}
+
+void LockScreenManager::WorkerLoop() {
+    while (m_worker_running) {
+        VideoSyncTask task;
+        {
+            std::unique_lock<std::mutex> lock(m_queue_mutex);
+            m_queue_cv.wait(lock, [this]() {
+                return !m_worker_running || !m_queue.empty();
+            });
+            if (!m_worker_running && m_queue.empty()) {
+                break;
+            }
+            task = std::move(m_queue.front());
+            m_queue.pop();
+        }
+        ProcessSyncTask(task);
+    }
+}
+
+void LockScreenManager::ProcessSyncTask(const VideoSyncTask& task) {
     int deskSlot = m_desktop_slot.fetch_xor(1);
     int lockSlot = m_lock_slot.fetch_xor(1);
 
@@ -417,186 +450,178 @@ void LockScreenManager::SyncFromVideoAsync(
     std::wstring lockCanonical = GetTempImagePathJpg(-1);
     std::wstring lockBmp = GetTempImagePathBmp();
 
-    std::thread([this, video_path, target_w, target_h,
-                 desktopSlotPath, desktopCanonical,
-                 lockSlotPath, lockCanonical, lockBmp,
-                 syncLockScreen, syncNativeDesktop, timestamp_sec]() {
+    std::string primaryJpg = task.syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
+    bool extraction_done = false;
 
-        std::string primaryJpg = syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
-        bool extraction_done = false;
-
-        // 1. Primary: Use ffmpeg CLI (fastest, pristine 100% quality, zero codec/color quirks)
-        wchar_t tsBuf[64] = {};
-        swprintf_s(tsBuf, L"%.2f", (std::max)(0.0, timestamp_sec));
-        std::wstring wCmd = L"ffmpeg -y -ss " + std::wstring(tsBuf) + L" -i \"" + Utf8ToWide(video_path) + L"\" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
-        STARTUPINFOW si = { sizeof(si) };
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi = {};
-        if (CreateProcessW(nullptr, wCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, 3000);
-            DWORD exitCode = 1;
-            GetExitCodeProcess(pi.hProcess, &exitCode);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            if (exitCode == 0) {
-                WIN32_FILE_ATTRIBUTE_DATA fad;
-                if (GetFileAttributesExW(Utf8ToWide(primaryJpg).c_str(), GetFileExInfoStandard, &fad) && fad.nFileSizeLow > 5000) {
-                    extraction_done = true;
-                    Logger::Info("SyncFromVideoAsync: Frame extracted via ffmpeg CLI successfully (", fad.nFileSizeLow, " bytes)");
-                }
+    // 1. Primary: Use ffmpeg CLI (fastest, pristine 100% quality, zero codec/color quirks)
+    wchar_t tsBuf[64] = {};
+    swprintf_s(tsBuf, L"%.2f", (std::max)(0.0, task.timestamp_sec));
+    std::wstring wCmd = L"ffmpeg -y -ss " + std::wstring(tsBuf) + L" -i \"" + Utf8ToWide(task.video_path) + L"\" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    if (CreateProcessW(nullptr, wCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 3000);
+        DWORD exitCode = 1;
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        if (exitCode == 0) {
+            WIN32_FILE_ATTRIBUTE_DATA fad;
+            if (GetFileAttributesExW(Utf8ToWide(primaryJpg).c_str(), GetFileExInfoStandard, &fad) && fad.nFileSizeLow > 5000) {
+                extraction_done = true;
+                Logger::Info("ProcessSyncTask: Frame extracted via ffmpeg CLI successfully (", fad.nFileSizeLow, " bytes)");
             }
         }
+    }
 
-        // 2. Fallback: In-process FFmpeg C API with luma validation
-        if (!extraction_done) {
-            AVFormatContext* fmt_ctx = nullptr;
-            if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) >= 0) {
-                if (avformat_find_stream_info(fmt_ctx, nullptr) >= 0) {
-                    int video_stream_idx = -1;
-                    for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
-                        if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                            video_stream_idx = static_cast<int>(i);
-                            break;
-                        }
+    // 2. Fallback: In-process FFmpeg C API with luma validation
+    if (!extraction_done) {
+        AVFormatContext* fmt_ctx = nullptr;
+        if (avformat_open_input(&fmt_ctx, task.video_path.c_str(), nullptr, nullptr) >= 0) {
+            if (avformat_find_stream_info(fmt_ctx, nullptr) >= 0) {
+                int video_stream_idx = -1;
+                for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
+                    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                        video_stream_idx = static_cast<int>(i);
+                        break;
                     }
+                }
 
-                    if (video_stream_idx >= 0) {
-                        AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_idx]->codecpar;
-                        const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
-                        if (decoder) {
-                            AVCodecContext* codec_ctx = avcodec_alloc_context3(decoder);
-                            if (codec_ctx) {
-                                if (avcodec_parameters_to_context(codec_ctx, codecpar) >= 0 &&
-                                    avcodec_open2(codec_ctx, decoder, nullptr) >= 0) {
+                if (video_stream_idx >= 0) {
+                    AVCodecParameters* codecpar = fmt_ctx->streams[video_stream_idx]->codecpar;
+                    const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
+                    if (decoder) {
+                        AVCodecContext* codec_ctx = avcodec_alloc_context3(decoder);
+                        if (codec_ctx) {
+                            if (avcodec_parameters_to_context(codec_ctx, codecpar) >= 0 &&
+                                avcodec_open2(codec_ctx, decoder, nullptr) >= 0) {
 
-                                    int64_t target_ts = 0;
-                                    if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
-                                        int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
-                                        int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
-                                        if (dur > 0 && req_ts < dur) {
-                                            target_ts = req_ts;
-                                        } else if (dur > 0 && req_ts >= dur) {
-                                            target_ts = 0;
-                                        } else {
-                                            target_ts = req_ts;
-                                        }
+                                int64_t target_ts = 0;
+                                if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
+                                    int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, task.timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+                                    int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
+                                    if (dur > 0 && req_ts < dur) {
+                                        target_ts = req_ts;
+                                    } else if (dur > 0 && req_ts >= dur) {
+                                        target_ts = 0;
+                                    } else {
+                                        target_ts = req_ts;
                                     }
-                                    av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
-                                    avcodec_flush_buffers(codec_ctx);
+                                }
+                                av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
+                                avcodec_flush_buffers(codec_ctx);
 
-                                    AVPacket* pkt = av_packet_alloc();
-                                    AVFrame* frame = av_frame_alloc();
-                                    AVFrame* rgb_frame = av_frame_alloc();
+                                AVPacket* pkt = av_packet_alloc();
+                                AVFrame* frame = av_frame_alloc();
+                                AVFrame* rgb_frame = av_frame_alloc();
 
-                                    rgb_frame->format = AV_PIX_FMT_RGB24;
-                                    rgb_frame->width = target_w;
-                                    rgb_frame->height = target_h;
-                                    av_frame_get_buffer(rgb_frame, 32);
+                                rgb_frame->format = AV_PIX_FMT_RGB24;
+                                rgb_frame->width = task.target_w;
+                                rgb_frame->height = task.target_h;
+                                av_frame_get_buffer(rgb_frame, 32);
 
-                                    SwsContext* sws_ctx = nullptr;
-                                    int frames_received = 0;
+                                SwsContext* sws_ctx = nullptr;
+                                int frames_received = 0;
 
-                                    while (av_read_frame(fmt_ctx, pkt) >= 0) {
-                                        if (pkt->stream_index == video_stream_idx) {
-                                            if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
-                                                while (avcodec_receive_frame(codec_ctx, frame) >= 0) {
-                                                    if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
-                                                        frames_received++;
+                                while (av_read_frame(fmt_ctx, pkt) >= 0) {
+                                    if (pkt->stream_index == video_stream_idx) {
+                                        if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
+                                            while (avcodec_receive_frame(codec_ctx, frame) >= 0) {
+                                                if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
+                                                    frames_received++;
 
-                                                        // Check luma to avoid intro black frames when using default 1.0s auto-sync
-                                                        int luma_sum = 0;
-                                                        if (frame->data[0]) {
-                                                            for (int i = 0; i < 100; ++i) {
-                                                                int sx = (i % 10) * (frame->width / 10);
-                                                                int sy = (i / 10) * (frame->height / 10);
-                                                                luma_sum += frame->data[0][sy * frame->linesize[0] + sx];
-                                                            }
-                                                        }
-                                                        int avg_luma = luma_sum / 100;
-
-                                                        bool accept_frame = (timestamp_sec != 1.0) ? (frames_received >= 1) : (avg_luma > 20 || frames_received > 60);
-                                                        if (accept_frame) {
-                                                            if (!sws_ctx) {
-                                                                sws_ctx = sws_getContext(
-                                                                    frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-                                                                    target_w, target_h, AV_PIX_FMT_RGB24,
-                                                                    SWS_BILINEAR, nullptr, nullptr, nullptr
-                                                                );
-                                                            }
-                                                            if (sws_ctx) {
-                                                                int scaled = sws_scale(
-                                                                    sws_ctx,
-                                                                    frame->data, frame->linesize,
-                                                                    0, frame->height,
-                                                                    rgb_frame->data, rgb_frame->linesize
-                                                                );
-                                                                if (scaled == target_h && rgb_frame->data[0]) {
-                                                                    std::vector<uint8_t> rgbData(static_cast<size_t>(target_w) * target_h * 3);
-                                                                    for (int y = 0; y < target_h; ++y) {
-                                                                        memcpy(
-                                                                            rgbData.data() + (static_cast<size_t>(y) * target_w * 3),
-                                                                            rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
-                                                                            static_cast<size_t>(target_w) * 3
-                                                                        );
-                                                                    }
-                                                                    if (stbi_write_jpg(primaryJpg.c_str(), target_w, target_h, 3, rgbData.data(), 92)) {
-                                                                        extraction_done = true;
-                                                                        Logger::Info("SyncFromVideoAsync: Frame extracted via in-process FFmpeg successfully");
-                                                                    }
-                                                                }
-                                                            }
-                                                            av_frame_unref(frame);
-                                                            break;
+                                                    // Check luma to avoid intro black frames when using default 1.0s auto-sync
+                                                    int luma_sum = 0;
+                                                    if (frame->data[0]) {
+                                                        for (int i = 0; i < 100; ++i) {
+                                                            int sx = (i % 10) * (frame->width / 10);
+                                                            int sy = (i / 10) * (frame->height / 10);
+                                                            luma_sum += frame->data[0][sy * frame->linesize[0] + sx];
                                                         }
                                                     }
-                                                    av_frame_unref(frame);
-                                                }
-                                                if (extraction_done) break;
-                                            }
-                                        }
-                                        av_packet_unref(pkt);
-                                        if (extraction_done) break;
-                                    }
+                                                    int avg_luma = luma_sum / 100;
 
-                                    if (sws_ctx) sws_freeContext(sws_ctx);
-                                    av_packet_free(&pkt);
-                                    av_frame_free(&frame);
-                                    av_frame_free(&rgb_frame);
+                                                    bool accept_frame = (task.timestamp_sec != 1.0) ? (frames_received >= 1) : (avg_luma > 20 || frames_received > 60);
+                                                    if (accept_frame) {
+                                                        if (!sws_ctx) {
+                                                            sws_ctx = sws_getContext(
+                                                                frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                                                                task.target_w, task.target_h, AV_PIX_FMT_RGB24,
+                                                                SWS_BILINEAR, nullptr, nullptr, nullptr
+                                                            );
+                                                        }
+                                                        if (sws_ctx) {
+                                                            int scaled = sws_scale(
+                                                                sws_ctx,
+                                                                frame->data, frame->linesize,
+                                                                0, frame->height,
+                                                                rgb_frame->data, rgb_frame->linesize
+                                                            );
+                                                            if (scaled == task.target_h && rgb_frame->data[0]) {
+                                                                std::vector<uint8_t> rgbData(static_cast<size_t>(task.target_w) * task.target_h * 3);
+                                                                for (int y = 0; y < task.target_h; ++y) {
+                                                                    memcpy(
+                                                                        rgbData.data() + (static_cast<size_t>(y) * task.target_w * 3),
+                                                                        rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
+                                                                        static_cast<size_t>(task.target_w) * 3
+                                                                    );
+                                                                }
+                                                                if (stbi_write_jpg(primaryJpg.c_str(), task.target_w, task.target_h, 3, rgbData.data(), 92)) {
+                                                                    extraction_done = true;
+                                                                    Logger::Info("ProcessSyncTask: Frame extracted via in-process FFmpeg successfully");
+                                                                }
+                                                            }
+                                                        }
+                                                        av_frame_unref(frame);
+                                                        break;
+                                                    }
+                                                }
+                                                av_frame_unref(frame);
+                                            }
+                                            if (extraction_done) break;
+                                        }
+                                    }
+                                    av_packet_unref(pkt);
+                                    if (extraction_done) break;
                                 }
-                                avcodec_free_context(&codec_ctx);
+
+                                if (sws_ctx) sws_freeContext(sws_ctx);
+                                av_packet_free(&pkt);
+                                av_frame_free(&frame);
+                                av_frame_free(&rgb_frame);
                             }
+                            avcodec_free_context(&codec_ctx);
                         }
                     }
-                    avformat_close_input(&fmt_ctx);
                 }
+                avformat_close_input(&fmt_ctx);
             }
         }
+    }
 
-        if (extraction_done) {
-            HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            if (FAILED(hrCo)) hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (extraction_done) {
+        HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (FAILED(hrCo)) hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-            if (syncNativeDesktop) {
-                CopyFileW(desktopSlotPath.c_str(), desktopCanonical.c_str(), FALSE);
-                SetNativeDesktopWallpaperFile(desktopSlotPath);
+        if (task.syncNativeDesktop) {
+            CopyFileW(desktopSlotPath.c_str(), desktopCanonical.c_str(), FALSE);
+            SetNativeDesktopWallpaperFile(desktopSlotPath);
+        }
+        if (task.syncLockScreen) {
+            if (task.syncNativeDesktop) {
+                CopyFileW(desktopSlotPath.c_str(), lockSlotPath.c_str(), FALSE);
             }
-            if (syncLockScreen) {
-                if (syncNativeDesktop) {
-                    CopyFileW(desktopSlotPath.c_str(), lockSlotPath.c_str(), FALSE);
-                }
-                CopyFileW(lockSlotPath.c_str(), lockCanonical.c_str(), FALSE);
-                SetLockScreenImage(lockSlotPath);
-                SetLockScreenImageWin7(lockSlotPath);
-            }
-
-            if (SUCCEEDED(hrCo)) {
-                CoUninitialize();
-            }
+            CopyFileW(lockSlotPath.c_str(), lockCanonical.c_str(), FALSE);
+            SetLockScreenImage(lockSlotPath);
+            SetLockScreenImageWin7(lockSlotPath);
         }
 
-        m_is_caching = false;
-    }).detach();
+        if (SUCCEEDED(hrCo)) {
+            CoUninitialize();
+        }
+    }
 }
 
 void LockScreenManager::SyncVisualsRGBAsync(
@@ -608,8 +633,6 @@ void LockScreenManager::SyncVisualsRGBAsync(
 ) {
     if (rgbData.empty() || width <= 0 || height <= 0) return;
     if (!syncLockScreen && !syncNativeDesktop) return;
-
-    if (m_is_caching.exchange(true)) return;
 
     int deskSlot = m_desktop_slot.fetch_xor(1);
     int lockSlot = m_lock_slot.fetch_xor(1);
@@ -647,7 +670,6 @@ void LockScreenManager::SyncVisualsRGBAsync(
         if (SUCCEEDED(hrCo)) {
             CoUninitialize();
         }
-        m_is_caching = false;
     }).detach();
 }
 

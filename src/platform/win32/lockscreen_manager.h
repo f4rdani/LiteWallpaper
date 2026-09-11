@@ -4,6 +4,10 @@
 #include <vector>
 #include <cstdint>
 #include <atomic>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
 
 namespace litewp {
 
@@ -86,9 +90,25 @@ public:
     static void OpenWindowsScreensaverSettings();
 
 private:
-    std::atomic<bool> m_is_caching{false};
+    struct VideoSyncTask {
+        std::string video_path;
+        int target_w = 0;
+        int target_h = 0;
+        bool syncLockScreen = false;
+        bool syncNativeDesktop = false;
+        double timestamp_sec = 1.0;
+    };
+
     std::atomic<int>  m_desktop_slot{0};
     std::atomic<int>  m_lock_slot{0};
+    std::mutex m_queue_mutex;
+    std::condition_variable m_queue_cv;
+    std::queue<VideoSyncTask> m_queue;
+    std::atomic<bool> m_worker_running{false};
+    std::thread m_worker_thread;
+
+    void WorkerLoop();
+    void ProcessSyncTask(const VideoSyncTask& task);
 
     static bool SaveRgbAsBmp(
         const std::vector<uint8_t>& rgb,

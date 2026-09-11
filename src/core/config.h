@@ -30,7 +30,13 @@ struct AppConfig {
     int resource_ram_threshold_pct = 80;   // RAM threshold percentage (default 80%)
     int resource_vram_threshold_pct = 80;  // VRAM threshold percentage (default 80%)
     bool update_lockscreen = true; // Capture frame for lock screen
+    int lockscreen_source_mode = 0; // 0 = Auto-sync active video, 1 = Custom fixed video & frame
+    std::string lockscreen_video_path = ""; // Custom video path when mode == 1
+    double lockscreen_timestamp = 1.0; // Custom timestamp when mode == 1
     bool update_desktop_wallpaper = true; // Auto-set native Windows desktop wallpaper from active video frame (0s boot visual)
+    int desktop_static_source_mode = 0; // 0 = Auto-sync active video, 1 = Custom fixed video & frame
+    std::string desktop_static_video_path = ""; // Custom video path when mode == 1
+    double desktop_static_timestamp = 1.0; // Custom timestamp when mode == 1
     bool auto_downscale_highres = true; // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
     bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
     int optimizer_crop_mode = 0;        // 0 = Aspect Fit (Proportional), 1 = Aspect Fill (Center Crop to Full Screen)
@@ -146,7 +152,13 @@ inline void to_json(nlohmann::json& j, const AppConfig& c) {
         {"resource_ram_threshold_pct", c.resource_ram_threshold_pct},
         {"resource_vram_threshold_pct", c.resource_vram_threshold_pct},
         {"update_lockscreen", c.update_lockscreen},
+        {"lockscreen_source_mode", c.lockscreen_source_mode},
+        {"lockscreen_video_path", c.lockscreen_video_path},
+        {"lockscreen_timestamp", c.lockscreen_timestamp},
         {"update_desktop_wallpaper", c.update_desktop_wallpaper},
+        {"desktop_static_source_mode", c.desktop_static_source_mode},
+        {"desktop_static_video_path", c.desktop_static_video_path},
+        {"desktop_static_timestamp", c.desktop_static_timestamp},
         {"auto_downscale_highres", c.auto_downscale_highres},
         {"prompt_downscale", c.prompt_downscale},
         {"optimizer_crop_mode", c.optimizer_crop_mode},
@@ -177,7 +189,13 @@ inline void from_json(const nlohmann::json& j, AppConfig& c) {
     if (j.contains("resource_ram_threshold_pct")) j.at("resource_ram_threshold_pct").get_to(c.resource_ram_threshold_pct);
     if (j.contains("resource_vram_threshold_pct")) j.at("resource_vram_threshold_pct").get_to(c.resource_vram_threshold_pct);
     if (j.contains("update_lockscreen")) j.at("update_lockscreen").get_to(c.update_lockscreen);
+    if (j.contains("lockscreen_source_mode")) j.at("lockscreen_source_mode").get_to(c.lockscreen_source_mode);
+    if (j.contains("lockscreen_video_path")) j.at("lockscreen_video_path").get_to(c.lockscreen_video_path);
+    if (j.contains("lockscreen_timestamp")) j.at("lockscreen_timestamp").get_to(c.lockscreen_timestamp);
     if (j.contains("update_desktop_wallpaper")) j.at("update_desktop_wallpaper").get_to(c.update_desktop_wallpaper);
+    if (j.contains("desktop_static_source_mode")) j.at("desktop_static_source_mode").get_to(c.desktop_static_source_mode);
+    if (j.contains("desktop_static_video_path")) j.at("desktop_static_video_path").get_to(c.desktop_static_video_path);
+    if (j.contains("desktop_static_timestamp")) j.at("desktop_static_timestamp").get_to(c.desktop_static_timestamp);
     if (j.contains("auto_downscale_highres")) j.at("auto_downscale_highres").get_to(c.auto_downscale_highres);
     if (j.contains("prompt_downscale")) j.at("prompt_downscale").get_to(c.prompt_downscale);
     if (j.contains("optimizer_crop_mode")) j.at("optimizer_crop_mode").get_to(c.optimizer_crop_mode);

@@ -558,10 +558,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
     // 5. Open video if available
     if (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty()) {
         OpenWallpaperVideo(cfg.wallpapers[0].video_path);
-        if (cfg.update_desktop_wallpaper || cfg.update_lockscreen) {
-            int sw = GetSystemMetrics(SM_CXSCREEN);
-            int sh = GetSystemMetrics(SM_CYSCREEN);
-            g_lockscreen.SyncFromVideoAsync(cfg.wallpapers[0].video_path, sw, sh, cfg.update_lockscreen, cfg.update_desktop_wallpaper);
+    }
+
+    // Sync static visuals (Desktop & Lock Screen) based on individual configuration
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    if (cfg.update_desktop_wallpaper) {
+        std::string d_vid = (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty())
+            ? cfg.desktop_static_video_path
+            : (!cfg.wallpapers.empty() ? cfg.wallpapers[0].video_path : "");
+        double d_ts = (cfg.desktop_static_source_mode == 1) ? cfg.desktop_static_timestamp : 1.0;
+        if (!d_vid.empty()) {
+            g_lockscreen.SyncFromVideoAsync(d_vid, sw, sh, false, true, d_ts);
+        }
+    }
+    if (cfg.update_lockscreen) {
+        std::string l_vid = (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty())
+            ? cfg.lockscreen_video_path
+            : (!cfg.wallpapers.empty() ? cfg.wallpapers[0].video_path : "");
+        double l_ts = (cfg.lockscreen_source_mode == 1) ? cfg.lockscreen_timestamp : 1.0;
+        if (!l_vid.empty()) {
+            g_lockscreen.SyncFromVideoAsync(l_vid, sw, sh, true, false, l_ts);
         }
     }
 
@@ -1135,7 +1152,11 @@ std::string OnIpcRequest(const std::string& request_json) {
                 if (ok && (cfg.update_desktop_wallpaper || cfg.update_lockscreen)) {
                     int sw = GetSystemMetrics(SM_CXSCREEN);
                     int sh = GetSystemMetrics(SM_CYSCREEN);
-                    g_lockscreen.SyncFromVideoAsync(path, sw, sh, cfg.update_lockscreen, cfg.update_desktop_wallpaper);
+                    bool sync_desk = cfg.update_desktop_wallpaper && (cfg.desktop_static_source_mode == 0);
+                    bool sync_lock = cfg.update_lockscreen && (cfg.lockscreen_source_mode == 0);
+                    if (sync_desk || sync_lock) {
+                        g_lockscreen.SyncFromVideoAsync(path, sw, sh, sync_lock, sync_desk, 1.0);
+                    }
                 }
             }
             return nlohmann::json{{"ok", ok}, {"hw", g_decoder_hw}}.dump();
@@ -1150,6 +1171,33 @@ std::string OnIpcRequest(const std::string& request_json) {
         return "{\"ok\":true}";
     } else if (cmd == "sync_desktop_wallpaper") {
         auto& cfg = g_config.Get();
+
+        // Check for reset-to-auto commands
+        if (req.value("reset_desktop_auto", false)) {
+            cfg.desktop_static_source_mode = 0;
+            cfg.update_desktop_wallpaper = true;
+            g_config.Save();
+            std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+            if (!cur_vid.empty()) {
+                int sw = GetSystemMetrics(SM_CXSCREEN);
+                int sh = GetSystemMetrics(SM_CYSCREEN);
+                g_lockscreen.SyncFromVideoAsync(cur_vid, sw, sh, false, true, 1.0);
+            }
+            return "{\"ok\":true}";
+        }
+        if (req.value("reset_lockscreen_auto", false)) {
+            cfg.lockscreen_source_mode = 0;
+            cfg.update_lockscreen = true;
+            g_config.Save();
+            std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+            if (!cur_vid.empty()) {
+                int sw = GetSystemMetrics(SM_CXSCREEN);
+                int sh = GetSystemMetrics(SM_CYSCREEN);
+                g_lockscreen.SyncFromVideoAsync(cur_vid, sw, sh, true, false, 1.0);
+            }
+            return "{\"ok\":true}";
+        }
+
         std::string cur_vid = req.value("path", "");
         if (cur_vid.empty()) {
             cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
@@ -1157,6 +1205,24 @@ std::string OnIpcRequest(const std::string& request_json) {
         bool sync_desk = req.value("desktop", true);
         bool sync_lock = req.value("lockscreen", cfg.update_lockscreen);
         double ts = req.value("timestamp", 1.0);
+        int save_mode = req.value("save_mode", -1);
+
+        if (save_mode == 1) {
+            if (sync_desk) {
+                cfg.desktop_static_source_mode = 1;
+                cfg.desktop_static_video_path = cur_vid;
+                cfg.desktop_static_timestamp = ts;
+                cfg.update_desktop_wallpaper = true;
+            }
+            if (sync_lock) {
+                cfg.lockscreen_source_mode = 1;
+                cfg.lockscreen_video_path = cur_vid;
+                cfg.lockscreen_timestamp = ts;
+                cfg.update_lockscreen = true;
+            }
+            g_config.Save();
+        }
+
         if (!cur_vid.empty() && (sync_desk || sync_lock)) {
             int sw = GetSystemMetrics(SM_CXSCREEN);
             int sh = GetSystemMetrics(SM_CYSCREEN);
@@ -1181,6 +1247,12 @@ std::string OnIpcRequest(const std::string& request_json) {
             {"height", info.height},
             {"duration", info.duration_seconds},
             {"current_time_sec", g_shared_engine_state.current_time_sec.load()},
+            {"desktop_static_source_mode", cfg.desktop_static_source_mode},
+            {"desktop_static_video_path", cfg.desktop_static_video_path},
+            {"desktop_static_timestamp", cfg.desktop_static_timestamp},
+            {"lockscreen_source_mode", cfg.lockscreen_source_mode},
+            {"lockscreen_video_path", cfg.lockscreen_video_path},
+            {"lockscreen_timestamp", cfg.lockscreen_timestamp},
             {"codec", info.codec_name},
             {"ram_mb", ram},
             {"injected", g_inject_ok},
