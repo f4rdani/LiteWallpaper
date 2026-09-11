@@ -532,7 +532,7 @@ static void RenderGalleryTab() {
     ImGui::BeginChild("GalleryGrid", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     
     float availW = ImGui::GetContentRegionAvail().x;
-    int numCols = (availW >= 740.0f) ? static_cast<int>(availW / 370.0f) : 1;
+    int numCols = (availW >= 760.0f) ? static_cast<int>(availW / 380.0f) : 1;
     if (numCols < 1) numCols = 1;
 
     float spacingX = ImGui::GetStyle().ItemSpacing.x;
@@ -575,10 +575,10 @@ static void RenderGalleryTab() {
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.22f, 0.24f, 0.30f, 1.00f));
         }
 
-        ImGui::BeginChild("Card", ImVec2(cardWidth, 106), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("Card", ImVec2(cardWidth, 112), true, ImGuiWindowFlags_NoScrollbar);
 
-        float thumbW = 112.0f;
-        float thumbH = 63.0f;
+        float thumbW = 120.0f;
+        float thumbH = 68.0f;
 
         // Render Thumbnail
         ID3D11ShaderResourceView* thumb_srv = ThumbnailManager::Instance().GetThumbnailSRV(g_pd3dDevice, path);
@@ -597,8 +597,8 @@ static void RenderGalleryTab() {
         ImGui::BeginGroup();
 
         float innerW = cardWidth - thumbW - 28.0f;
-        float delW = 26.0f;
-        float camW = 26.0f;
+        float delW = 28.0f;
+        float camW = 28.0f;
         float itemPad = ImGui::GetStyle().ItemSpacing.x;
 
         // Title and Status
@@ -617,16 +617,24 @@ static void RenderGalleryTab() {
         }
 
         std::string displayTitle = filename;
-        if (displayTitle.length() > 28) displayTitle = displayTitle.substr(0, 25) + "...";
+        if (displayTitle.length() > 26) displayTitle = displayTitle.substr(0, 23) + "...";
         ImGui::TextUnformatted(displayTitle.c_str());
 
         // Buttons
         if (is_current) {
-            float stopW = (innerW - delW - camW - (3 * itemPad)) * 0.48f;
+            float stopW = 66.0f;
             float switchW = innerW - delW - camW - stopW - (3 * itemPad);
+            if (switchW < 60.0f) switchW = 60.0f;
 
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.60f, 0.20f, 0.20f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.75f, 0.25f, 0.25f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.90f, 0.30f, 0.30f, 1.00f));
             if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
                 ApplyAction("", "stop");
+            }
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Stop video playback and return to default Windows desktop");
             }
 
             ImGui::SameLine();
@@ -636,7 +644,7 @@ static void RenderGalleryTab() {
                 }
             } else {
                 if (has_opt) {
-                    if (ImGui::Button(ICON_FA_PLAY " Optimized", ImVec2(switchW, 26))) {
+                    if (ImGui::Button(ICON_FA_PLAY " Opt", ImVec2(switchW, 26))) {
                         ApplyAction(opt_path, "wallpaper");
                     }
                     if (ImGui::IsItemHovered()) {
@@ -644,13 +652,13 @@ static void RenderGalleryTab() {
                     }
                 } else if (is_already_optimal) {
                     ImGui::BeginDisabled();
-                    ImGui::Button("Native 1080p", ImVec2(switchW, 26));
+                    ImGui::Button("Native", ImVec2(switchW, 26));
                     ImGui::EndDisabled();
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                        ImGui::SetTooltip("This video is already at optimal resolution (<= 1080p, <= 60 FPS). No transcoding needed.");
+                        ImGui::SetTooltip("Already native 1080p 60FPS");
                     }
                 } else {
-                    if (ImGui::Button(ICON_FA_DOWNLOAD " Optimize", ImVec2(switchW, 26))) {
+                    if (ImGui::Button(ICON_FA_DOWNLOAD " Opt", ImVec2(switchW, 26))) {
                         StartVideoOptimization(path, target_w, target_h, "wallpaper", cfg.optimizer_crop_mode);
                     }
                 }
@@ -680,15 +688,18 @@ static void RenderGalleryTab() {
         } else {
             if (has_opt) {
                 float halfW = (innerW - delW - camW - (3 * itemPad)) * 0.5f;
-                if (ImGui::Button(ICON_FA_PLAY " Optimized", ImVec2(halfW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Opt", ImVec2(halfW, 26))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Play pre-rendered optimized version (Low GPU usage)");
+                }
                 ImGui::SameLine();
-                if (ImGui::Button(ICON_FA_PLAY " Original", ImVec2(halfW, 26))) {
+                if (ImGui::Button(ICON_FA_PLAY " Raw", ImVec2(halfW, 26))) {
                     ApplyAction(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Play original high-resolution video");
+                    ImGui::SetTooltip("Play original raw high-resolution video");
                 }
             } else if (is_already_optimal) {
                 float playW = innerW - delW - camW - (2 * itemPad);
@@ -696,10 +707,10 @@ static void RenderGalleryTab() {
                     RequestApplyVideo(path, "wallpaper");
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Play native 1080p video directly (Zero extra disk or memory usage)");
+                    ImGui::SetTooltip("Play native 1080p video directly");
                 }
             } else {
-                float playW = (innerW - delW - camW - (3 * itemPad)) * 0.68f;
+                float playW = (innerW - delW - camW - (3 * itemPad)) * 0.65f;
                 float optW = innerW - delW - camW - playW - (3 * itemPad);
                 if (ImGui::Button(ICON_FA_PLAY " Play", ImVec2(playW, 26))) {
                     RequestApplyVideo(path, "wallpaper");
@@ -749,14 +760,232 @@ static void RenderGalleryTab() {
     ImGui::EndChild();
 }
 
-static void RenderSettingsPanel() {
+static void RenderLockscreenTab() {
     auto& cfg = g_config.Get();
 
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_SLIDERS "  Display & Performance Settings");
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_LOCK "  Lock Screen & Static Wallpaper Management");
+    ImGui::TextColored(ImVec4(0.68f, 0.72f, 0.80f, 1.00f), "Configure instant 0s Windows boot visuals and lock screen transitions with 0% ongoing CPU & battery load.");
+    ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Spacing();
+
+    // CARD 1: Windows Desktop Static Wallpaper (0s Instant Boot Visual)
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.13f, 0.17f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.38f, 1.00f));
+    ImGui::BeginChild("DesktopStaticCard", ImVec2(0, 155), true, ImGuiWindowFlags_NoScrollbar);
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DESKTOP "  1. Windows Desktop Static Wallpaper (0s Instant Boot Visual)");
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Enable Windows Desktop Static Wallpaper", &cfg.update_desktop_wallpaper)) {
+        g_config.Save();
+        if (cfg.update_desktop_wallpaper) {
+            if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
+                nlohmann::json req{
+                    {"cmd", "sync_desktop_wallpaper"},
+                    {"path", cfg.desktop_static_video_path},
+                    {"desktop", true},
+                    {"lockscreen", false},
+                    {"timestamp", cfg.desktop_static_timestamp}
+                };
+                SendIpcAsync(req.dump());
+            } else {
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":true,\"lockscreen\":false}");
+            }
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Injects a high-definition static frame directly into Windows Desktop Wallpaper.\nWhen Windows boots, your desktop appears in 0.0s with no black screen or loading delay.");
+    }
+
+    if (cfg.update_desktop_wallpaper) {
+        ImGui::Indent(18.0f);
+        if (cfg.desktop_static_source_mode == 0) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.95f, 1.0f), ICON_FA_ROTATE " Active Mode: Auto-Sync (Dynamically follows active live wallpaper)");
+        } else {
+            fs::path p(cfg.desktop_static_video_path);
+            std::string vidName = p.filename().string();
+            if (vidName.empty()) vidName = cfg.desktop_static_video_path;
+            int curMin = static_cast<int>(cfg.desktop_static_timestamp) / 60;
+            float curSec = static_cast<float>(cfg.desktop_static_timestamp) - curMin * 60.0f;
+            ImGui::TextColored(ImVec4(0.40f, 0.95f, 0.50f, 1.0f), ICON_FA_IMAGE " Active Mode: Custom Frame [%s @ %02d:%05.2f]", vidName.c_str(), curMin, curSec);
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset to Auto-Sync")) {
+                cfg.desktop_static_source_mode = 0;
+                g_config.Save();
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_desktop_auto\":true}");
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Switch back to automatically updating desktop wallpaper with whichever live video is currently playing");
+            }
+        }
+
+        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
+        if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
+            cur_vid = cfg.desktop_static_video_path;
+        }
+        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
+            cur_vid = cfg.gallery_history[0];
+        }
+
+        if (ImGui::Button(ICON_FA_CAMERA "  Choose Custom Frame for Desktop...", ImVec2(320, 28))) {
+            if (!cur_vid.empty()) {
+                OpenCaptureModal(cur_vid, 1);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Select a specific video and exact timestamp/frame specifically for the Desktop Wallpaper");
+        }
+        ImGui::Unindent(18.0f);
+    } else {
+        ImGui::TextDisabled("  Desktop static wallpaper injection is currently disabled.");
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+    ImGui::Spacing();
+
+    // CARD 2: Windows Lock Screen Wallpaper (Win + L Seamless Transition)
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.13f, 0.17f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.38f, 1.00f));
+    ImGui::BeginChild("LockscreenCard", ImVec2(0, 155), true, ImGuiWindowFlags_NoScrollbar);
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_LOCK "  2. Windows Lock Screen Wallpaper (Win + L Seamless Transition)");
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Enable Windows Lock Screen Wallpaper", &cfg.update_lockscreen)) {
+        g_config.Save();
+        if (cfg.update_lockscreen) {
+            if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
+                nlohmann::json req{
+                    {"cmd", "sync_desktop_wallpaper"},
+                    {"path", cfg.lockscreen_video_path},
+                    {"desktop", false},
+                    {"lockscreen", true},
+                    {"timestamp", cfg.lockscreen_timestamp}
+                };
+                SendIpcAsync(req.dump());
+            } else {
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":false,\"lockscreen\":true}");
+            }
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Pre-caches a pristine high-definition frame for the Windows Lock Screen.\nWhen pressing Win+L, it displays immediately with 0ms visual delay and 0% background load.");
+    }
+
+    if (cfg.update_lockscreen) {
+        ImGui::Indent(18.0f);
+        if (cfg.lockscreen_source_mode == 0) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.95f, 1.0f), ICON_FA_ROTATE " Active Mode: Auto-Sync (Dynamically follows active live wallpaper)");
+        } else {
+            fs::path p(cfg.lockscreen_video_path);
+            std::string vidName = p.filename().string();
+            if (vidName.empty()) vidName = cfg.lockscreen_video_path;
+            int curMin = static_cast<int>(cfg.lockscreen_timestamp) / 60;
+            float curSec = static_cast<float>(cfg.lockscreen_timestamp) - curMin * 60.0f;
+            ImGui::TextColored(ImVec4(0.40f, 0.95f, 0.50f, 1.0f), ICON_FA_IMAGE " Active Mode: Custom Frame [%s @ %02d:%05.2f]", vidName.c_str(), curMin, curSec);
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset to Auto-Sync")) {
+                cfg.lockscreen_source_mode = 0;
+                g_config.Save();
+                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_lockscreen_auto\":true}");
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Switch back to automatically updating lock screen wallpaper with whichever live video is currently playing");
+            }
+        }
+
+        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
+        if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
+            cur_vid = cfg.lockscreen_video_path;
+        }
+        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
+            cur_vid = cfg.gallery_history[0];
+        }
+
+        if (ImGui::Button(ICON_FA_CAMERA "  Choose Custom Frame for Lock Screen...", ImVec2(320, 28))) {
+            if (!cur_vid.empty()) {
+                OpenCaptureModal(cur_vid, 2);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Select a specific video and exact timestamp/frame specifically for the Windows Lock Screen");
+        }
+        ImGui::Unindent(18.0f);
+    } else {
+        ImGui::TextDisabled("  Windows Lock Screen wallpaper integration is currently disabled.");
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+    ImGui::Spacing();
+
+    // CARD 3: Windows Screensaver Integration
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.13f, 0.17f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.38f, 1.00f));
+    ImGui::BeginChild("ScreensaverCard", ImVec2(0, 115), true, ImGuiWindowFlags_NoScrollbar);
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_TV "  3. Windows Screensaver Integration");
+    ImGui::Spacing();
+
+    static bool scr_checked = false;
+    static bool scr_installed = false;
+    if (!scr_checked) {
+        scr_installed = LockScreenManager::IsScreensaverInstalled();
+        scr_checked = true;
+    }
+
+    if (ImGui::Checkbox("Enable LiteWallpaper as Windows Screensaver", &scr_installed)) {
+        if (scr_installed) {
+            wchar_t exePathBuf[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
+            std::wstring exePath(exePathBuf);
+            std::wstring scrPath = exePath.substr(0, exePath.find_last_of(L'.')) + L".scr";
+            if (!fs::exists(scrPath)) {
+                CopyFileW(exePath.c_str(), scrPath.c_str(), FALSE);
+            }
+            LockScreenManager::InstallScreensaver(scrPath, 300, true);
+        } else {
+            LockScreenManager::UninstallScreensaver();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Plays your live video wallpaper at full 60 FPS when your computer is idle!\nWhen waking the PC, it transitions seamlessly back.");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_GEAR "  Configure Screensaver...", ImVec2(220, 26))) {
+        LockScreenManager::OpenWindowsScreensaverSettings();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Opens official Windows Screen Saver Settings to adjust idle timeout and resume password.");
+    }
+
+    ImGui::TextColored(ImVec4(0.60f, 0.64f, 0.72f, 1.00f), "Smoothly plays your live wallpaper when idle, waking up immediately upon mouse movement.");
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+}
+
+static void RenderGeneralSettingsTab() {
+    auto& cfg = g_config.Get();
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_SLIDERS "  General Settings & Playback");
+    ImGui::TextColored(ImVec4(0.68f, 0.72f, 0.80f, 1.00f), "Configure display scaling, master volume, Windows autostart, and power-saving rules.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
 
     float availW = ImGui::GetContentRegionAvail().x;
-    float comboW = (std::min)(450.0f, availW);
+    float comboW = (std::min)(480.0f, availW);
+    float sliderW = (std::min)(320.0f, availW);
+
+    // SECTION 1: Display Scaling Mode
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_EXPAND "  Display Scaling & Multi-Monitor");
+    ImGui::Spacing();
 
     static const char* scalingModes[] = {
         "Auto Aspect Fill (Cover - Smart Crop, No Black Bars)",
@@ -780,12 +1009,9 @@ static void RenderSettingsPanel() {
         g_hardwareInfoInit = true;
     }
 
-    // Multi-Monitor Target Checkboxes in Settings
     if (g_hardwareInfo.displays.size() > 1) {
         ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_TV "  Multi-Desktop / Target Display Selection");
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.75f, 1.0f), "Choose which desktop screen(s) will display the active wallpaper:");
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.75f, 1.0f), "Target Desktop Screen(s):");
 
         bool all_checked = cfg.target_displays.empty() || (cfg.target_displays.size() == g_hardwareInfo.displays.size());
         if (ImGui::Checkbox("All Monitors (Apply to All Desktops)", &all_checked)) {
@@ -814,7 +1040,171 @@ static void RenderSettingsPanel() {
         }
     }
 
-    // Dynamic Hardware / Rendering Device Selector
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // SECTION 2: Audio Configuration
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_VOLUME_HIGH "  Audio Configuration");
+    ImGui::Spacing();
+
+    static float volume = 0.0f;
+    static bool volume_init = false;
+    if (!volume_init && !cfg.wallpapers.empty()) {
+        volume = cfg.wallpapers[0].volume;
+        volume_init = true;
+    }
+
+    ImGui::SetNextItemWidth(sliderW);
+    if (ImGui::SliderFloat("Master Volume", &volume, 0.0f, 1.0f, "%.2f")) {
+        if (!cfg.wallpapers.empty()) {
+            cfg.wallpapers[0].volume = volume;
+        }
+        g_config.Save();
+        nlohmann::json req{{"cmd", "set_volume"}, {"volume", volume}};
+        SendIpcAsync(req.dump());
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // SECTION 3: Windows Startup & Automation
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DESKTOP "  Windows Startup & Automation");
+    ImGui::Spacing();
+
+    static bool startup_inited = false;
+    static bool startup_enabled = false;
+    if (!startup_inited) {
+        startup_enabled = WindowsAutostart::IsEnabled();
+        startup_inited = true;
+    }
+
+    if (ImGui::Checkbox("Start LiteWallpaper automatically on Windows Boot", &startup_enabled)) {
+        WindowsAutostart::SetEnabled(startup_enabled, 0);
+        cfg.run_on_startup = startup_enabled;
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Launches LiteWallpaper silently in the background when Windows starts, seamlessly resuming your wallpaper.");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // SECTION 4: Power & Occlusion Auto-Pause Rules
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_BATTERY_HALF "  Power & Occlusion Auto-Pause");
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen)) {
+        g_config.Save();
+    }
+    if (ImGui::Checkbox("Auto-Pause when Window is Maximized / Desktop Covered", &cfg.pause_on_maximized)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Automatically pauses wallpaper playback when an application (browser, code editor, etc.) is maximized and covers the desktop, reducing CPU and GPU usage to 0%.");
+    }
+    if (ImGui::Checkbox("Auto-Pause on Battery Power", &cfg.pause_on_battery)) {
+        g_config.Save();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // SECTION 5: Auto Smooth Looping
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_ROTATE "  Auto Smooth & Seamless Looping");
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Enable Auto Smooth Looping (Seamless Crossfade)", &cfg.auto_smooth_loop)) {
+        g_config.Save();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Applies a smooth crossfade transition and time-warp deceleration at loop seams for a seamless continuous loop without hard cuts.");
+    }
+
+    if (cfg.auto_smooth_loop) {
+        const char* loop_presets[] = {
+            "Cinematic Speed Ramp (1.2s + 0.75x Slow-Mo Blend)",
+            "Smoothstep S-Curve (0.8s Natural Easing)",
+            "Gentle Flow (1.8s Ambient Scenery Blend)",
+            "Instant Snap (0.4s Fast Seamless Snap)",
+            "Custom Tuning..."
+        };
+
+        ImGui::SetNextItemWidth(comboW);
+        if (ImGui::Combo("Looping Preset", &cfg.loop_preset, loop_presets, IM_ARRAYSIZE(loop_presets))) {
+            g_config.Save();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Select curated looping behavior presets optimized for different types of wallpaper animations.");
+        }
+
+        if (cfg.loop_preset == 4) { // Custom Tuning
+            ImGui::SetNextItemWidth(sliderW);
+            if (ImGui::SliderFloat("Transition Duration", &cfg.smooth_loop_duration, 0.2f, 2.5f, "%.1f seconds")) {
+                g_config.Save();
+            }
+
+            const char* easing_curves[] = {
+                "Linear (Constant)",
+                "Smoothstep (S-Curve Hermite)",
+                "Sine Wave (Smooth Harmonic)",
+                "Smootherstep (Perlin Ultra-Smooth)"
+            };
+            ImGui::SetNextItemWidth(sliderW);
+            if (ImGui::Combo("Easing Curve", &cfg.loop_easing_curve, easing_curves, IM_ARRAYSIZE(easing_curves))) {
+                g_config.Save();
+            }
+
+            if (ImGui::Checkbox("Enable Speed Ramping (Time Warp Deceleration)", &cfg.loop_speed_ramp)) {
+                g_config.Save();
+            }
+
+            if (cfg.loop_speed_ramp) {
+                ImGui::SetNextItemWidth(sliderW);
+                if (ImGui::SliderFloat("Min Speed at Seam", &cfg.loop_min_speed, 0.50f, 0.95f, "%.2fx")) {
+                    g_config.Save();
+                }
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
+    ImGui::Spacing();
+
+    if (ImGui::Button(ICON_FA_EYE_SLASH "  Hide Window to Tray", ImVec2(200, 34))) {
+        SettingsUI::Close();
+    }
+}
+
+static void RenderPerformancePanel() {
+    auto& cfg = g_config.Get();
+
+    if (!g_hardwareInfoInit) {
+        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
+        g_hardwareInfoInit = true;
+    }
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GAUGE_HIGH "  Performance & Advanced Diagnostics");
+    ImGui::TextColored(ImVec4(0.68f, 0.72f, 0.80f, 1.00f), "GPU hardware acceleration engine, frame pacing, gamer auto-sleep governor, and live telemetry.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    float availW = ImGui::GetContentRegionAvail().x;
+    float comboW = (std::min)(480.0f, availW);
+    float sliderW = (std::min)(320.0f, availW);
+
+    // SECTION 1: Hardware Rendering Engine & Frame Rate Control
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_MICROCHIP "  Hardware Rendering Engine & Frame Rate");
+    ImGui::Spacing();
 
     std::vector<std::string> deviceNames;
     std::vector<int> deviceValues;
@@ -851,11 +1241,6 @@ static void RenderSettingsPanel() {
         ImGui::SetTooltip("Choose whether video decoding & rendering runs on GPU 1, GPU 2, or CPU Software.");
     }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GAUGE_HIGH "  Frame Rate & Resource Control");
-
-    float sliderW = (std::min)(280.0f, availW);
     ImGui::SetNextItemWidth(sliderW);
     if (ImGui::SliderInt("Target Render FPS", &cfg.target_fps, 15, 60)) {
         g_config.Save();
@@ -870,22 +1255,13 @@ static void RenderSettingsPanel() {
         g_config.Save();
     }
 
-    if (ImGui::Checkbox("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen)) {
-        g_config.Save();
-    }
-    if (ImGui::Checkbox("Auto-Pause when Window is Maximized / Desktop Covered", &cfg.pause_on_maximized)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Automatically pauses wallpaper playback when an application (browser, code editor, etc.) is maximized and covers the desktop, reducing CPU and GPU usage to 0%.");
-    }
-    if (ImGui::Checkbox("Auto-Pause on Battery Power", &cfg.pause_on_battery)) {
-        g_config.Save();
-    }
-
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Spacing();
+
+    // SECTION 2: Smart Gaming Resource Governor
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_GAUGE_HIGH "  Smart Resource Governor (Gaming & Heavy Load Auto-Sleep)");
+    ImGui::Spacing();
 
     if (ImGui::Checkbox("Auto-Sleep when System RAM or GPU VRAM is under heavy load", &cfg.pause_on_resource_heavy)) {
         g_config.Save();
@@ -942,376 +1318,69 @@ static void RenderSettingsPanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_VOLUME_HIGH "  Audio Configuration");
+    ImGui::Spacing();
 
-    static float volume = 0.0f;
-    static bool volume_init = false;
-    if (!volume_init && !cfg.wallpapers.empty()) {
-        volume = cfg.wallpapers[0].volume;
-        volume_init = true;
-    }
+    // SECTION 3: Video Optimization Scaling Mode
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_EXPAND "  Video Optimization Transcoding Mode");
+    ImGui::Spacing();
 
-    ImGui::SetNextItemWidth(sliderW);
-    if (ImGui::SliderFloat("Master Volume", &volume, 0.0f, 1.0f, "%.2f")) {
-        if (!cfg.wallpapers.empty()) {
-            cfg.wallpapers[0].volume = volume;
-        }
+    if (ImGui::RadioButton("Aspect Fit (Proportional - keeps entire video frame intact)", &cfg.optimizer_crop_mode, 0)) {
         g_config.Save();
-        nlohmann::json req{{"cmd", "set_volume"}, {"volume", volume}};
-        SendIpcAsync(req.dump());
+    }
+    if (ImGui::RadioButton("Aspect Fill / Center Crop (Exact Full Screen 1080p - zero black bars)", &cfg.optimizer_crop_mode, 1)) {
+        g_config.Save();
     }
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DESKTOP "  Windows Startup & Automation");
-
-    static bool startup_inited = false;
-    static bool startup_enabled = false;
-    if (!startup_inited) {
-        startup_enabled = WindowsAutostart::IsEnabled();
-        startup_inited = true;
-    }
-
-    if (ImGui::Checkbox("Start LiteWallpaper automatically on Windows Boot", &startup_enabled)) {
-        WindowsAutostart::SetEnabled(startup_enabled, 0);
-        cfg.run_on_startup = startup_enabled;
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Launches LiteWallpaper silently in the background when Windows starts, seamlessly resuming your wallpaper.");
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_IMAGE "  Desktop & Lock Screen Visual Synchronization");
-    ImGui::TextColored(ImVec4(0.65f, 0.68f, 0.75f, 1.00f), "Set independent static wallpapers for 0s Windows boot and Win+L lock transitions (0% ongoing CPU).");
     ImGui::Spacing();
 
-    // SECTION 1: Windows Desktop Wallpaper
-    ImGui::PushID("DesktopVisualSyncSection");
-    ImGui::BeginGroup();
-    if (ImGui::Checkbox("Enable Windows Desktop Static Wallpaper (0s Instant Boot Visual)", &cfg.update_desktop_wallpaper)) {
-        g_config.Save();
-        if (cfg.update_desktop_wallpaper) {
-            if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
-                nlohmann::json req{
-                    {"cmd", "sync_desktop_wallpaper"},
-                    {"path", cfg.desktop_static_video_path},
-                    {"desktop", true},
-                    {"lockscreen", false},
-                    {"timestamp", cfg.desktop_static_timestamp}
-                };
-                SendIpcAsync(req.dump());
-            } else {
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":true,\"lockscreen\":false}");
-            }
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Injects a clean static frame directly into Windows Desktop Wallpaper. When Windows boots, your wallpaper appears instantly in 0.0s without black screen or delay.");
-    }
-
-    if (cfg.update_desktop_wallpaper) {
-        ImGui::Indent(24.0f);
-        if (cfg.desktop_static_source_mode == 0) {
-            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.95f, 1.0f), ICON_FA_ROTATE " Mode: Auto-Sync (Dynamically follows active live wallpaper)");
-        } else {
-            fs::path p(cfg.desktop_static_video_path);
-            std::string vidName = p.filename().string();
-            if (vidName.empty()) vidName = cfg.desktop_static_video_path;
-            int curMin = static_cast<int>(cfg.desktop_static_timestamp) / 60;
-            float curSec = static_cast<float>(cfg.desktop_static_timestamp) - curMin * 60.0f;
-            ImGui::TextColored(ImVec4(0.40f, 0.95f, 0.50f, 1.0f), ICON_FA_IMAGE " Mode: Fixed Custom Frame [%s @ %02d:%05.2f]", vidName.c_str(), curMin, curSec);
-            
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset to Auto-Sync")) {
-                cfg.desktop_static_source_mode = 0;
-                g_config.Save();
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_desktop_auto\":true}");
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Switch back to automatically updating desktop wallpaper with whichever live video is currently playing");
-            }
-        }
-
-        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
-        if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
-            cur_vid = cfg.desktop_static_video_path;
-        }
-        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
-            cur_vid = cfg.gallery_history[0];
-        }
-        if (ImGui::Button(ICON_FA_CAMERA "  Choose Custom Frame for Desktop...", ImVec2(300, 26))) {
-            if (!cur_vid.empty()) {
-                OpenCaptureModal(cur_vid, 1);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Select a specific video and exact timestamp/frame specifically for the Desktop Wallpaper");
-        }
-        ImGui::Unindent(24.0f);
-    }
-    ImGui::EndGroup();
-    ImGui::PopID();
-
+    // SECTION 4: Real-Time Engine Monitor & Telemetry
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CHART_LINE "  Real-Time Engine Monitor & Telemetry");
     ImGui::Spacing();
-
-    // SECTION 2: Windows Lock Screen
-    ImGui::PushID("LockscreenVisualSyncSection");
-    ImGui::BeginGroup();
-    if (ImGui::Checkbox("Enable Windows Lock Screen Wallpaper (Win + L Seamless Transition)", &cfg.update_lockscreen)) {
-        g_config.Save();
-        if (cfg.update_lockscreen) {
-            if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
-                nlohmann::json req{
-                    {"cmd", "sync_desktop_wallpaper"},
-                    {"path", cfg.lockscreen_video_path},
-                    {"desktop", false},
-                    {"lockscreen", true},
-                    {"timestamp", cfg.lockscreen_timestamp}
-                };
-                SendIpcAsync(req.dump());
-            } else {
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":false,\"lockscreen\":true}");
-            }
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Pre-caches a pristine high-definition frame for the Windows Lock Screen (0ms visual transition on Win+L with 0% CPU/VRAM).");
-    }
-
-    if (cfg.update_lockscreen) {
-        ImGui::Indent(24.0f);
-        if (cfg.lockscreen_source_mode == 0) {
-            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.95f, 1.0f), ICON_FA_ROTATE " Mode: Auto-Sync (Dynamically follows active live wallpaper)");
-        } else {
-            fs::path p(cfg.lockscreen_video_path);
-            std::string vidName = p.filename().string();
-            if (vidName.empty()) vidName = cfg.lockscreen_video_path;
-            int curMin = static_cast<int>(cfg.lockscreen_timestamp) / 60;
-            float curSec = static_cast<float>(cfg.lockscreen_timestamp) - curMin * 60.0f;
-            ImGui::TextColored(ImVec4(0.40f, 0.95f, 0.50f, 1.0f), ICON_FA_IMAGE " Mode: Fixed Custom Frame [%s @ %02d:%05.2f]", vidName.c_str(), curMin, curSec);
-            
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset to Auto-Sync")) {
-                cfg.lockscreen_source_mode = 0;
-                g_config.Save();
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_lockscreen_auto\":true}");
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Switch back to automatically updating lock screen wallpaper with whichever live video is currently playing");
-            }
-        }
-
-        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
-        if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
-            cur_vid = cfg.lockscreen_video_path;
-        }
-        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
-            cur_vid = cfg.gallery_history[0];
-        }
-        if (ImGui::Button(ICON_FA_CAMERA "  Choose Custom Frame for Lock Screen...", ImVec2(300, 26))) {
-            if (!cur_vid.empty()) {
-                OpenCaptureModal(cur_vid, 2);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Select a specific video and exact timestamp/frame specifically for the Windows Lock Screen");
-        }
-        ImGui::Unindent(24.0f);
-    }
-    ImGui::EndGroup();
-    ImGui::PopID();
-
-    static bool scr_checked = false;
-    static bool scr_installed = false;
-    if (!scr_checked) {
-        scr_installed = LockScreenManager::IsScreensaverInstalled();
-        scr_checked = true;
-    }
-
-    if (ImGui::Checkbox("Enable LiteWallpaper as Windows Screensaver", &scr_installed)) {
-        if (scr_installed) {
-            wchar_t exePathBuf[MAX_PATH] = {};
-            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
-            std::wstring exePath(exePathBuf);
-            std::wstring scrPath = exePath.substr(0, exePath.find_last_of(L'.')) + L".scr";
-            if (!fs::exists(scrPath)) {
-                CopyFileW(exePath.c_str(), scrPath.c_str(), FALSE);
-            }
-            LockScreenManager::InstallScreensaver(scrPath, 300, true);
-        } else {
-            LockScreenManager::UninstallScreensaver();
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Plays your live video wallpaper at full 60 FPS when your computer is idle! When waking the PC, it transitions seamlessly to the Windows logon screen.");
-    }
-
-    ImGui::SameLine();
-    if (ImGui::Button("Configure Screensaver...")) {
-        LockScreenManager::OpenWindowsScreensaverSettings();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Opens the official Windows Screen Saver Settings dialog to adjust wait timeout and resume security.");
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_ROTATE "  Auto Smooth & Seamless Looping");
-
-    if (ImGui::Checkbox("Enable Auto Smooth Looping (Seamless Crossfade)", &cfg.auto_smooth_loop)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Applies a smooth crossfade transition and time-warp deceleration at loop seams for a seamless continuous loop without hard cuts.");
-    }
-
-    if (cfg.auto_smooth_loop) {
-        const char* loop_presets[] = {
-            "Cinematic Speed Ramp (1.2s + 0.75x Slow-Mo Blend)",
-            "Smoothstep S-Curve (0.8s Natural Easing)",
-            "Gentle Flow (1.8s Ambient Scenery Blend)",
-            "Instant Snap (0.4s Fast Seamless Snap)",
-            "Custom Tuning..."
-        };
-
-        ImGui::SetNextItemWidth(sliderW);
-        if (ImGui::Combo("Looping Preset", &cfg.loop_preset, loop_presets, IM_ARRAYSIZE(loop_presets))) {
-            g_config.Save();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Select curated looping behavior presets optimized for different types of wallpaper animations.");
-        }
-
-        if (cfg.loop_preset == 4) { // Custom Tuning
-            ImGui::SetNextItemWidth(sliderW);
-            if (ImGui::SliderFloat("Transition Duration", &cfg.smooth_loop_duration, 0.2f, 2.5f, "%.1f seconds")) {
-                g_config.Save();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Duration of the crossfade transition when the wallpaper loops back to the start.");
-            }
-
-            const char* easing_curves[] = {
-                "Linear (Constant)",
-                "Smoothstep (S-Curve Hermite)",
-                "Sine Wave (Smooth Harmonic)",
-                "Smootherstep (Perlin Ultra-Smooth)"
-            };
-            ImGui::SetNextItemWidth(sliderW);
-            if (ImGui::Combo("Easing Curve", &cfg.loop_easing_curve, easing_curves, IM_ARRAYSIZE(easing_curves))) {
-                g_config.Save();
-            }
-
-            if (ImGui::Checkbox("Enable Speed Ramping (Time Warp Deceleration)", &cfg.loop_speed_ramp)) {
-                g_config.Save();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Subtly slows down video playback speed right before the loop seam, masking cuts and creating an organic rhythm.");
-            }
-
-            if (cfg.loop_speed_ramp) {
-                ImGui::SetNextItemWidth(sliderW);
-                if (ImGui::SliderFloat("Min Speed at Seam", &cfg.loop_min_speed, 0.50f, 0.95f, "%.2fx")) {
-                    g_config.Save();
-                }
-            }
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_EXPAND "  Video Optimization Scaling Mode");
-
-    if (ImGui::RadioButton("Aspect Fit (Proportional - e.g. 1728x1080, keeps entire video frame)", &cfg.optimizer_crop_mode, 0)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Downscales video proportionally without cropping (keeps 100% of original image intact).");
-    }
-
-    if (ImGui::RadioButton("Aspect Fill / Center Crop (Exact Full Screen 1080p - fills entire monitor)", &cfg.optimizer_crop_mode, 1)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Crops excess top/bottom or sides to produce an exact 1920x1080 video that fills the whole screen with zero black bars.");
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CIRCLE_INFO "  Diagnostics & Activity Logs");
-    ImGui::TextDisabled("View live hardware detection, window occlusion state, and detailed playback events.");
-    if (ImGui::Button(ICON_FA_FOLDER_OPEN "  Open Engine Log (Notepad)", ImVec2(240, 32))) {
-        const char* appData = getenv("APPDATA");
-        if (appData) {
-            std::string logPath = std::string(appData) + "\\LiteWallpaper\\engine.log";
-            ShellExecuteA(nullptr, "open", "notepad.exe", logPath.c_str(), nullptr, SW_SHOW);
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  All settings are saved and applied automatically in real-time.");
-    ImGui::Spacing();
-
-    if (ImGui::Button(ICON_FA_EYE_SLASH "  Hide Window to Tray", ImVec2(200, 34))) {
-        SettingsUI::Close();
-    }
-}
-
-static void RenderPerformancePanel() {
-    if (!g_hardwareInfoInit) {
-        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
-        g_hardwareInfoInit = true;
-    }
-
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_MICROCHIP "  Real-Time Engine Monitor");
-    ImGui::Separator();
 
     if (!g_daemonConnected) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Engine Status: Background Engine Initializing...");
-        return;
-    }
-
-    if (g_daemonPlaying && !g_daemonPaused) {
-        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  Engine Status: Playing (Active)");
-    } else if (g_daemonPaused) {
-        ImGui::TextColored(ImVec4(1.00f, 0.70f, 0.20f, 1.00f), ICON_FA_PAUSE "  Engine Status: Paused");
     } else {
-        ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.00f), ICON_FA_STOP "  Engine Status: Idle");
-    }
+        if (g_daemonPlaying && !g_daemonPaused) {
+            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), ICON_FA_CIRCLE_CHECK "  Engine Status: Playing (Active)");
+        } else if (g_daemonPaused) {
+            ImGui::TextColored(ImVec4(1.00f, 0.70f, 0.20f, 1.00f), ICON_FA_PAUSE "  Engine Status: Paused");
+        } else {
+            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.00f), ICON_FA_STOP "  Engine Status: Idle");
+        }
 
-    ImGui::Text("Active Video: %s", g_daemonCurrentVideo.empty() ? "(None)" : g_daemonCurrentVideo.c_str());
-    ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
-    ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
-    ImGui::Text("Video Duration: %.1f seconds", g_daemonDuration);
+        ImGui::Text("Active Video: %s", g_daemonCurrentVideo.empty() ? "(None)" : g_daemonCurrentVideo.c_str());
+        ImGui::Text("Render Frame Rate: %d FPS (Video Source: %.1f FPS)", g_daemonFps, g_daemonVideoFps);
+        ImGui::Text("Video Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
+        ImGui::Text("Video Duration: %.1f seconds", g_daemonDuration);
+
+        ImGui::Spacing();
+        ImGui::Text("Process CPU Usage: %.1f %%", g_daemonCpuPercent);
+        ImGui::PlotLines("CPU (%)", g_cpuHistory.data(), (int)g_cpuHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
+
+        ImGui::Text("Process RAM (Working Set): %zu MB", g_daemonRamMB);
+        ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
+
+        std::string monitoredGpuName = "Default Adapter";
+        if (g_daemonActiveGpuIndex == -1) {
+            monitoredGpuName = "CPU Software Mode (iGPU Presenter)";
+        } else if (g_daemonActiveGpuIndex >= 0 && g_daemonActiveGpuIndex < static_cast<int>(g_hardwareInfo.gpus.size())) {
+            const auto& gpu = g_hardwareInfo.gpus[g_daemonActiveGpuIndex];
+            monitoredGpuName = "GPU " + std::to_string(g_daemonActiveGpuIndex + 1) + ": " + gpu.name + (gpu.is_discrete ? " [dGPU]" : " [iGPU]");
+        }
+
+        ImGui::Text("Process Video Memory (%s): %zu MB", monitoredGpuName.c_str(), g_daemonVramMB);
+        std::string plotVramLabel = "VRAM: " + monitoredGpuName + " (MB)";
+        ImGui::PlotLines(plotVramLabel.c_str(), g_vramHistory.data(), (int)g_vramHistory.size(), 0, nullptr, 0.0f, 256.0f, ImVec2(0, 50));
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CHART_LINE "  Resource Telemetry");
-
-    ImGui::Text("Process CPU Usage: %.1f %%", g_daemonCpuPercent);
-    ImGui::PlotLines("CPU (%)", g_cpuHistory.data(), (int)g_cpuHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
-
-    ImGui::Text("Process RAM (Working Set): %zu MB", g_daemonRamMB);
-    ImGui::PlotLines("RAM (MB)", g_ramHistory.data(), (int)g_ramHistory.size(), 0, nullptr, 0.0f, 100.0f, ImVec2(0, 50));
-
-    std::string monitoredGpuName = "Default Adapter";
-    if (g_daemonActiveGpuIndex == -1) {
-        monitoredGpuName = "CPU Software Mode (iGPU Presenter)";
-    } else if (g_daemonActiveGpuIndex >= 0 && g_daemonActiveGpuIndex < static_cast<int>(g_hardwareInfo.gpus.size())) {
-        const auto& gpu = g_hardwareInfo.gpus[g_daemonActiveGpuIndex];
-        monitoredGpuName = "GPU " + std::to_string(g_daemonActiveGpuIndex + 1) + ": " + gpu.name + (gpu.is_discrete ? " [dGPU]" : " [iGPU]");
-    }
-
-    ImGui::Text("Process Video Memory (%s): %zu MB", monitoredGpuName.c_str(), g_daemonVramMB);
-    std::string plotVramLabel = "VRAM: " + monitoredGpuName + " (MB)";
-    ImGui::PlotLines(plotVramLabel.c_str(), g_vramHistory.data(), (int)g_vramHistory.size(), 0, nullptr, 0.0f, 256.0f, ImVec2(0, 50));
-
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_TV "  Connected Monitors & Display Topology");
+
+    // SECTION 5: Connected Monitors Topology
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_TV "  Connected Monitors Topology");
     ImGui::SameLine();
     if (ImGui::SmallButton(ICON_FA_ROTATE " Re-detect Displays")) {
         g_hardwareInfo.displays = HardwareDetector::GetDisplayList();
@@ -1336,13 +1405,15 @@ static void RenderPerformancePanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Spacing();
+
+    // SECTION 6: Hardware Topology
     ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_MICROCHIP "  Hardware Topology (CPU & GPU Detection)");
     ImGui::SameLine();
     if (ImGui::SmallButton(ICON_FA_ROTATE " Re-detect Hardware")) {
         g_hardwareInfo = HardwareDetector::QuerySystemInfo();
     }
 
-    // CPU info
     if (g_daemonActiveGpuIndex == -1) {
         ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f),
             "• Processor (CPU): %s [ACTIVE RENDERING ENGINE (SOFTWARE CPU)]", g_hardwareInfo.cpu.model_name.c_str());
@@ -1353,7 +1424,6 @@ static void RenderPerformancePanel() {
     ImGui::Text("   Cores / Topology: %d Physical Cores, %d Logical Threads",
                 g_hardwareInfo.cpu.physical_cores, g_hardwareInfo.cpu.logical_cores);
 
-    // GPUs info (GPU 1, GPU 2, etc.)
     if (g_hardwareInfo.gpus.empty()) {
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "• Graphics (GPU): Standard Display Adapter");
     } else {
@@ -1377,7 +1447,10 @@ static void RenderPerformancePanel() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CIRCLE_INFO "  Diagnostics & Injection");
+    ImGui::Spacing();
+
+    // SECTION 7: Diagnostics & Logs
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CIRCLE_INFO "  Diagnostics & Activity Logs");
     ImGui::Text("Desktop Injection (WorkerW): %s", g_daemonInjected ? "OK" : "FAILED");
     if (g_daemonActiveGpuIndex == -1 || !g_daemonHwDecode) {
         ImGui::Text("Decoder Mode: Software (CPU / swscale mode)");
@@ -1394,11 +1467,22 @@ static void RenderPerformancePanel() {
     } else {
         ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.00f), "Last Error: (none)");
     }
+
+    ImGui::Spacing();
     if (ImGui::Button(ICON_FA_EXPAND "  Flash Render Window (Diagnostic)", ImVec2(280, 28))) {
         SendIpcAsync("{\"cmd\":\"test_render\"}");
     }
     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f),
-        "*If the desktop turns green after flashing, injection works. Log: %%APPDATA%%\\LiteWallpaper\\engine.log");
+        "*If the desktop turns green after flashing, injection works.");
+
+    ImGui::Spacing();
+    if (ImGui::Button(ICON_FA_FOLDER_OPEN "  Open Engine Log (Notepad)", ImVec2(280, 30))) {
+        const char* appData = getenv("APPDATA");
+        if (appData) {
+            std::string logPath = std::string(appData) + "\\LiteWallpaper\\engine.log";
+            ShellExecuteA(nullptr, "open", "notepad.exe", logPath.c_str(), nullptr, SW_SHOW);
+        }
+    }
 }
 
 static void RequestCaptureModalPreview() {
@@ -1867,7 +1951,7 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         wc.lpszClassName,
         L"LiteWallpaper Control Panel",
         WS_OVERLAPPEDWINDOW,
-        150, 150, 820, 680,
+        150, 150, 860, 680,
         nullptr, nullptr, wc.hInstance, nullptr
     );
 
@@ -1961,11 +2045,15 @@ void SettingsUI::RenderFrame() {
             RenderGalleryTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem(ICON_FA_SLIDERS "  Settings & Display")) {
-            RenderSettingsPanel();
+        if (ImGui::BeginTabItem(ICON_FA_LOCK "  Lock Screen & Static")) {
+            RenderLockscreenTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  Performance & Diagnostics")) {
+        if (ImGui::BeginTabItem(ICON_FA_SLIDERS "  General Settings")) {
+            RenderGeneralSettingsTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Performance & Advanced")) {
             RenderPerformancePanel();
             ImGui::EndTabItem();
         }
