@@ -824,9 +824,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                         g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
                     }
 
+                    // Track current playback time in engine state
+                    auto info = g_decoder.GetInfo();
+                    if (info.fps > 0.0 && info.duration_seconds > 0.0) {
+                        double total_frames = info.duration_seconds * info.fps;
+                        if (total_frames > 0.0) {
+                            double current_frame_pos = static_cast<double>(g_frames_decoded % static_cast<uint64_t>(total_frames + 0.5));
+                            double current_time_sec = current_frame_pos / info.fps;
+                            g_shared_engine_state.current_time_sec.store(current_time_sec);
+                        }
+                    }
+
                     // Calculate Auto Smooth Loop crossfade blend alpha & dynamic speed ramp
                     float blend_alpha = 0.0f;
-                    auto info = g_decoder.GetInfo();
                     if (cfg.auto_smooth_loop && info.duration_seconds > 1.5 && info.fps > 0.0) {
                         double total_frames = info.duration_seconds * info.fps;
                         if (total_frames > 0.0) {
@@ -1140,11 +1150,17 @@ std::string OnIpcRequest(const std::string& request_json) {
         return "{\"ok\":true}";
     } else if (cmd == "sync_desktop_wallpaper") {
         auto& cfg = g_config.Get();
-        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
-        if (!cur_vid.empty()) {
+        std::string cur_vid = req.value("path", "");
+        if (cur_vid.empty()) {
+            cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+        }
+        bool sync_desk = req.value("desktop", true);
+        bool sync_lock = req.value("lockscreen", cfg.update_lockscreen);
+        double ts = req.value("timestamp", 1.0);
+        if (!cur_vid.empty() && (sync_desk || sync_lock)) {
             int sw = GetSystemMetrics(SM_CXSCREEN);
             int sh = GetSystemMetrics(SM_CYSCREEN);
-            g_lockscreen.SyncFromVideoAsync(cur_vid, sw, sh, cfg.update_lockscreen, true);
+            g_lockscreen.SyncFromVideoAsync(cur_vid, sw, sh, sync_lock, sync_desk, ts);
         }
         return "{\"ok\":true}";
     } else if (cmd == "get_status") {
@@ -1164,6 +1180,7 @@ std::string OnIpcRequest(const std::string& request_json) {
             {"width", info.width},
             {"height", info.height},
             {"duration", info.duration_seconds},
+            {"current_time_sec", g_shared_engine_state.current_time_sec.load()},
             {"codec", info.codec_name},
             {"ram_mb", ram},
             {"injected", g_inject_ok},

@@ -33,6 +33,23 @@ public:
     // Clean up orphaned thumbnails not in active list
     static void CleanOrphanThumbnails(const std::vector<std::string>& active_videos);
 
+    // Extract a specific frame at timestamp_sec to BGRA buffer
+    static bool ExtractFrameToBGRA(
+        const std::string& video_path,
+        std::vector<uint8_t>& out_bgra,
+        int width = THUMB_WIDTH,
+        int height = THUMB_HEIGHT,
+        double timestamp_sec = 1.0
+    );
+
+    // Helper to create a D3D11 SRV from raw BGRA buffer
+    static ComPtr<ID3D11ShaderResourceView> CreateSRVFromBGRA(
+        ID3D11Device* device,
+        const uint8_t* bgra_data,
+        int width,
+        int height
+    );
+
     // Release all in-memory textures
     void ReleaseTextures();
 
@@ -60,7 +77,6 @@ private:
     void WorkerLoop();
     static std::string GetThumbnailPath(const std::string& video_path);
     static std::string GetCacheDirectory();
-    static bool ExtractFrameToBGRA(const std::string& video_path, std::vector<uint8_t>& out_bgra);
 };
 
 } // namespace litewp

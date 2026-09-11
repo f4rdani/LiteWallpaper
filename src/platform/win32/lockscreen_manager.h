@@ -35,7 +35,8 @@ public:
         int target_w = 0,
         int target_h = 0,
         bool syncLockScreen = true,
-        bool syncNativeDesktop = true
+        bool syncNativeDesktop = true,
+        double timestamp_sec = 1.0
     );
 
     // Synchronize visual state to both Lock Screen and native Windows Desktop Wallpaper asynchronously from pristine RGB buffer

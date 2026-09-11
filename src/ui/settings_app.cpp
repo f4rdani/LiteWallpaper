@@ -66,6 +66,7 @@ static double g_daemonVideoFps = 0.0;
 static int    g_daemonWidth = 0;
 static int    g_daemonHeight = 0;
 static double g_daemonDuration = 0.0;
+static double g_daemonCurrentTimeSec = 0.0;
 static std::string g_daemonCodec = "";
 static size_t g_daemonRamMB = 0;
 static size_t g_daemonVramMB = 0;
@@ -89,6 +90,28 @@ static int g_pendingSourceH = 0;
 static int g_pendingTargetW = 1920;
 static int g_pendingTargetH = 1080;
 static bool g_rememberDownscaleChoice = false;
+
+// Modal state for Static Frame Capture & Target Selector
+static bool g_showCaptureModal = false;
+static std::string g_captureModalPath;
+static double g_captureModalDuration = 10.0;
+static double g_captureModalFps = 30.0;
+static int g_captureModalSourceW = 1920;
+static int g_captureModalSourceH = 1080;
+static float g_captureModalTimeSec = 1.0f;
+static int g_captureModalFrameNum = 30;
+static bool g_captureModalTargetDesktop = true;
+static bool g_captureModalTargetLockscreen = true;
+static std::string g_captureModalStatus;
+
+// Preview state in capture modal
+static ComPtr<ID3D11ShaderResourceView> g_captureModalPreviewSRV;
+static float g_captureModalPreviewSec = -1.0f;
+static std::atomic<bool> g_captureModalPreviewPending{false};
+static std::vector<uint8_t> g_captureModalPreviewBgra;
+static int g_captureModalPreviewW = 320;
+static int g_captureModalPreviewH = 180;
+static std::atomic<bool> g_captureModalPreviewWorkerActive{false};
 
 static void SetupImGuiStyle() {
     ImGuiStyle& style = ImGui::GetStyle();
@@ -385,6 +408,7 @@ static void FetchDaemonStatus() {
     g_daemonWidth = g_shared_engine_state.width.load();
     g_daemonHeight = g_shared_engine_state.height.load();
     g_daemonDuration = g_shared_engine_state.duration.load();
+    g_daemonCurrentTimeSec = g_shared_engine_state.current_time_sec.load();
     g_daemonCodec = g_shared_engine_state.GetCodec();
     g_daemonRamMB = g_shared_engine_state.ram_mb.load();
     g_daemonVramMB = g_shared_engine_state.vram_mb.load();
@@ -404,6 +428,8 @@ static void FetchDaemonStatus() {
     g_vramHistory.erase(g_vramHistory.begin());
     g_vramHistory.push_back(static_cast<float>(g_daemonVramMB));
 }
+
+static void OpenCaptureModal(const std::string& video_path);
 
 static void RenderGalleryTab() {
     auto& cfg = g_config.Get();
@@ -571,7 +597,8 @@ static void RenderGalleryTab() {
         ImGui::BeginGroup();
 
         float innerW = cardWidth - thumbW - 28.0f;
-        float delW = 28.0f;
+        float delW = 26.0f;
+        float camW = 26.0f;
         float itemPad = ImGui::GetStyle().ItemSpacing.x;
 
         // Title and Status
@@ -595,8 +622,8 @@ static void RenderGalleryTab() {
 
         // Buttons
         if (is_current) {
-            float stopW = (innerW - delW - (2 * itemPad)) * 0.48f;
-            float switchW = innerW - delW - stopW - (2 * itemPad);
+            float stopW = (innerW - delW - camW - (3 * itemPad)) * 0.48f;
+            float switchW = innerW - delW - camW - stopW - (3 * itemPad);
 
             if (ImGui::Button(ICON_FA_STOP " Stop", ImVec2(stopW, 26))) {
                 ApplyAction("", "stop");
@@ -630,6 +657,14 @@ static void RenderGalleryTab() {
             }
 
             ImGui::SameLine();
+            if (ImGui::Button(ICON_FA_CAMERA, ImVec2(camW, 26))) {
+                OpenCaptureModal(path);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Capture & inject custom frame to Desktop / Lock Screen...");
+            }
+
+            ImGui::SameLine();
             if (ImGui::Button(ICON_FA_TRASH, ImVec2(delW, 26))) {
                 if (is_current) {
                     ApplyAction("", "stop");
@@ -644,7 +679,7 @@ static void RenderGalleryTab() {
             }
         } else {
             if (has_opt) {
-                float halfW = (innerW - delW - (2 * itemPad)) * 0.5f;
+                float halfW = (innerW - delW - camW - (3 * itemPad)) * 0.5f;
                 if (ImGui::Button(ICON_FA_PLAY " Optimized", ImVec2(halfW, 26))) {
                     ApplyAction(opt_path, "wallpaper");
                 }
@@ -656,7 +691,7 @@ static void RenderGalleryTab() {
                     ImGui::SetTooltip("Play original high-resolution video");
                 }
             } else if (is_already_optimal) {
-                float playW = innerW - delW - itemPad;
+                float playW = innerW - delW - camW - (2 * itemPad);
                 if (ImGui::Button(ICON_FA_PLAY " Play", ImVec2(playW, 26))) {
                     RequestApplyVideo(path, "wallpaper");
                 }
@@ -664,8 +699,8 @@ static void RenderGalleryTab() {
                     ImGui::SetTooltip("Play native 1080p video directly (Zero extra disk or memory usage)");
                 }
             } else {
-                float playW = (innerW - delW - (2 * itemPad)) * 0.68f;
-                float optW = innerW - delW - playW - (2 * itemPad);
+                float playW = (innerW - delW - camW - (3 * itemPad)) * 0.68f;
+                float optW = innerW - delW - camW - playW - (3 * itemPad);
                 if (ImGui::Button(ICON_FA_PLAY " Play", ImVec2(playW, 26))) {
                     RequestApplyVideo(path, "wallpaper");
                 }
@@ -676,6 +711,14 @@ static void RenderGalleryTab() {
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Pre-render optimized version to save ~75% GPU");
                 }
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button(ICON_FA_CAMERA, ImVec2(camW, 26))) {
+                OpenCaptureModal(path);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Capture & inject custom frame to Desktop / Lock Screen...");
             }
 
             ImGui::SameLine();
@@ -945,26 +988,45 @@ static void RenderSettingsPanel() {
     if (ImGui::Checkbox("Auto-Set Windows Desktop Wallpaper from Video (0s Boot Visual)", &cfg.update_desktop_wallpaper)) {
         g_config.Save();
         if (cfg.update_desktop_wallpaper) {
-            SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\"}");
+            SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":true,\"lockscreen\":false}");
         }
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Injects the active video frame directly into the native Windows Desktop Wallpaper. When Windows boots or restarts, your wallpaper appears instantly in 0.0s without black screen or visual flicker, even before LiteWallpaper launches!");
     }
 
-    ImGui::SameLine();
-    if (ImGui::Button("Sync Desktop Now")) {
-        SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\"}");
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Immediately captures the current video frame and sets it as your native Windows desktop wallpaper.");
-    }
-
-    if (ImGui::Checkbox("Auto-Sync Windows Lock Screen Wallpaper", &cfg.update_lockscreen)) {
+    if (ImGui::Checkbox("Auto-Sync Windows Lock Screen Wallpaper (Win + L Seamless Transition)", &cfg.update_lockscreen)) {
         g_config.Save();
+        if (cfg.update_lockscreen) {
+            SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":false,\"lockscreen\":true}");
+        }
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Pre-caches a crystal-clear high-definition snapshot of your active wallpaper and synchronizes it with the Windows Lock Screen (0ms visual transition on Win+L with 0% CPU/VRAM usage).");
+    }
+
+    // Action buttons
+    if (ImGui::Button(ICON_FA_ROTATE "  Sync Active Frame to Selected Target(s) Now", ImVec2(320, 28))) {
+        nlohmann::json req{
+            {"cmd", "sync_desktop_wallpaper"},
+            {"desktop", cfg.update_desktop_wallpaper},
+            {"lockscreen", cfg.update_lockscreen}
+        };
+        SendIpcAsync(req.dump());
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Captures a clean frame from the active video and applies it immediately to the selected targets (Desktop, Lock Screen, or Both).");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_CAMERA "  Choose Specific Frame from Video...", ImVec2(270, 28))) {
+        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
+        if (!cur_vid.empty()) {
+            OpenCaptureModal(cur_vid);
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Opens the frame picker dialog to select an exact timestamp / frame number from video and choose injection target (Desktop, Lock Screen, or Both).");
     }
 
     static bool scr_checked = false;
@@ -1245,6 +1307,277 @@ static void RenderPerformancePanel() {
         "*If the desktop turns green after flashing, injection works. Log: %%APPDATA%%\\LiteWallpaper\\engine.log");
 }
 
+static void RequestCaptureModalPreview() {
+    if (g_captureModalPreviewWorkerActive.load() || g_captureModalPath.empty()) return;
+    g_captureModalPreviewWorkerActive.store(true);
+
+    std::string vpath = g_captureModalPath;
+    float timeSec = g_captureModalTimeSec;
+    int pw = g_captureModalPreviewW;
+    int ph = g_captureModalPreviewH;
+
+    std::thread([vpath, timeSec, pw, ph]() {
+        std::vector<uint8_t> bgra;
+        if (ThumbnailManager::ExtractFrameToBGRA(vpath, bgra, pw, ph, static_cast<double>(timeSec))) {
+            g_captureModalPreviewBgra = std::move(bgra);
+            g_captureModalPreviewPending.store(true);
+            g_captureModalPreviewSec = timeSec;
+        }
+        g_captureModalPreviewWorkerActive.store(false);
+    }).detach();
+}
+
+static void OpenCaptureModal(const std::string& video_path) {
+    if (video_path.empty()) return;
+
+    g_captureModalPath = video_path;
+    auto probe = VideoOptimizer::Probe(video_path);
+    if (probe.valid) {
+        g_captureModalDuration = (probe.duration > 0.0) ? probe.duration : 10.0;
+        g_captureModalFps = (probe.fps > 0.0) ? probe.fps : 30.0;
+        g_captureModalSourceW = probe.width > 0 ? probe.width : 1920;
+        g_captureModalSourceH = probe.height > 0 ? probe.height : 1080;
+    } else {
+        g_captureModalDuration = (g_daemonDuration > 0.0) ? g_daemonDuration : 10.0;
+        g_captureModalFps = (g_daemonVideoFps > 0.0) ? g_daemonVideoFps : 30.0;
+        g_captureModalSourceW = g_daemonWidth > 0 ? g_daemonWidth : 1920;
+        g_captureModalSourceH = g_daemonHeight > 0 ? g_daemonHeight : 1080;
+    }
+
+    auto& cfg = g_config.Get();
+    g_captureModalTargetDesktop = cfg.update_desktop_wallpaper;
+    g_captureModalTargetLockscreen = cfg.update_lockscreen;
+    if (!g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) {
+        g_captureModalTargetDesktop = true;
+    }
+
+    // Default time: if current active video matches, snap to current time; otherwise 1.0s
+    if (!g_daemonCurrentVideo.empty() && (g_daemonCurrentVideo == video_path || g_daemonCurrentVideo.find(fs::path(video_path).stem().string()) != std::string::npos)) {
+        g_captureModalTimeSec = static_cast<float>(g_daemonCurrentTimeSec);
+    } else {
+        g_captureModalTimeSec = 1.0f;
+    }
+    if (g_captureModalTimeSec > g_captureModalDuration && g_captureModalDuration > 0.0) {
+        g_captureModalTimeSec = static_cast<float>(g_captureModalDuration * 0.5);
+    }
+    g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+    g_captureModalStatus.clear();
+    g_captureModalPreviewSRV.Reset();
+    g_captureModalPreviewSec = -1.0f;
+    g_showCaptureModal = true;
+}
+
+static void RenderCaptureFrameModal() {
+    if (g_showCaptureModal) {
+        ImGui::OpenPopup("Capture Static Wallpaper / Lock Screen Frame");
+        if (!g_captureModalPreviewSRV && !g_captureModalPreviewWorkerActive.load() && g_captureModalPreviewSec < 0.0f) {
+            RequestCaptureModalPreview();
+        }
+    }
+
+    if (g_captureModalPreviewPending.exchange(false) && g_pd3dDevice) {
+        g_captureModalPreviewSRV = ThumbnailManager::CreateSRVFromBGRA(
+            g_pd3dDevice,
+            g_captureModalPreviewBgra.data(),
+            g_captureModalPreviewW,
+            g_captureModalPreviewH
+        );
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(680, 580));
+
+    if (ImGui::BeginPopupModal("Capture Static Wallpaper / Lock Screen Frame", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_CAMERA "  Select Frame & Injection Destination");
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        fs::path p(g_captureModalPath);
+        std::string filename = p.filename().string();
+        if (filename.empty()) filename = g_captureModalPath;
+
+        // Video info row
+        int durMin = static_cast<int>(g_captureModalDuration) / 60;
+        float durSec = static_cast<float>(g_captureModalDuration) - durMin * 60.0f;
+        int totalFrames = static_cast<int>(g_captureModalDuration * g_captureModalFps);
+
+        ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.0f), "Video Source: %s", filename.c_str());
+        ImGui::TextColored(ImVec4(0.65f, 0.68f, 0.75f, 1.0f), "Resolution: %dx%d  |  Framerate: %.1f FPS  |  Duration: %02d:%05.2f (%d frames)",
+            g_captureModalSourceW, g_captureModalSourceH, g_captureModalFps, durMin, durSec, totalFrames);
+        ImGui::Spacing();
+
+        // 1. Destination Checkboxes
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_DESKTOP "  Target Destination (Where to inject this frame):");
+        ImGui::Checkbox("Apply to Windows Desktop Wallpaper (0s Instant Boot Visual)", &g_captureModalTargetDesktop);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Sets this frame directly into the native Windows Desktop Wallpaper.\nIt appears instantly in 0.0s upon Windows boot without black screen or delay.");
+        }
+
+        ImGui::Checkbox("Apply to Windows Lock Screen (Win + L Seamless Transition)", &g_captureModalTargetLockscreen);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Pre-caches this frame for the Windows Lock Screen.\nWhen pressing Win+L or locking the PC, this image is shown seamlessly.");
+        }
+
+        if (!g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " Please select at least one destination (Desktop, Lock Screen, or Both).");
+        } else if (g_captureModalTargetDesktop && g_captureModalTargetLockscreen) {
+            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f), "[ Selected Target: BOTH Desktop Wallpaper and Lock Screen ]");
+        } else if (g_captureModalTargetDesktop) {
+            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f), "[ Selected Target: Desktop Wallpaper ONLY ]");
+        } else {
+            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f), "[ Selected Target: Lock Screen ONLY ]");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // 2. Frame & Timestamp Selection
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 1.00f, 1.00f), ICON_FA_FILM "  Frame & Timestamp Selection:");
+
+        float maxTime = static_cast<float>((std::max)(0.1, g_captureModalDuration));
+        
+        // Time Slider
+        int curMin = static_cast<int>(g_captureModalTimeSec) / 60;
+        float curSec = g_captureModalTimeSec - curMin * 60.0f;
+        char sliderFmt[64];
+        sprintf_s(sliderFmt, "%%.2f s  (%02d:%05.2f | Frame #%d)", curMin, curSec, g_captureModalFrameNum);
+        
+        ImGui::SetNextItemWidth(520.0f);
+        if (ImGui::SliderFloat("##TimeSlider", &g_captureModalTimeSec, 0.0f, maxTime, sliderFmt)) {
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+        }
+
+        // Two-way Synced Numeric Inputs
+        ImGui::PushItemWidth(140.0f);
+        if (ImGui::InputFloat("Time (seconds)", &g_captureModalTimeSec, 0.1f, 1.0f, "%.2f s")) {
+            g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+        }
+        ImGui::SameLine();
+        if (ImGui::InputInt("Frame Number", &g_captureModalFrameNum, 1, 10)) {
+            g_captureModalFrameNum = std::clamp(g_captureModalFrameNum, 0, (std::max)(1, totalFrames));
+            g_captureModalTimeSec = static_cast<float>(g_captureModalFrameNum / g_captureModalFps);
+            g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_ROTATE " Preview Frame")) {
+            RequestCaptureModalPreview();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Render a thumbnail preview of the selected frame");
+        }
+
+        // Presets & Snap Button
+        ImGui::Spacing();
+        if (ImGui::Button("0s (Start)")) {
+            g_captureModalTimeSec = 0.0f;
+            g_captureModalFrameNum = 0;
+            RequestCaptureModalPreview();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("25%")) {
+            g_captureModalTimeSec = maxTime * 0.25f;
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            RequestCaptureModalPreview();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("50% (Middle)")) {
+            g_captureModalTimeSec = maxTime * 0.50f;
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            RequestCaptureModalPreview();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("75%")) {
+            g_captureModalTimeSec = maxTime * 0.75f;
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            RequestCaptureModalPreview();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("End")) {
+            g_captureModalTimeSec = (std::max)(0.0f, maxTime - 0.1f);
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            RequestCaptureModalPreview();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_CROSSHAIRS " Snap to Live Video")) {
+            g_captureModalTimeSec = static_cast<float>(g_daemonCurrentTimeSec);
+            g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
+            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
+            RequestCaptureModalPreview();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Snap time to the exact position currently playing on your desktop");
+        }
+
+        // Preview box
+        ImGui::Spacing();
+        float previewBoxW = 320.0f;
+        float previewBoxH = 180.0f;
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.75f, 1.0f), "Frame Preview (Selected Time: %.2f s | Frame #%d):", g_captureModalTimeSec, g_captureModalFrameNum);
+        if (g_captureModalPreviewSRV) {
+            ImGui::Image((ImTextureID)g_captureModalPreviewSRV.Get(), ImVec2(previewBoxW, previewBoxH));
+        } else {
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImVec2 p1 = ImVec2(p0.x + previewBoxW, p0.y + previewBoxH);
+            draw_list->AddRectFilled(p0, p1, IM_COL32(20, 22, 28, 255), 4.0f);
+            draw_list->AddRect(p0, p1, IM_COL32(45, 50, 62, 255), 4.0f);
+            if (g_captureModalPreviewWorkerActive.load()) {
+                draw_list->AddText(ImVec2(p0.x + 80.0f, p0.y + 80.0f), IM_COL32(100, 200, 255, 255), "Extracting Preview...");
+            } else {
+                draw_list->AddText(ImVec2(p0.x + 70.0f, p0.y + 80.0f), IM_COL32(140, 145, 155, 255), "Click 'Preview' to view frame");
+            }
+            ImGui::Dummy(ImVec2(previewBoxW, previewBoxH));
+        }
+
+        // Status message if any
+        if (!g_captureModalStatus.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f), "%s", g_captureModalStatus.c_str());
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // 3. Action Buttons
+        bool canApply = (g_captureModalTargetDesktop || g_captureModalTargetLockscreen);
+        if (!canApply) ImGui::BeginDisabled();
+        if (ImGui::Button(ICON_FA_CHECK "  Capture & Apply Static Wallpaper", ImVec2(320, 36))) {
+            nlohmann::json req{
+                {"cmd", "sync_desktop_wallpaper"},
+                {"path", g_captureModalPath},
+                {"desktop", g_captureModalTargetDesktop},
+                {"lockscreen", g_captureModalTargetLockscreen},
+                {"timestamp", static_cast<double>(g_captureModalTimeSec)}
+            };
+            SendIpcAsync(req.dump());
+
+            std::string destStr = (g_captureModalTargetDesktop && g_captureModalTargetLockscreen) ? "Desktop & Lock Screen" :
+                                  (g_captureModalTargetDesktop ? "Desktop Wallpaper" : "Lock Screen");
+            char statusMsg[256];
+            sprintf_s(statusMsg, "Pristine static frame at %.2fs successfully injected to %s!", g_captureModalTimeSec, destStr.c_str());
+            g_captureModalStatus = statusMsg;
+
+            g_showCaptureModal = false;
+            ImGui::CloseCurrentPopup();
+        }
+        if (!canApply) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 36))) {
+            g_showCaptureModal = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 static void RenderOptimizeModal() {
     if (g_showOptimizeModal) {
         ImGui::OpenPopup("Optimize Video for Display?");
@@ -1493,6 +1826,7 @@ void SettingsUI::RenderFrame() {
     }
 
     RenderOptimizeModal();
+    RenderCaptureFrameModal();
 
     ImGui::End();
 

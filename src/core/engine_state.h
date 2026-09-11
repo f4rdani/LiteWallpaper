@@ -18,6 +18,7 @@ struct EngineState {
     std::atomic<int>      width{0};
     std::atomic<int>      height{0};
     std::atomic<double>   duration{0.0};
+    std::atomic<double>   current_time_sec{0.0};
     std::atomic<size_t>   ram_mb{0};
     std::atomic<size_t>   vram_mb{0};
     std::atomic<double>   cpu_percent{0.0};

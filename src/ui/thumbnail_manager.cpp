@@ -126,8 +126,16 @@ void ThumbnailManager::CleanOrphanThumbnails(const std::vector<std::string>& act
     }
 }
 
-bool ThumbnailManager::ExtractFrameToBGRA(const std::string& video_path, std::vector<uint8_t>& out_bgra) {
-    out_bgra.assign(THUMB_WIDTH * THUMB_HEIGHT * 4, 0);
+bool ThumbnailManager::ExtractFrameToBGRA(
+    const std::string& video_path,
+    std::vector<uint8_t>& out_bgra,
+    int width,
+    int height,
+    double timestamp_sec
+) {
+    if (width <= 0) width = THUMB_WIDTH;
+    if (height <= 0) height = THUMB_HEIGHT;
+    out_bgra.assign(static_cast<size_t>(width) * height * 4, 0);
 
     AVFormatContext* fmt_ctx = nullptr;
     if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) < 0) {
@@ -171,13 +179,17 @@ bool ThumbnailManager::ExtractFrameToBGRA(const std::string& video_path, std::ve
         return false;
     }
 
-    // Seek to ~1 sec in (or 0) using stream time_base to avoid seeking past EOF
+    // Seek to requested timestamp (or ~1 sec in by default) using stream time_base to avoid seeking past EOF
     int64_t target_ts = 0;
     if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
-        int64_t one_sec_ts = av_rescale_q(1 * AV_TIME_BASE, AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+        int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
         int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
-        if (dur > 0 && one_sec_ts < dur) {
-            target_ts = one_sec_ts;
+        if (dur > 0 && req_ts < dur) {
+            target_ts = req_ts;
+        } else if (dur > 0 && req_ts >= dur) {
+            target_ts = (dur > 0) ? (dur / 2) : 0;
+        } else {
+            target_ts = req_ts;
         }
     }
     av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
@@ -187,8 +199,8 @@ bool ThumbnailManager::ExtractFrameToBGRA(const std::string& video_path, std::ve
     AVFrame* frame = av_frame_alloc();
     AVFrame* rgb_frame = av_frame_alloc();
     rgb_frame->format = AV_PIX_FMT_BGRA;
-    rgb_frame->width = THUMB_WIDTH;
-    rgb_frame->height = THUMB_HEIGHT;
+    rgb_frame->width = width;
+    rgb_frame->height = height;
     av_frame_get_buffer(rgb_frame, 32);
 
     SwsContext* sws_ctx = nullptr;
@@ -197,31 +209,37 @@ bool ThumbnailManager::ExtractFrameToBGRA(const std::string& video_path, std::ve
     while (av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == video_stream_idx) {
             if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
-                if (avcodec_receive_frame(codec_ctx, frame) >= 0) {
-                    sws_ctx = sws_getContext(
-                        frame->width, frame->height, (AVPixelFormat)frame->format,
-                        THUMB_WIDTH, THUMB_HEIGHT, AV_PIX_FMT_BGRA,
-                        SWS_BILINEAR, nullptr, nullptr, nullptr
-                    );
-                    if (sws_ctx) {
-                        sws_scale(
-                            sws_ctx,
-                            frame->data, frame->linesize,
-                            0, frame->height,
-                            rgb_frame->data, rgb_frame->linesize
+                while (avcodec_receive_frame(codec_ctx, frame) >= 0) {
+                    if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
+                        sws_ctx = sws_getContext(
+                            frame->width, frame->height, (AVPixelFormat)frame->format,
+                            width, height, AV_PIX_FMT_BGRA,
+                            SWS_BILINEAR, nullptr, nullptr, nullptr
                         );
-
-                        for (int y = 0; y < THUMB_HEIGHT; ++y) {
-                            memcpy(
-                                out_bgra.data() + (y * THUMB_WIDTH * 4),
-                                rgb_frame->data[0] + (y * rgb_frame->linesize[0]),
-                                THUMB_WIDTH * 4
+                        if (sws_ctx) {
+                            sws_scale(
+                                sws_ctx,
+                                frame->data, frame->linesize,
+                                0, frame->height,
+                                rgb_frame->data, rgb_frame->linesize
                             );
+
+                            for (int y = 0; y < height; ++y) {
+                                memcpy(
+                                    out_bgra.data() + (static_cast<size_t>(y) * width * 4),
+                                    rgb_frame->data[0] + (static_cast<size_t>(y) * rgb_frame->linesize[0]),
+                                    static_cast<size_t>(width) * 4
+                                );
+                            }
+                            found = true;
+                            sws_freeContext(sws_ctx);
                         }
-                        found = true;
-                        sws_freeContext(sws_ctx);
+                        av_frame_unref(frame);
+                        break;
                     }
                     av_frame_unref(frame);
+                }
+                if (found) {
                     av_packet_unref(pkt);
                     break;
                 }
@@ -235,7 +253,39 @@ bool ThumbnailManager::ExtractFrameToBGRA(const std::string& video_path, std::ve
     av_packet_free(&pkt);
     avcodec_free_context(&codec_ctx);
     avformat_close_input(&fmt_ctx);
+
     return found;
+}
+
+ComPtr<ID3D11ShaderResourceView> ThumbnailManager::CreateSRVFromBGRA(
+    ID3D11Device* device,
+    const uint8_t* bgra_data,
+    int width,
+    int height
+) {
+    if (!device || !bgra_data || width <= 0 || height <= 0) return nullptr;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = static_cast<UINT>(width);
+    desc.Height = static_cast<UINT>(height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = bgra_data;
+    initData.SysMemPitch = static_cast<UINT>(width * 4);
+
+    ComPtr<ID3D11Texture2D> tex;
+    if (FAILED(device->CreateTexture2D(&desc, &initData, &tex))) return nullptr;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) return nullptr;
+
+    return srv;
 }
 
 void ThumbnailManager::WorkerLoop() {

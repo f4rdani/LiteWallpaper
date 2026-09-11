@@ -393,7 +393,8 @@ void LockScreenManager::SyncFromVideoAsync(
     int target_w,
     int target_h,
     bool syncLockScreen,
-    bool syncNativeDesktop
+    bool syncNativeDesktop,
+    double timestamp_sec
 ) {
     if (video_path.empty()) return;
     if (!syncLockScreen && !syncNativeDesktop) return;
@@ -419,13 +420,15 @@ void LockScreenManager::SyncFromVideoAsync(
     std::thread([this, video_path, target_w, target_h,
                  desktopSlotPath, desktopCanonical,
                  lockSlotPath, lockCanonical, lockBmp,
-                 syncLockScreen, syncNativeDesktop]() {
+                 syncLockScreen, syncNativeDesktop, timestamp_sec]() {
 
         std::string primaryJpg = syncNativeDesktop ? WideToUtf8(desktopSlotPath) : WideToUtf8(lockSlotPath);
         bool extraction_done = false;
 
         // 1. Primary: Use ffmpeg CLI (fastest, pristine 100% quality, zero codec/color quirks)
-        std::wstring wCmd = L"ffmpeg -y -ss 00:00:01 -i \"" + Utf8ToWide(video_path) + L"\" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
+        wchar_t tsBuf[64] = {};
+        swprintf_s(tsBuf, L"%.2f", (std::max)(0.0, timestamp_sec));
+        std::wstring wCmd = L"ffmpeg -y -ss " + std::wstring(tsBuf) + L" -i \"" + Utf8ToWide(video_path) + L"\" -vframes 1 -q:v 2 \"" + Utf8ToWide(primaryJpg) + L"\"";
         STARTUPINFOW si = { sizeof(si) };
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
@@ -469,10 +472,14 @@ void LockScreenManager::SyncFromVideoAsync(
 
                                     int64_t target_ts = 0;
                                     if (fmt_ctx->streams[video_stream_idx]->time_base.den > 0) {
-                                        int64_t one_sec_ts = av_rescale_q(1 * AV_TIME_BASE, AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
+                                        int64_t req_ts = av_rescale_q(static_cast<int64_t>((std::max)(0.0, timestamp_sec) * AV_TIME_BASE), AV_TIME_BASE_Q, fmt_ctx->streams[video_stream_idx]->time_base);
                                         int64_t dur = fmt_ctx->streams[video_stream_idx]->duration;
-                                        if (dur > 0 && one_sec_ts < dur) {
-                                            target_ts = one_sec_ts;
+                                        if (dur > 0 && req_ts < dur) {
+                                            target_ts = req_ts;
+                                        } else if (dur > 0 && req_ts >= dur) {
+                                            target_ts = 0;
+                                        } else {
+                                            target_ts = req_ts;
                                         }
                                     }
                                     av_seek_frame(fmt_ctx, video_stream_idx, target_ts, AVSEEK_FLAG_BACKWARD);
@@ -497,7 +504,7 @@ void LockScreenManager::SyncFromVideoAsync(
                                                     if (frame->width > 0 && frame->height > 0 && !(frame->flags & AV_FRAME_FLAG_CORRUPT)) {
                                                         frames_received++;
 
-                                                        // Check luma to avoid intro black frames
+                                                        // Check luma to avoid intro black frames when using default 1.0s auto-sync
                                                         int luma_sum = 0;
                                                         if (frame->data[0]) {
                                                             for (int i = 0; i < 100; ++i) {
@@ -508,7 +515,8 @@ void LockScreenManager::SyncFromVideoAsync(
                                                         }
                                                         int avg_luma = luma_sum / 100;
 
-                                                        if (avg_luma > 20 || frames_received > 60) {
+                                                        bool accept_frame = (timestamp_sec != 1.0) ? (frames_received >= 1) : (avg_luma > 20 || frames_received > 60);
+                                                        if (accept_frame) {
                                                             if (!sws_ctx) {
                                                                 sws_ctx = sws_getContext(
                                                                     frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),

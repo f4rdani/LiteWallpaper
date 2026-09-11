@@ -41,3 +41,8 @@
 #define ICON_FA_LAYER_GROUP        "\xef\x97\xbe" // U+f5fe
 #define ICON_FA_SLIDERS            "\xef\x87\x9e" // U+f1de
 #define ICON_FA_CHART_LINE         "\xef\x88\x81" // U+f201
+#define ICON_FA_CAMERA             "\xef\x80\xb0" // U+f030
+#define ICON_FA_CHECK              "\xef\x80\x8c" // U+f00c
+#define ICON_FA_CROSSHAIRS         "\xef\x81\x9b" // U+f05b
+#define ICON_FA_TRIANGLE_EXCLAMATION "\xef\x81\xb1" // U+f071
+
