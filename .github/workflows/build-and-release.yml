@@ -1,0 +1,67 @@
+﻿name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install vcpkg Dependencies
+        shell: pwsh
+        run: |
+          vcpkg install nlohmann-json:x64-windows mimalloc:x64-windows "imgui[core,win32-binding,dx11-binding,docking-experimental]:x64-windows"
+
+      - name: Download & Setup FFmpeg SDK
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "third_party/ffmpeg"
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-extracted"
+          $extractedDir = Get-ChildItem -Path "ffmpeg-extracted" -Directory | Select-Object -First 1
+          Copy-Item -Path "$($extractedDir.FullName)\*" -Destination "third_party/ffmpeg" -Recurse -Force
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build LiteWallpaper
+        run: |
+          cmake --build build --config Release
+
+      - name: Package Portable Release
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}"
+          if (-not $ver -or $ver -eq "main") { $ver = "latest" }
+          New-Item -ItemType Directory -Force -Path "dist/LiteWallpaper-Portable/assets"
+          Copy-Item "build/Release/LiteWallpaper.exe" "dist/LiteWallpaper-Portable/" -Force
+          Copy-Item "build/Release/LiteWallpaper.scr" "dist/LiteWallpaper-Portable/" -Force
+          Copy-Item "build/Release/*.dll" "dist/LiteWallpaper-Portable/" -Force
+          Copy-Item "third_party/ffmpeg/bin/*.dll" "dist/LiteWallpaper-Portable/" -Force
+          Copy-Item "assets/*" "dist/LiteWallpaper-Portable/assets/" -Recurse -Force
+          Copy-Item "README.md" "dist/LiteWallpaper-Portable/" -Force
+          Copy-Item "LICENSE" "dist/LiteWallpaper-Portable/" -Force
+          Compress-Archive -Path "dist/LiteWallpaper-Portable/*" -DestinationPath "LiteWallpaper-Portable-$ver-win64.zip" -Force
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: LiteWallpaper-Portable-*.zip
+          generate_release_notes: true
