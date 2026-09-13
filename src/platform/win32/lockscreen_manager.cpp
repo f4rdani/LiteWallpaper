@@ -7,6 +7,7 @@
 #include <fstream>
 #include <algorithm>
 #include <thread>
+#include <mimalloc.h>
 #include "core/logger.h"
 
 #include <winrt/base.h>
@@ -352,11 +353,13 @@ bool LockScreenManager::SaveRgbAsBmp(
 bool LockScreenManager::SetNativeDesktopWallpaperFile(const std::wstring& imagePath) {
     if (imagePath.empty()) return false;
 
-    // 1. Modern Windows 8/10/11 IDesktopWallpaper COM interface
+    // 1. Modern Windows 8/10/11 IDesktopWallpaper COM interface (clean, non-disruptive)
     ComPtr<IDesktopWallpaper> pDesktopWallpaper;
     HRESULT hr = CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&pDesktopWallpaper));
     if (SUCCEEDED(hr) && pDesktopWallpaper) {
-        pDesktopWallpaper->SetWallpaper(nullptr, imagePath.c_str());
+        if (SUCCEEDED(pDesktopWallpaper->SetWallpaper(nullptr, imagePath.c_str()))) {
+            return true;
+        }
     }
 
     // 2. Win32 SystemParametersInfoW for boot persistence and legacy fallback
@@ -364,11 +367,8 @@ bool LockScreenManager::SetNativeDesktopWallpaperFile(const std::wstring& imageP
         SPI_SETDESKWALLPAPER,
         0,
         reinterpret_cast<void*>(const_cast<wchar_t*>(imagePath.c_str())),
-        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
+        SPIF_UPDATEINIFILE
     );
-
-    // 3. Broadcast setting change to notify Explorer immediately
-    PostMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETDESKWALLPAPER, 0);
     return true;
 }
 
@@ -437,6 +437,17 @@ void LockScreenManager::WorkerLoop() {
             m_queue.pop();
         }
         ProcessSyncTask(task);
+
+        // Once background extraction queue drains, immediately release heap & working set
+        bool queue_empty = false;
+        {
+            std::lock_guard<std::mutex> lock(m_queue_mutex);
+            queue_empty = m_queue.empty();
+        }
+        if (queue_empty) {
+            mi_collect(false);
+            SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+        }
     }
 }
 

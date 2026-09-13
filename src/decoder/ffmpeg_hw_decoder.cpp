@@ -1,6 +1,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <windows.h>
+#include <mimalloc.h>
 #include "ffmpeg_hw_decoder.h"
 #include <iostream>
 #include <algorithm>
@@ -87,7 +89,8 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device, int max_w
         return false;
     }
 
-    // Fast demuxer probing settings to minimize RAM buffers
+    // Fast demuxer probing settings and zero-buffering to minimize RAM buffers
+    m_fmt_ctx->flags |= AVFMT_FLAG_NOBUFFER | AVFMT_FLAG_FLUSH_PACKETS;
     m_fmt_ctx->probesize = 64 * 1024;
     m_fmt_ctx->max_analyze_duration = 500000;
 
@@ -109,6 +112,14 @@ bool FFmpegHWDecoder::Open(const char* path, ID3D11Device* d3d_device, int max_w
     if (m_video_stream_idx < 0) {
         Close();
         return false;
+    }
+
+    // Discard any unused streams to prevent packet caching in heap memory
+    for (unsigned int i = 0; i < m_fmt_ctx->nb_streams; ++i) {
+        if (i != static_cast<unsigned int>(m_video_stream_idx) &&
+            (i != static_cast<unsigned int>(m_audio_stream_idx) || !m_audio_enabled)) {
+            m_fmt_ctx->streams[i]->discard = AVDISCARD_ALL;
+        }
     }
 
     // Setup Video Decoder with D3D11VA HW acceleration
@@ -364,6 +375,7 @@ void FFmpegHWDecoder::SeekToStart() {
     // Release VRAM slice held by last decoded frame before flushing
     if (m_hw_frame) av_frame_unref(m_hw_frame);
     if (m_audio_frame) av_frame_unref(m_audio_frame);
+    if (m_packet) av_packet_unref(m_packet);
 
     av_seek_frame(m_fmt_ctx, m_video_stream_idx, 0, AVSEEK_FLAG_BACKWARD);
     if (m_video_codec_ctx) {
@@ -372,12 +384,17 @@ void FFmpegHWDecoder::SeekToStart() {
     if (m_audio_codec_ctx) {
         avcodec_flush_buffers(m_audio_codec_ctx);
     }
+
+    // Instant loop seam memory flush: strip old GOP heap/working set
+    mi_collect(false);
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 void FFmpegHWDecoder::FlushBuffers() {
     // Release VRAM slice held by last decoded frame to free GPU surface
     if (m_hw_frame) av_frame_unref(m_hw_frame);
     if (m_audio_frame) av_frame_unref(m_audio_frame);
+    if (m_packet) av_packet_unref(m_packet);
 
     if (m_video_codec_ctx) {
         avcodec_flush_buffers(m_video_codec_ctx);
@@ -385,6 +402,9 @@ void FFmpegHWDecoder::FlushBuffers() {
     if (m_audio_codec_ctx) {
         avcodec_flush_buffers(m_audio_codec_ctx);
     }
+
+    mi_collect(false);
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 VideoInfo FFmpegHWDecoder::GetInfo() const {
@@ -410,6 +430,7 @@ int FFmpegHWDecoder::DecodeAudioSamples(float* buffer, int max_samples) {
     // swr_convert requires out_count to be the sample count per channel.
     int max_samples_per_channel = max_samples / 2;
     if (max_samples_per_channel <= 0) {
+        av_frame_unref(m_audio_frame);
         return 0;
     }
 
@@ -421,6 +442,8 @@ int FFmpegHWDecoder::DecodeAudioSamples(float* buffer, int max_samples) {
         const_cast<const uint8_t**>(m_audio_frame->data),
         m_audio_frame->nb_samples
     );
+
+    av_frame_unref(m_audio_frame);
 
     // Return total float elements written (samples_converted * 2 for stereo)
     return samples_converted > 0 ? (samples_converted * 2) : 0;

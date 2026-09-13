@@ -459,11 +459,14 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     // Copy decoded slice into staging texture
     m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
 
-    // Determine target viewports
-    std::vector<DisplayViewport> vps = target_viewports;
-    if (vps.empty()) {
-        vps.push_back({ 0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height) });
-    } else {
+    // Determine target viewports (zero-allocation)
+    DisplayViewport defaultVp = { 0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height) };
+    const DisplayViewport* pVps = &defaultVp;
+    size_t vpCount = 1;
+
+    if (!target_viewports.empty()) {
+        pVps = target_viewports.data();
+        vpCount = target_viewports.size();
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         m_context->ClearRenderTargetView(m_rtv.Get(), black);
     }
@@ -492,7 +495,8 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
     float videoAspect = (texDesc.Height > 0) ? (static_cast<float>(texDesc.Width) / static_cast<float>(texDesc.Height)) : 1.0f;
     bool has_start = (m_start_srv_y && m_start_srv_uv);
 
-    for (const auto& dispVp : vps) {
+    for (size_t i = 0; i < vpCount; ++i) {
+        const auto& dispVp = pVps[i];
         float screenAspect = (dispVp.height > 0) ? (dispVp.width / dispVp.height) : 1.0f;
         float uvScaleX = 1.0f;
         float uvScaleY = 1.0f;
@@ -701,6 +705,12 @@ bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int 
 
     std::string utf8Path = WideToUtf8Presenter(outputPath);
     return stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgbData.data(), quality) != 0;
+}
+
+void D3D11Presenter::Flush() {
+    if (m_context) {
+        m_context->Flush();
+    }
 }
 
 void D3D11Presenter::Cleanup() {

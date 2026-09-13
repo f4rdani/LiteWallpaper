@@ -64,6 +64,9 @@ public:
     ID3D11Device* GetDevice() const;
     ID3D11DeviceContext* GetContext() const;
     
+    // Flush GPU command queue
+    void Flush();
+
     void Cleanup();
 
 private:

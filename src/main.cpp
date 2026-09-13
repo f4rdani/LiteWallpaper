@@ -156,8 +156,8 @@ static size_t GetProcessVramUsageMB(int vid_w, int vid_h, int screen_w, int scre
 }
 
 static void TrimWorkingSetMemory() {
+    mi_collect(false);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-    mi_collect(true);
 }
 
 static void OpenWallpaperDialog() {
@@ -417,6 +417,14 @@ static int RunScreensaverMode(HINSTANCE hInstance) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int /*nCmdShow*/) {
+    // Ultra-low footprint mimalloc tuning:
+    // Prevent memory buildup in thread caches and OS page reservations
+    mi_option_set(mi_option_arena_eager_commit, 0);       // Disable eager commit of arenas
+    mi_option_set(mi_option_page_commit_on_demand, 1);    // Commit page memory strictly on-demand
+    mi_option_set(mi_option_reserve_huge_os_pages, 0);    // No huge pages
+    mi_option_set(mi_option_purge_decommits, 1);          // Purge actually decommits memory to OS
+    mi_option_set(mi_option_purge_delay, 0);              // Zero purge delay (immediate release)
+
     // 0. Explicitly lock Current Working Directory to executable directory
     wchar_t exePathBuf[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
@@ -630,8 +638,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             SettingsUI::RenderFrame();
         }
 
+        // Recreate render window if Explorer destroyed it
+        if (!g_main_hwnd && g_running) {
+            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            g_main_hwnd = CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                L"LiteWallpaper_Daemon",
+                L"LiteWallpaper",
+                WS_POPUP,
+                vx, vy, vw, vh,
+                nullptr, nullptr, GetModuleHandleW(nullptr), nullptr
+            );
+            if (g_main_hwnd) {
+                g_presenter.Init(g_main_hwnd, vw, vh, cfg.gpu_device_index);
+            }
+        }
+
         // Re-attach if desktop was rebuilt, or retry injection if it initially failed (runs UN-GATED so it never misses boot)
-        // Re-attach if desktop was rebuilt, or retry injection if it initially failed
         static uint64_t last_inject_check_us = 0;
         uint64_t now_us = g_clock.GetCurrentTimeMicros();
         bool has_active_wallpaper = (!cfg.wallpapers.empty() && !cfg.wallpapers[0].video_path.empty() && !g_paused);
@@ -677,6 +703,48 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             g_presenter.GetDevice()
         );
 
+        // Update Shared Engine State for instant zero-latency UI reads
+        if (now_us - last_state_update_us >= 250000) { // Every 250ms
+            last_state_update_us = now_us;
+            std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
+            auto info = g_decoder.GetInfo();
+            size_t ram = GetProcessMemoryUsageMB();
+            double cpu = GetProcessCpuUsagePercent();
+            size_t vram = g_presenter.GetVramUsageMB();
+            if (vram == 0 && g_decoder_hw) {
+                vram = GetProcessVramUsageMB(info.width, info.height, vw, vh, g_decoder_hw);
+            }
+
+            g_shared_engine_state.connected.store(true);
+            g_shared_engine_state.playing.store(!g_paused && !cur_vid.empty() && !g_fullscreen_paused && g_inject_ok);
+            g_shared_engine_state.paused.store(g_paused && !cur_vid.empty());
+            g_shared_engine_state.injected.store(g_inject_ok);
+            g_shared_engine_state.hw_decode.store(g_decoder_hw);
+            g_shared_engine_state.fps.store(g_clock.GetTargetFPS());
+            g_shared_engine_state.video_fps.store(info.fps);
+            g_shared_engine_state.width.store(info.width);
+            g_shared_engine_state.height.store(info.height);
+            g_shared_engine_state.duration.store(info.duration_seconds);
+            g_shared_engine_state.ram_mb.store(ram);
+            g_shared_engine_state.vram_mb.store(vram);
+            g_shared_engine_state.cpu_percent.store(cpu);
+            g_shared_engine_state.system_ram_percent.store(g_governor.GetSystemRamPercent());
+            g_shared_engine_state.gpu_vram_percent.store(g_governor.GetGpuVramPercent());
+            g_shared_engine_state.resource_heavy_sleep.store(g_governor.IsInResourceSleep());
+            g_shared_engine_state.frames_rendered.store(g_frames_rendered);
+            g_shared_engine_state.frames_decoded.store(g_frames_decoded);
+            g_shared_engine_state.frame_skip.store(g_frame_skip);
+            g_shared_engine_state.SetCurrentVideo(cur_vid);
+            g_shared_engine_state.SetCodec(info.codec_name);
+            g_shared_engine_state.SetLastError(g_last_error);
+        }
+
+        // Periodic process working set memory trimming every 1 second
+        if (now_us - last_trim_us >= 1000000) {
+            last_trim_us = now_us;
+            TrimWorkingSetMemory();
+        }
+
         // Window guard: Never render to a detached top-level window (prevents white empty window)
         if (!g_inject_ok) {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
@@ -714,6 +782,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     g_decoder.FlushBuffers();
                     g_current_frame = VideoFrame{};
                     g_presenter.ResetStartFrame();
+                    g_first_frame_captured = false;
                 }
                 TrimWorkingSetMemory();
                 Logger::Info("Deep suspend active: released decoder VRAM & trimmed working set");
@@ -736,48 +805,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
             }
         }
 
-        // Update Shared Engine State for instant zero-latency UI reads
-        if (now_us - last_state_update_us >= 250000) { // Every 250ms
-            last_state_update_us = now_us;
-            std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : "";
-            auto info = g_decoder.GetInfo();
-            size_t ram = GetProcessMemoryUsageMB();
-            double cpu = GetProcessCpuUsagePercent();
-            size_t vram = g_presenter.GetVramUsageMB();
-            if (vram == 0 && g_decoder_hw) {
-                vram = GetProcessVramUsageMB(info.width, info.height, vw, vh, g_decoder_hw);
-            }
-
-            g_shared_engine_state.connected.store(true);
-            g_shared_engine_state.playing.store(!g_paused && !cur_vid.empty() && !g_fullscreen_paused);
-            g_shared_engine_state.paused.store(g_paused && !cur_vid.empty());
-            g_shared_engine_state.injected.store(g_inject_ok);
-            g_shared_engine_state.hw_decode.store(g_decoder_hw);
-            g_shared_engine_state.fps.store(g_clock.GetTargetFPS());
-            g_shared_engine_state.video_fps.store(info.fps);
-            g_shared_engine_state.width.store(info.width);
-            g_shared_engine_state.height.store(info.height);
-            g_shared_engine_state.duration.store(info.duration_seconds);
-            g_shared_engine_state.ram_mb.store(ram);
-            g_shared_engine_state.vram_mb.store(vram);
-            g_shared_engine_state.cpu_percent.store(cpu);
-            g_shared_engine_state.system_ram_percent.store(g_governor.GetSystemRamPercent());
-            g_shared_engine_state.gpu_vram_percent.store(g_governor.GetGpuVramPercent());
-            g_shared_engine_state.resource_heavy_sleep.store(g_governor.IsInResourceSleep());
-            g_shared_engine_state.frames_rendered.store(g_frames_rendered);
-            g_shared_engine_state.frames_decoded.store(g_frames_decoded);
-            g_shared_engine_state.frame_skip.store(g_frame_skip);
-            g_shared_engine_state.SetCurrentVideo(cur_vid);
-            g_shared_engine_state.SetCodec(info.codec_name);
-            g_shared_engine_state.SetLastError(g_last_error);
-        }
-
-        // Periodic process working set memory trimming every 5 seconds
-        if (now_us - last_trim_us >= 5000000) {
-            last_trim_us = now_us;
-            TrimWorkingSetMemory();
-        }
-
         bool should_pause = (power == PowerState::Sleeping) ||
                             (power == PowerState::Reduced && cfg.pause_on_battery) ||
                             g_paused;
@@ -793,6 +820,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                     g_decoder.FlushBuffers();
                     g_current_frame = VideoFrame{};
                     g_presenter.ResetStartFrame();
+                    g_first_frame_captured = false;
                 }
                 TrimWorkingSetMemory();
                 Logger::Info("Deep suspend active: released decoder VRAM & trimmed working set");
@@ -839,6 +867,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpC
                 if (g_current_frame.texture) {
                     if (!g_first_frame_captured) {
                         g_presenter.CaptureStartFrame(g_current_frame.texture, g_current_frame.texture_index);
+                        g_first_frame_captured = true;
+                        TrimWorkingSetMemory();
                     }
 
                     // Track current playback time in engine state
@@ -1083,7 +1113,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DESTROY:
-            PostQuitMessage(0);
+            if (hwnd == g_main_hwnd) {
+                Logger::Info("Main render window received WM_DESTROY from shell");
+                g_main_hwnd = nullptr;
+                g_inject_ok = false;
+            }
+            if (!g_running) {
+                PostQuitMessage(0);
+            }
             return 0;
     }
 
