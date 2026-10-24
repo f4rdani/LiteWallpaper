@@ -63,7 +63,7 @@ code, pre, .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
-/* Glassmorphism Cards (Matching Startorch BeginModuleCard) */
+/* Glassmorphism Cards */
 .glass-card {
   background: var(--bg-card);
   backdrop-filter: blur(14px);
@@ -88,7 +88,7 @@ code, pre, .font-mono {
   box-shadow: 0 0 18px rgba(56, 232, 255, 0.2) !important;
 }
 
-/* Startorch Floating Pill Nav (Matching Floating Dock & Left Rail) */
+/* Floating Pill Nav (Floating Dock & Left Rail) */
 .floating-dock {
   background: rgba(13, 18, 31, 0.88);
   backdrop-filter: blur(16px);

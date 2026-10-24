@@ -1,5 +1,5 @@
 // MiniWallpaper Documentation & Landing Page Scripts
-// Theme: Startorch Cyber Dark (Clean vector icons, Desktop app palette)
+// Theme: Cyber Dark (Clean vector icons, Desktop app palette)
 
 const translations = {
   id: {
@@ -46,8 +46,8 @@ const translations = {
     
     tb_metric: "Metrik Operasional",
     tb_miniwp: "MiniWallpaper v2.0.0",
-    tb_lively: "Lively Wallpaper (WPF/WinUI)",
-    tb_wpengine: "Wallpaper Engine",
+    tb_other1: "Aplikasi Sejenis A (WPF / .NET)",
+    tb_other2: "Aplikasi Sejenis B (CEF / Web)",
     tb_status: "Status Pengujian",
     
     tb_ram_bg: "RAM (Background Daemon)",
@@ -176,8 +176,8 @@ const translations = {
     
     tb_metric: "Operational Metric",
     tb_miniwp: "MiniWallpaper v2.0.0",
-    tb_lively: "Lively Wallpaper (WPF/WinUI)",
-    tb_wpengine: "Wallpaper Engine",
+    tb_other1: "Similar App A (WPF / .NET)",
+    tb_other2: "Similar App B (CEF / Web)",
     tb_status: "Test Verdict",
     
     tb_ram_bg: "RAM (Background Daemon)",
