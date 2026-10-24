@@ -10,7 +10,7 @@ namespace miniwp {
 struct VideoFrame {
     ID3D11Texture2D* texture = nullptr;  // GPU texture (NV12 format in VRAM)
     int texture_index = 0;               // Array slice index inside texture array
-    int64_t pts = 0;                     // Presentation timestamp (microseconds)
+    int64_t pts = 0;                     // Presentation timestamp
     int width = 0;
     int height = 0;
 };
@@ -27,38 +27,26 @@ struct VideoInfo {
 class IVideoDecoder {
 public:
     virtual ~IVideoDecoder() = default;
-    
+
     // Open video file. d3d_device is used for hardware decoding.
-    // max_width and max_height allow automatic downscaling of 4K/8K videos to match the monitor resolution.
     virtual bool Open(const char* path, ID3D11Device* d3d_device, int max_width = 0, int max_height = 0) = 0;
-    
+
     // Decode next frame. Returns true if a new frame is available.
-    // frame.texture contains the decoded NV12 texture in GPU VRAM.
     virtual bool DecodeNextFrame(VideoFrame& frame) = 0;
-    
+
     // Seek to beginning of video for seamless looping
     virtual void SeekToStart() = 0;
 
-    // Seek to an absolute position (seconds) inside the current stream.
-    // Best effort: decoding resumes at the nearest keyframe at or before the
-    // target. Used to restore the playback position after a deep suspend.
+    // Seek to an absolute position (seconds) inside the current stream
     virtual void SeekTo(double seconds) { (void)seconds; }
-    
-    // Get video information
-    virtual VideoInfo GetInfo() const = 0;
-    
-    // Check if video has an audio stream
-    virtual bool HasAudio() const = 0;
-    
-    // Decode next audio samples (interleaved float, stereo 44100Hz)
-    // Returns number of samples decoded (0 if none available)
-    virtual int DecodeAudioSamples(float* buffer, int max_samples) = 0;
-    
-    virtual void Close() = 0;
 
-    // Release cached frames and flush codec buffers (partial release; the
-    // daemon's deep suspend now fully closes the decoder via Close() instead)
-    virtual void FlushBuffers() {}
+    virtual VideoInfo GetInfo() const = 0;
+    virtual bool HasAudio() const = 0;
+
+    // Decode next audio samples (interleaved float, stereo 48000 Hz)
+    virtual int DecodeAudioSamples(float* buffer, int max_samples) = 0;
+
+    virtual void Close() = 0;
 };
 
 } // namespace miniwp

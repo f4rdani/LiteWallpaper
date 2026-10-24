@@ -1,14 +1,57 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "power_governor.h"
+#include "core/win_utils.h"
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
+#include <atomic>
 #include <sstream>
-#include <iomanip>
 
 using Microsoft::WRL::ComPtr;
 
 namespace miniwp {
+
+namespace {
+
+std::atomic<bool> s_window_topology_dirty{true};
+
+void CALLBACK GovernorWinEventProc(
+    HWINEVENTHOOK /*hWinEventHook*/,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG idChild,
+    DWORD /*idEventThread*/,
+    DWORD /*dwmsEventTime*/
+) {
+    if (event >= EVENT_SYSTEM_FOREGROUND && event <= EVENT_SYSTEM_MINIMIZEEND) {
+        if (event == EVENT_SYSTEM_FOREGROUND ||
+            event == EVENT_SYSTEM_MOVESIZEEND ||
+            event == EVENT_SYSTEM_MINIMIZESTART ||
+            event == EVENT_SYSTEM_MINIMIZEEND) {
+            s_window_topology_dirty.store(true, std::memory_order_relaxed);
+        }
+        return;
+    }
+
+    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF || !hwnd) {
+        return;
+    }
+    if (event == EVENT_OBJECT_DESTROY ||
+        event == EVENT_OBJECT_SHOW ||
+        event == EVENT_OBJECT_HIDE ||
+        event == EVENT_OBJECT_LOCATIONCHANGE) {
+        if (event != EVENT_OBJECT_DESTROY && (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) != 0) {
+            return;
+        }
+        s_window_topology_dirty.store(true, std::memory_order_relaxed);
+    }
+}
+
+} // namespace
 
 static std::string FormatWindowInfo(HWND hwnd, const char* prefix = "") {
     if (!hwnd || !IsWindow(hwnd)) return "None";
@@ -22,11 +65,8 @@ static std::string FormatWindowInfo(HWND hwnd, const char* prefix = "") {
     RECT rc = {};
     GetWindowRect(hwnd, &rc);
 
-    char utf8Cls[256] = {};
-    WideCharToMultiByte(CP_UTF8, 0, cls, -1, utf8Cls, sizeof(utf8Cls), NULL, NULL);
-
-    char utf8Title[256] = {};
-    WideCharToMultiByte(CP_UTF8, 0, title, -1, utf8Title, sizeof(utf8Title), NULL, NULL);
+    std::string utf8Cls = WideToUtf8(cls);
+    std::string utf8Title = WideToUtf8(title);
 
     std::ostringstream oss;
     if (prefix && prefix[0] != '\0') {
@@ -44,17 +84,17 @@ static bool IsRealAppWindow(HWND hwnd) {
         return false;
     }
 
-    // Skip cloaked windows (virtual desktops / Metro background)
-    int cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
-        return false;
-    }
-
-    // Check extended styles: skip transparent, tool windows, or un-activatable surfaces
-    LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    // Check cheap in-process window styles and bounds before cross-process DWM queries
+    LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     if ((exStyle & WS_EX_TRANSPARENT) != 0 || (exStyle & WS_EX_TOOLWINDOW) != 0 || (exStyle & WS_EX_NOACTIVATE) != 0) {
         return false;
     }
+
+    RECT rc = {};
+    if (!GetWindowRect(hwnd, &rc)) return false;
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+    if (w < 100 || h < 100) return false;
 
     // Filter out known Windows system/shell background classes
     wchar_t cls[256] = {};
@@ -78,11 +118,11 @@ static bool IsRealAppWindow(HWND hwnd) {
         }
     }
 
-    RECT rc = {};
-    if (!GetWindowRect(hwnd, &rc)) return false;
-    int w = rc.right - rc.left;
-    int h = rc.bottom - rc.top;
-    if (w < 100 || h < 100) return false;
+    // Skip cloaked windows (virtual desktops / suspended UWP background hosts)
+    int cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+        return false;
+    }
 
     return true;
 }
@@ -94,19 +134,31 @@ PowerGovernor::~PowerGovernor() {
 }
 
 bool PowerGovernor::Init(HWND messageHwnd) {
+    Shutdown();
     m_hwnd = messageHwnd;
     if (m_hwnd) {
         WTSRegisterSessionNotification(messageHwnd, NOTIFY_FOR_THIS_SESSION);
     }
+    const DWORD hookFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+    m_hook_sys = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+        nullptr, GovernorWinEventProc, 0, 0, hookFlags
+    );
+    m_hook_obj = SetWinEventHook(
+        EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE,
+        nullptr, GovernorWinEventProc, 0, 0, hookFlags
+    );
+
     m_on_battery = IsOnBattery();
-    m_last_check_tick = GetTickCount64();
+    m_last_check_tick = 0;
+    s_window_topology_dirty.store(true, std::memory_order_relaxed);
     m_cached_state = PowerState::Active;
     m_last_trigger_info = "Desktop is visible and active";
     return true;
 }
 
 PowerState PowerGovernor::GetCurrentState(bool check_maximized, bool check_resources, int ram_threshold, int vram_threshold, ID3D11Device* d3d_device) {
-    // Priority 1: Workstation Locked → Sleep (Immediate 0% CPU)
+    // Priority 1: Workstation Locked -> Sleep (Immediate 0% CPU)
     if (m_is_locked) {
         m_last_trigger_info = "Workstation Locked (Session Sleep)";
         return PowerState::Sleeping;
@@ -157,25 +209,36 @@ PowerState PowerGovernor::GetCurrentState(bool check_maximized, bool check_resou
         return m_cached_state;
     }
 
-    // Throttle Win32 window queries to once every 250ms
-    if (now - m_last_check_tick < 250) {
+    if (check_maximized != m_last_check_maximized) {
+        m_last_check_maximized = check_maximized;
+        s_window_topology_dirty.store(true, std::memory_order_relaxed);
+    }
+
+    // Event-driven evaluation: only re-scan window Z-order when WinEventHook marks topology dirty
+    // (debounced to 120ms during active drags) or on a low-frequency 3000ms safety fallback.
+    if (now - m_last_check_tick < 120) {
+        return m_cached_state;
+    }
+    const bool topology_changed = s_window_topology_dirty.exchange(false, std::memory_order_relaxed);
+    const bool safety_fallback_due = (now - m_last_check_tick >= 3000);
+    if (!topology_changed && !safety_fallback_due) {
         return m_cached_state;
     }
     m_last_check_tick = now;
 
-    // Priority 3: Fullscreen 3D Game / App Running → Pause
+    // Priority 3: Fullscreen 3D Game / App Running -> Pause
     if (IsFullscreenAppRunning()) {
         m_cached_state = PowerState::Paused;
         return m_cached_state;
     }
 
-    // Priority 4: Desktop Occluded by Maximized Window → Occluded
+    // Priority 4: Desktop Occluded by Maximized Window -> Occluded
     if (check_maximized && IsDesktopOccluded()) {
         m_cached_state = PowerState::Occluded;
         return m_cached_state;
     }
 
-    // Priority 5: On Battery → Reduced FPS
+    // Priority 5: On Battery -> Reduced FPS
     if (IsOnBattery()) {
         m_cached_state = PowerState::Reduced;
         m_last_trigger_info = "Running on Battery (Throttled FPS)";
@@ -193,6 +256,7 @@ void PowerGovernor::HandleSessionChange(WPARAM wParam) {
     } else if (wParam == WTS_SESSION_UNLOCK) {
         m_is_locked = false;
         m_last_check_tick = 0; // Force immediate re-evaluation on unlock
+        s_window_topology_dirty.store(true, std::memory_order_relaxed);
     }
 }
 
@@ -200,11 +264,13 @@ void PowerGovernor::HandlePowerChange(WPARAM wParam) {
     if (wParam == PBT_APMPOWERSTATUSCHANGE) {
         m_on_battery = IsOnBattery();
         m_last_check_tick = 0;
+        s_window_topology_dirty.store(true, std::memory_order_relaxed);
     } else if (wParam == PBT_APMSUSPEND) {
         m_is_locked = true;
     } else if (wParam == PBT_APMRESUMEAUTOMATIC) {
         m_is_locked = false;
         m_last_check_tick = 0;
+        s_window_topology_dirty.store(true, std::memory_order_relaxed);
     }
 }
 
@@ -251,7 +317,7 @@ bool PowerGovernor::IsDesktopOccluded() {
     // 1. Fast path: Check active foreground window
     HWND fg = GetForegroundWindow();
     if (IsRealAppWindow(fg)) {
-        if (IsZoomed(fg) || (GetWindowLongPtr(fg, GWL_STYLE) & WS_MAXIMIZE) != 0) {
+        if (IsZoomed(fg) || (GetWindowLongPtrW(fg, GWL_STYLE) & WS_MAXIMIZE) != 0) {
             m_last_trigger_info = FormatWindowInfo(fg, "Maximized Foreground Window");
             return true;
         }
@@ -278,7 +344,12 @@ bool PowerGovernor::IsDesktopOccluded() {
     } result;
 
     EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
-        // Stop scanning immediately when reaching the desktop shell layer
+        // Fast skip for the ~95% hidden helper/COM/IME top-level windows
+        if (!IsWindowVisible(hwnd)) {
+            return TRUE;
+        }
+
+        // Stop scanning immediately when reaching the visible desktop shell layer
         wchar_t cls[256] = {};
         if (GetClassNameW(hwnd, cls, 256) > 0) {
             if (wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0) {
@@ -291,7 +362,7 @@ bool PowerGovernor::IsDesktopOccluded() {
         }
 
         // Check if this real application window is Maximized
-        if (IsZoomed(hwnd) || (GetWindowLongPtr(hwnd, GWL_STYLE) & WS_MAXIMIZE) != 0) {
+        if (IsZoomed(hwnd) || (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_MAXIMIZE) != 0) {
             auto* res = reinterpret_cast<OcclusionResult*>(lparam);
             res->occluded = true;
             res->trigger_hwnd = hwnd;
@@ -327,6 +398,14 @@ bool PowerGovernor::IsDesktopOccluded() {
 }
 
 void PowerGovernor::Shutdown() {
+    if (m_hook_sys) {
+        UnhookWinEvent(m_hook_sys);
+        m_hook_sys = nullptr;
+    }
+    if (m_hook_obj) {
+        UnhookWinEvent(m_hook_obj);
+        m_hook_obj = nullptr;
+    }
     if (m_hwnd) {
         WTSUnRegisterSessionNotification(m_hwnd);
         m_hwnd = nullptr;

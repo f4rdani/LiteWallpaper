@@ -1,103 +1,48 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "d3d11_presenter.h"
-#include <d3dcompiler.h>
-#include <iostream>
-#include "stb/stb_image_write.h"
+#include "core/win_utils.h"
+#include "fullscreen_quad_vs.h"
+#include "nv12_to_rgb_ps.h"
+#include <cmath>
+#include <cstring>
 
 namespace miniwp {
 
-// Process-wide shared device registration (see d3d11_presenter.h). Non-owning:
-// the presenter is the sole owner of the device/context lifetime.
 static ID3D11Device*        g_shared_device = nullptr;
 static ID3D11DeviceContext* g_shared_context = nullptr;
 
 ID3D11Device* GetSharedD3DDevice() { return g_shared_device; }
 ID3D11DeviceContext* GetSharedD3DDeviceContext() { return g_shared_context; }
 
-struct ScalingData {
-    float uv_scale[2];
-    float uv_offset[2];
-    float blend_alpha;
-    float has_start_frame;
-    float _pad[2];
-};
+static bool CreateNV12SliceSRVs(
+    ID3D11Device* device,
+    ID3D11Texture2D* tex,
+    UINT slice_index,
+    ComPtr<ID3D11ShaderResourceView>& out_y,
+    ComPtr<ID3D11ShaderResourceView>& out_uv
+) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
+    yDesc.Format = DXGI_FORMAT_R8_UNORM;
+    yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    yDesc.Texture2DArray.MostDetailedMip = 0;
+    yDesc.Texture2DArray.MipLevels = 1;
+    yDesc.Texture2DArray.FirstArraySlice = slice_index;
+    yDesc.Texture2DArray.ArraySize = 1;
 
-static std::string WideToUtf8Presenter(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string str(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
-    return str;
-}
-
-static const char* g_vs_source = R"(
-cbuffer ScalingBuffer : register(b0) {
-    float2 uv_scale;
-    float2 uv_offset;
-    float  blend_alpha;
-    float  has_start_frame;
-    float2 _pad;
-};
-
-struct VS_OUT {
-    float4 pos : SV_Position;
-    float2 uv  : TEXCOORD0;
-};
-
-VS_OUT main(uint vertexID : SV_VertexID) {
-    VS_OUT o;
-    float2 raw_uv = float2((vertexID << 1) & 2, vertexID & 2);
-    o.pos = float4(raw_uv * float2(2, -2) + float2(-1, 1), 0, 1);
-    o.uv = raw_uv * uv_scale + uv_offset;
-    return o;
-}
-)";
-
-static const char* g_ps_source = R"(
-cbuffer ScalingBuffer : register(b0) {
-    float2 uv_scale;
-    float2 uv_offset;
-    float  blend_alpha;
-    float  has_start_frame;
-    float2 _pad;
-};
-
-Texture2D<float>  texY        : register(t0);
-Texture2D<float2> texUV       : register(t1);
-Texture2D<float>  texY_start  : register(t2);
-Texture2D<float2> texUV_start : register(t3);
-SamplerState      samp        : register(s0);
-
-float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-    float y = texY.Sample(samp, uv);
-    float2 uv_val = texUV.Sample(samp, uv);
-    
-    float u = uv_val.x - 0.5f;
-    float v = uv_val.y - 0.5f;
-    
-    // BT.709 YUV to RGB conversion
-    float r = y + 1.5748f * v;
-    float g = y - 0.1873f * u - 0.4681f * v;
-    float b = y + 1.8556f * u;
-    float3 rgb_curr = saturate(float3(r, g, b));
-
-    if (has_start_frame > 0.5f && blend_alpha > 0.001f) {
-        float y_s = texY_start.Sample(samp, uv);
-        float2 uv_val_s = texUV_start.Sample(samp, uv);
-        float u_s = uv_val_s.x - 0.5f;
-        float v_s = uv_val_s.y - 0.5f;
-        float r_s = y_s + 1.5748f * v_s;
-        float g_s = y_s - 0.1873f * u_s - 0.4681f * v_s;
-        float b_s = y_s + 1.8556f * u_s;
-        float3 rgb_start = saturate(float3(r_s, g_s, b_s));
-
-        // Smooth cosine / smoothstep crossfade dissolve curve
-        float t = smoothstep(0.0f, 1.0f, saturate(blend_alpha));
-        return float4(lerp(rgb_curr, rgb_start, t), 1.0f);
+    if (FAILED(device->CreateShaderResourceView(tex, &yDesc, &out_y))) {
+        return false;
     }
-    
-    return float4(rgb_curr, 1.0f);
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = yDesc;
+    uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+    if (FAILED(device->CreateShaderResourceView(tex, &uvDesc, &out_uv))) {
+        out_y.Reset();
+        return false;
+    }
+    return true;
 }
-)";
 
 D3D11Presenter::D3D11Presenter() = default;
 
@@ -105,31 +50,32 @@ D3D11Presenter::~D3D11Presenter() {
     Cleanup();
 }
 
+void D3D11Presenter::CloseWaitableHandle() noexcept {
+    if (m_frame_latency_waitable_object) {
+        CloseHandle(m_frame_latency_waitable_object);
+        m_frame_latency_waitable_object = nullptr;
+    }
+}
+
 bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
+    Cleanup();
+
     m_hwnd = hwnd;
     m_width = width;
     m_height = height;
-
-    // The device is (re)created below; un-publish the old one right away so the
-    // settings panel can never attach a swap chain to a stale device.
-    g_shared_device = nullptr;
-    g_shared_context = nullptr;
 
     if (gpu_index == -1) {
         m_is_software_mode = true;
         m_adapter_name = "CPU: Software Processor Decode (swscale)";
         m_adapter_type = "CPU Software";
-        m_adapter_dedicated_mb = 0;
-        m_adapter_shared_mb = 0;
     } else {
         m_is_software_mode = false;
     }
 
-    D3D_FEATURE_LEVEL featureLevels[] = {
+    static constexpr D3D_FEATURE_LEVEL featureLevels[] = {
         D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1,
         D3D_FEATURE_LEVEL_10_0,
-        D3D_FEATURE_LEVEL_9_3,
     };
 
     UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
@@ -140,12 +86,14 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
     ComPtr<IDXGIAdapter> targetAdapter;
     D3D_DRIVER_TYPE driverType = D3D_DRIVER_TYPE_HARDWARE;
 
-    if (gpu_index >= 0) {
-        ComPtr<IDXGIFactory1> factory;
-        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
-            IDXGIAdapter1* adapter1 = nullptr;
+    ComPtr<IDXGIFactory1> factory;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
+        if (gpu_index >= 0) {
             int match_idx = 0;
-            for (UINT i = 0; factory->EnumAdapters1(i, &adapter1) != DXGI_ERROR_NOT_FOUND; ++i) {
+            for (UINT i = 0;; ++i) {
+                ComPtr<IDXGIAdapter1> adapter1;
+                if (factory->EnumAdapters1(i, &adapter1) == DXGI_ERROR_NOT_FOUND) break;
+
                 DXGI_ADAPTER_DESC1 desc = {};
                 adapter1->GetDesc1(&desc);
                 if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
@@ -156,33 +104,28 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
                     }
                     match_idx++;
                 }
-                adapter1->Release();
             }
-        }
-    } else {
-        // CPU Software Mode (gpu_index == -1):
-        // Automatically route presentation to the Integrated GPU (iGPU - Intel/AMD APU)
-        // so the discrete high-power GPU (NVIDIA) stays completely powered down / 0% usage!
-        ComPtr<IDXGIFactory1> factory;
-        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
-            IDXGIAdapter1* adapter1 = nullptr;
-            for (UINT i = 0; factory->EnumAdapters1(i, &adapter1) != DXGI_ERROR_NOT_FOUND; ++i) {
+        } else {
+            // CPU Software Mode (gpu_index == -1): route presentation to iGPU when available
+            // so discrete high-power GPU stays powered down.
+            for (UINT i = 0;; ++i) {
+                ComPtr<IDXGIAdapter1> adapter1;
+                if (factory->EnumAdapters1(i, &adapter1) == DXGI_ERROR_NOT_FOUND) break;
+
                 DXGI_ADAPTER_DESC1 desc = {};
                 adapter1->GetDesc1(&desc);
                 if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
-                    // Intel (0x8086) or AMD APU (0x1002 with dedicated VRAM <= 512MB)
-                    if (desc.VendorId == 0x8086 || (desc.VendorId == 0x1002 && desc.DedicatedVideoMemory <= 512 * 1024 * 1024)) {
+                    if (desc.VendorId == 0x8086 || (desc.VendorId == 0x1002 && desc.DedicatedVideoMemory <= 512ULL * 1024 * 1024)) {
                         targetAdapter = adapter1;
                         driverType = D3D_DRIVER_TYPE_UNKNOWN;
                         break;
                     }
                 }
-                adapter1->Release();
             }
         }
     }
 
-    D3D_FEATURE_LEVEL actualFeatureLevel;
+    D3D_FEATURE_LEVEL actualFeatureLevel = D3D_FEATURE_LEVEL_11_0;
     HRESULT hr = D3D11CreateDevice(
         targetAdapter.Get(),
         driverType,
@@ -197,7 +140,6 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
     );
 
     if (FAILED(hr) && targetAdapter) {
-        // Fallback to default adapter
         hr = D3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_HARDWARE,
@@ -212,7 +154,6 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
         );
     }
 
-    // On cold boot, display driver might take a brief moment to initialize
     int retry_count = 0;
     while (FAILED(hr) && retry_count < 5) {
         Sleep(200);
@@ -235,54 +176,44 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
         return false;
     }
 
-    // Publish the freshly created device so the settings panel can share it
-    // instead of creating a second D3D11 device of its own.
     g_shared_device = m_device.Get();
     g_shared_context = m_context.Get();
 
-    // Query and cache active adapter details
-    {
+    if (!m_is_software_mode) {
         ComPtr<IDXGIDevice> dxgiDev;
         if (SUCCEEDED(m_device.As(&dxgiDev))) {
             ComPtr<IDXGIAdapter> adapter;
             if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC desc = {};
                 if (SUCCEEDED(adapter->GetDesc(&desc))) {
-                    if (m_is_software_mode) {
-                        m_adapter_name = "CPU: Software Processor Decode (swscale)";
-                        m_adapter_type = "CPU Software";
-                        m_adapter_dedicated_mb = 0;
-                        m_adapter_shared_mb = 0;
+                    m_adapter_name = WideToUtf8(desc.Description);
+                    size_t dedicated_mb = desc.DedicatedVideoMemory / (1024 * 1024);
+                    if (desc.VendorId == 0x10DE) {
+                        m_adapter_type = "NVIDIA Dedicated";
+                    } else if (desc.VendorId == 0x8086) {
+                        m_adapter_type = (dedicated_mb > 2048) ? "Intel Arc Dedicated" : "Intel iGPU";
+                    } else if (desc.VendorId == 0x1002) {
+                        m_adapter_type = (dedicated_mb > 512) ? "AMD Radeon Dedicated" : "AMD Radeon iGPU";
                     } else {
-                        m_adapter_name = WideToUtf8Presenter(desc.Description);
-                        m_adapter_dedicated_mb = desc.DedicatedVideoMemory / (1024 * 1024);
-                        m_adapter_shared_mb = desc.SharedSystemMemory / (1024 * 1024);
-                        if (desc.VendorId == 0x10DE) {
-                            m_adapter_type = "NVIDIA Dedicated";
-                        } else if (desc.VendorId == 0x8086) {
-                            m_adapter_type = (m_adapter_dedicated_mb > 2048) ? "Intel Arc Dedicated" : "Intel iGPU";
-                        } else if (desc.VendorId == 0x1002) {
-                            m_adapter_type = (m_adapter_dedicated_mb > 512) ? "AMD Radeon Dedicated" : "AMD Radeon iGPU";
-                        } else {
-                            m_adapter_type = (m_adapter_dedicated_mb > 1024) ? "Dedicated GPU" : "Integrated GPU";
-                        }
+                        m_adapter_type = (dedicated_mb > 1024) ? "Dedicated GPU" : "Integrated GPU";
                     }
                 }
             }
         }
     }
 
-    // Enable multithreaded protection for safe concurrent video decodes/presents
     ComPtr<ID3D10Multithread> multithread;
     if (SUCCEEDED(m_device.As(&multithread))) {
         multithread->SetMultithreadProtected(TRUE);
     }
 
     if (!CreateSwapChain(hwnd, width, height)) {
+        Cleanup();
         return false;
     }
 
     if (!CreateShaders()) {
+        Cleanup();
         return false;
     }
 
@@ -290,10 +221,10 @@ bool D3D11Presenter::Init(HWND hwnd, int width, int height, int gpu_index) {
 }
 
 bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
+    CloseWaitableHandle();
     m_rtv.Reset();
     m_swapchain.Reset();
 
-    // Flip-model swap chain (DirectComposition) with double buffering for minimal VRAM
     {
         ComPtr<IDXGIFactory2> dxgiFactory2;
         ComPtr<IDXGIDevice> dxgiDevice;
@@ -303,8 +234,8 @@ bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
             SUCCEEDED(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory2)))) {
 
             DXGI_SWAP_CHAIN_DESC1 sd = {};
-            sd.Width = (UINT)width;
-            sd.Height = (UINT)height;
+            sd.Width = static_cast<UINT>(width);
+            sd.Height = static_cast<UINT>(height);
             sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
             sd.Stereo = FALSE;
             sd.SampleDesc.Count = 1;
@@ -318,35 +249,36 @@ bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
 
             ComPtr<IDXGISwapChain1> sc1;
             HRESULT hr_sc = dxgiFactory2->CreateSwapChainForHwnd(
-                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1);
-            
+                m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1
+            );
+
             if (FAILED(hr_sc)) {
-                // Fallback without waitable object flag on older Windows platforms
                 sd.Flags = 0;
                 hr_sc = dxgiFactory2->CreateSwapChainForHwnd(
-                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1);
+                    m_device.Get(), hwnd, &sd, nullptr, nullptr, &sc1
+                );
             }
 
             if (SUCCEEDED(hr_sc) && sc1) {
                 m_swapchain = sc1;
                 dxgiFactory2->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
 
-                // Query IDXGISwapChain2 for frame latency waitable object (lowest latency, zero CPU jitter)
-                ComPtr<IDXGISwapChain2> sc2;
-                if (SUCCEEDED(sc1.As(&sc2))) {
-                    sc2->SetMaximumFrameLatency(1);
-                    m_frame_latency_waitable_object = sc2->GetFrameLatencyWaitableObject();
+                if (sd.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
+                    ComPtr<IDXGISwapChain2> sc2;
+                    if (SUCCEEDED(sc1.As(&sc2))) {
+                        sc2->SetMaximumFrameLatency(1);
+                        m_frame_latency_waitable_object = sc2->GetFrameLatencyWaitableObject();
+                    }
                 }
             }
         }
     }
 
-    // Fallback: legacy blt-model swap chain (Windows 7 SP1+ compatible)
     if (!m_swapchain) {
         DXGI_SWAP_CHAIN_DESC scDesc = {};
         scDesc.BufferCount = 2;
-        scDesc.BufferDesc.Width = width;
-        scDesc.BufferDesc.Height = height;
+        scDesc.BufferDesc.Width = static_cast<UINT>(width);
+        scDesc.BufferDesc.Height = static_cast<UINT>(height);
         scDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         scDesc.BufferDesc.RefreshRate.Numerator = 60;
         scDesc.BufferDesc.RefreshRate.Denominator = 1;
@@ -372,43 +304,26 @@ bool D3D11Presenter::CreateSwapChain(HWND hwnd, int width, int height) {
         dxgiFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
 
-    // Create Render Target View
     ComPtr<ID3D11Texture2D> backBuffer;
     if (FAILED(m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
         return false;
     }
 
-    if (FAILED(m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, &m_rtv))) {
-        return false;
-    }
-
-    return true;
+    return SUCCEEDED(m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, &m_rtv));
 }
 
 bool D3D11Presenter::CreateShaders() {
-    ComPtr<ID3DBlob> vsBlob;
-    ComPtr<ID3DBlob> errorBlob;
-
-    HRESULT hr = D3DCompile(
-        g_vs_source, strlen(g_vs_source), "fullscreen_quad.hlsl",
-        nullptr, nullptr, "main", "vs_4_0", 0, 0, &vsBlob, &errorBlob
+    // Load build-time fxc-compiled shader bytecode (zero runtime D3DCompile / d3dcompiler_47.dll!)
+    HRESULT hr = m_device->CreateVertexShader(
+        g_vs_bytecode, sizeof(g_vs_bytecode), nullptr, &m_fullscreen_vs
     );
     if (FAILED(hr)) return false;
 
-    hr = m_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &m_fullscreen_vs);
-    if (FAILED(hr)) return false;
-
-    ComPtr<ID3DBlob> psBlob;
-    hr = D3DCompile(
-        g_ps_source, strlen(g_ps_source), "nv12_to_rgb.hlsl",
-        nullptr, nullptr, "main", "ps_4_0", 0, 0, &psBlob, &errorBlob
+    hr = m_device->CreatePixelShader(
+        g_ps_bytecode, sizeof(g_ps_bytecode), nullptr, &m_nv12_ps
     );
     if (FAILED(hr)) return false;
 
-    hr = m_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &m_nv12_ps);
-    if (FAILED(hr)) return false;
-
-    // Create Sampler State (Linear Clamp for smooth video scaling)
     D3D11_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -421,30 +336,28 @@ bool D3D11Presenter::CreateShaders() {
     hr = m_device->CreateSamplerState(&sampDesc, &m_sampler);
     if (FAILED(hr)) return false;
 
-    // Create Constant Buffer for Aspect Ratio / UV Scaling
     D3D11_BUFFER_DESC cbDesc = {};
     cbDesc.ByteWidth = sizeof(ScalingData);
     cbDesc.Usage = D3D11_USAGE_DYNAMIC;
     cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-    hr = m_device->CreateBuffer(&cbDesc, nullptr, &m_scaling_cb);
-    return SUCCEEDED(hr);
+    m_cb_valid = false;
+    return SUCCEEDED(m_device->CreateBuffer(&cbDesc, nullptr, &m_scaling_cb));
 }
 
 void D3D11Presenter::CaptureStartFrame(ID3D11Texture2D* nv12_texture, int array_index) {
-    if (!m_device || !m_context || !nv12_texture) return;
+    if (!m_device || !m_context || !nv12_texture || array_index < 0) return;
     D3D11_TEXTURE2D_DESC desc;
     nv12_texture->GetDesc(&desc);
     if (desc.Width == 0 || desc.Height == 0) return;
 
     if (!m_start_texture || m_start_width != desc.Width || m_start_height != desc.Height) {
-        m_start_texture.Reset();
-        m_start_srv_y.Reset();
-        m_start_srv_uv.Reset();
+        ResetStartFrame();
 
         D3D11_TEXTURE2D_DESC srvDesc = desc;
         srvDesc.ArraySize = 1;
+        srvDesc.MipLevels = 1;
         srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         srvDesc.MiscFlags = 0;
         srvDesc.Usage = D3D11_USAGE_DEFAULT;
@@ -453,24 +366,19 @@ void D3D11Presenter::CaptureStartFrame(ID3D11Texture2D* nv12_texture, int array_
         if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_start_texture))) {
             return;
         }
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
-        yDesc.Format = DXGI_FORMAT_R8_UNORM;
-        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        yDesc.Texture2D.MipLevels = 1;
-        m_device->CreateShaderResourceView(m_start_texture.Get(), &yDesc, &m_start_srv_y);
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
-        uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        uvDesc.Texture2D.MipLevels = 1;
-        m_device->CreateShaderResourceView(m_start_texture.Get(), &uvDesc, &m_start_srv_uv);
+        if (!CreateNV12SliceSRVs(m_device.Get(), m_start_texture.Get(), 0, m_start_srv_y, m_start_srv_uv)) {
+            ResetStartFrame();
+            return;
+        }
 
         m_start_width = desc.Width;
         m_start_height = desc.Height;
     }
 
-    m_context->CopySubresourceRegion(m_start_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
+    m_context->CopySubresourceRegion(
+        m_start_texture.Get(), 0, 0, 0, 0,
+        nv12_texture, static_cast<UINT>(array_index), nullptr
+    );
 }
 
 void D3D11Presenter::ResetStartFrame() {
@@ -479,55 +387,135 @@ void D3D11Presenter::ResetStartFrame() {
     m_start_texture.Reset();
     m_start_width = 0;
     m_start_height = 0;
+    m_cb_valid = false;
 }
 
-void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index, int scaling_mode, const std::vector<DisplayViewport>& target_viewports, float blend_alpha) {
+void D3D11Presenter::ReleaseVideoResources() {
+    ResetStartFrame();
+    for (auto& pair : m_slice_srvs) {
+        pair.y.Reset();
+        pair.uv.Reset();
+    }
+    m_cached_source_tex = nullptr;
+    m_cached_source_w = 0;
+    m_cached_source_h = 0;
+    m_zero_copy_rejected = false;
+
+    m_fallback_srv_uv.Reset();
+    m_fallback_srv_y.Reset();
+    m_fallback_texture.Reset();
+    m_fallback_width = 0;
+    m_fallback_height = 0;
+    m_cb_valid = false;
+}
+
+bool D3D11Presenter::AcquireFrameSRVs(
+    ID3D11Texture2D* nv12_texture,
+    const D3D11_TEXTURE2D_DESC& texDesc,
+    int array_index,
+    ID3D11ShaderResourceView*& out_y,
+    ID3D11ShaderResourceView*& out_uv
+) {
+    out_y = nullptr;
+    out_uv = nullptr;
+    if (array_index < 0) return false;
+
+    // Reset slice cache if the underlying texture pool changed
+    if (m_cached_source_tex != nv12_texture ||
+        m_cached_source_w != texDesc.Width ||
+        m_cached_source_h != texDesc.Height) {
+        for (auto& pair : m_slice_srvs) {
+            pair.y.Reset();
+            pair.uv.Reset();
+        }
+        m_cached_source_tex = nv12_texture;
+        m_cached_source_w = texDesc.Width;
+        m_cached_source_h = texDesc.Height;
+        m_zero_copy_rejected = false;
+    }
+
+    // 1. Fast Path: True Zero-Copy SRV directly on the D3D11VA Texture2DArray slice!
+    const UINT slice = static_cast<UINT>(array_index);
+    if (!m_zero_copy_rejected &&
+        (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0 &&
+        slice < MAX_ZERO_COPY_SLICES &&
+        slice < texDesc.ArraySize) {
+
+        auto& entry = m_slice_srvs[slice];
+        if (!entry.y || !entry.uv) {
+            if (!CreateNV12SliceSRVs(m_device.Get(), nv12_texture, slice, entry.y, entry.uv)) {
+                m_zero_copy_rejected = true;
+            }
+        }
+        if (!m_zero_copy_rejected && entry.y && entry.uv) {
+            out_y = entry.y.Get();
+            out_uv = entry.uv.Get();
+            return true;
+        }
+    }
+
+    // 2. Fallback Path: 1-slice GPU copy (used only on drivers disallowing decoder SRVs)
+    if (!m_fallback_texture || m_fallback_width != texDesc.Width || m_fallback_height != texDesc.Height) {
+        m_fallback_srv_uv.Reset();
+        m_fallback_srv_y.Reset();
+        m_fallback_texture.Reset();
+
+        D3D11_TEXTURE2D_DESC srvDesc = texDesc;
+        srvDesc.ArraySize = 1;
+        srvDesc.MipLevels = 1;
+        srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        srvDesc.Usage = D3D11_USAGE_DEFAULT;
+        srvDesc.CPUAccessFlags = 0;
+        srvDesc.MiscFlags = 0;
+
+        if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_fallback_texture))) {
+            return false;
+        }
+        if (!CreateNV12SliceSRVs(m_device.Get(), m_fallback_texture.Get(), 0, m_fallback_srv_y, m_fallback_srv_uv)) {
+            m_fallback_texture.Reset();
+            return false;
+        }
+        m_fallback_width = texDesc.Width;
+        m_fallback_height = texDesc.Height;
+    }
+
+    m_context->CopySubresourceRegion(m_fallback_texture.Get(), 0, 0, 0, 0, nv12_texture, slice, nullptr);
+    out_y = m_fallback_srv_y.Get();
+    out_uv = m_fallback_srv_uv.Get();
+    return true;
+}
+
+void D3D11Presenter::RenderFrame(
+    ID3D11Texture2D* nv12_texture,
+    int array_index,
+    int scaling_mode,
+    const std::vector<DisplayViewport>& target_viewports,
+    float blend_alpha,
+    int valid_width,
+    int valid_height
+) {
     if (!m_context || !m_rtv || !nv12_texture) return;
 
     D3D11_TEXTURE2D_DESC texDesc;
     nv12_texture->GetDesc(&texDesc);
+    if (texDesc.Width == 0 || texDesc.Height == 0) return;
 
-    // Create or resize intermediate GPU staging texture with BIND_SHADER_RESOURCE
-    if (!m_srv_texture || m_srv_width != texDesc.Width || m_srv_height != texDesc.Height) {
-        m_srv_texture.Reset();
-        m_srv_y.Reset();
-        m_srv_uv.Reset();
-
-        D3D11_TEXTURE2D_DESC srvDesc = texDesc;
-        srvDesc.ArraySize = 1;
-        srvDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        srvDesc.MiscFlags = 0;
-
-        if (FAILED(m_device->CreateTexture2D(&srvDesc, nullptr, &m_srv_texture))) {
-            return;
-        }
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
-        yDesc.Format = DXGI_FORMAT_R8_UNORM;
-        yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        yDesc.Texture2D.MipLevels = 1;
-
-        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &yDesc, &m_srv_y))) {
-            return;
-        }
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC uvDesc = {};
-        uvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-        uvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        uvDesc.Texture2D.MipLevels = 1;
-
-        if (FAILED(m_device->CreateShaderResourceView(m_srv_texture.Get(), &uvDesc, &m_srv_uv))) {
-            return;
-        }
-
-        m_srv_width = texDesc.Width;
-        m_srv_height = texDesc.Height;
+    ID3D11ShaderResourceView* srv_y = nullptr;
+    ID3D11ShaderResourceView* srv_uv = nullptr;
+    if (!AcquireFrameSRVs(nv12_texture, texDesc, array_index, srv_y, srv_uv)) {
+        return;
     }
 
-    // Copy decoded slice into staging texture
-    m_context->CopySubresourceRegion(m_srv_texture.Get(), 0, 0, 0, 0, nv12_texture, array_index, nullptr);
+    const float content_w = (valid_width > 0 && static_cast<UINT>(valid_width) <= texDesc.Width)
+        ? static_cast<float>(valid_width)
+        : static_cast<float>(texDesc.Width);
+    const float content_h = (valid_height > 0 && static_cast<UINT>(valid_height) <= texDesc.Height)
+        ? static_cast<float>(valid_height)
+        : static_cast<float>(texDesc.Height);
 
-    // Determine target viewports (zero-allocation)
+    const float uvMaxX = content_w / static_cast<float>(texDesc.Width);
+    const float uvMaxY = content_h / static_cast<float>(texDesc.Height);
+
     DisplayViewport defaultVp = { 0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height) };
     const DisplayViewport* pVps = &defaultVp;
     size_t vpCount = 1;
@@ -537,35 +525,35 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
         vpCount = target_viewports.size();
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         m_context->ClearRenderTargetView(m_rtv.Get(), black);
+    } else if (scaling_mode == 1) {
+        // Clear letterbox/pillarbox bars in Aspect Fit mode
+        const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        m_context->ClearRenderTargetView(m_rtv.Get(), black);
     }
 
-    // Set Render Target & common pipeline state
     m_context->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);
-
     m_context->VSSetShader(m_fullscreen_vs.Get(), nullptr, 0);
     m_context->VSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
-
     m_context->PSSetShader(m_nv12_ps.Get(), nullptr, 0);
     m_context->PSSetConstantBuffers(0, 1, m_scaling_cb.GetAddressOf());
 
     ID3D11ShaderResourceView* srvs[4] = {
-        m_srv_y.Get(),
-        m_srv_uv.Get(),
-        (m_start_srv_y ? m_start_srv_y.Get() : m_srv_y.Get()),
-        (m_start_srv_uv ? m_start_srv_uv.Get() : m_srv_uv.Get())
+        srv_y,
+        srv_uv,
+        (m_start_srv_y ? m_start_srv_y.Get() : srv_y),
+        (m_start_srv_uv ? m_start_srv_uv.Get() : srv_uv)
     };
     m_context->PSSetShaderResources(0, 4, srvs);
     m_context->PSSetSamplers(0, 1, m_sampler.GetAddressOf());
-
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->IASetInputLayout(nullptr);
 
-    float videoAspect = (texDesc.Height > 0) ? (static_cast<float>(texDesc.Width) / static_cast<float>(texDesc.Height)) : 1.0f;
-    bool has_start = (m_start_srv_y && m_start_srv_uv);
+    const float videoAspect = (content_h > 0.0f) ? (content_w / content_h) : 1.0f;
+    const bool has_start = (m_start_srv_y && m_start_srv_uv && blend_alpha > 0.001f);
 
     for (size_t i = 0; i < vpCount; ++i) {
         const auto& dispVp = pVps[i];
-        float screenAspect = (dispVp.height > 0) ? (dispVp.width / dispVp.height) : 1.0f;
+        const float screenAspect = (dispVp.height > 0.0f) ? (dispVp.width / dispVp.height) : 1.0f;
         float uvScaleX = 1.0f;
         float uvScaleY = 1.0f;
         float uvOffsetX = 0.0f;
@@ -580,7 +568,7 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
         vp.MaxDepth = 1.0f;
 
         if (scaling_mode == 0) {
-            // Mode 0: Auto Aspect Fill (Cover - Proportional Center Crop, No Black Bars)
+            // Mode 0: Auto Aspect Fill (Cover)
             if (screenAspect > videoAspect) {
                 uvScaleY = videoAspect / screenAspect;
                 uvOffsetY = (1.0f - uvScaleY) * 0.5f;
@@ -601,18 +589,22 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
             }
         }
 
-        // Update Constant Buffer with UV transform for this viewport
-        if (m_scaling_cb) {
-            D3D11_MAPPED_SUBRESOURCE mapped;
+        ScalingData nextCb = {
+            { uvScaleX, uvScaleY },
+            { uvOffsetX, uvOffsetY },
+            { uvMaxX, uvMaxY },
+            has_start ? blend_alpha : 0.0f,
+            has_start ? 1.0f : 0.0f
+        };
+
+        // Only Map/Unmap constant buffer when parameters actually change
+        if (m_scaling_cb && (!m_cb_valid || std::memcmp(&m_last_cb_data, &nextCb, sizeof(ScalingData)) != 0)) {
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
             if (SUCCEEDED(m_context->Map(m_scaling_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-                ScalingData* data = static_cast<ScalingData*>(mapped.pData);
-                data->uv_scale[0] = uvScaleX;
-                data->uv_scale[1] = uvScaleY;
-                data->uv_offset[0] = uvOffsetX;
-                data->uv_offset[1] = uvOffsetY;
-                data->blend_alpha = blend_alpha;
-                data->has_start_frame = (has_start && blend_alpha > 0.001f) ? 1.0f : 0.0f;
+                std::memcpy(mapped.pData, &nextCb, sizeof(ScalingData));
                 m_context->Unmap(m_scaling_cb.Get(), 0);
+                m_last_cb_data = nextCb;
+                m_cb_valid = true;
             }
         }
 
@@ -620,7 +612,7 @@ void D3D11Presenter::RenderFrame(ID3D11Texture2D* nv12_texture, int array_index,
         m_context->Draw(3, 0);
     }
 
-    // Unbind SRVs to prevent pipeline resource lock
+    // Unbind SRVs immediately so D3D11VA decoder can freely write to any pool slice on the next frame
     ID3D11ShaderResourceView* null_srvs[4] = { nullptr, nullptr, nullptr, nullptr };
     m_context->PSSetShaderResources(0, 4, null_srvs);
 }
@@ -639,46 +631,26 @@ void D3D11Presenter::ClearAndPresent(float r, float g, float b) {
 
 void D3D11Presenter::Resize(int width, int height) {
     if (!m_swapchain || width <= 0 || height <= 0) return;
-    
+
     m_width = width;
     m_height = height;
     m_rtv.Reset();
 
     UINT flags = (m_frame_latency_waitable_object != nullptr) ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0;
-    m_swapchain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags);
+    m_swapchain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height), DXGI_FORMAT_UNKNOWN, flags);
 
     ComPtr<ID3D11Texture2D> backBuffer;
     if (SUCCEEDED(m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
         m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, &m_rtv);
     }
-}
-
-HANDLE D3D11Presenter::GetWaitableObject() const {
-    return m_frame_latency_waitable_object;
-}
-
-bool D3D11Presenter::WaitForNextFrame(DWORD timeout_ms) {
-    if (m_frame_latency_waitable_object) {
-        DWORD res = WaitForSingleObjectEx(m_frame_latency_waitable_object, timeout_ms, TRUE);
-        return (res == WAIT_OBJECT_0);
-    }
-    return false;
-}
-
-ID3D11Device* D3D11Presenter::GetDevice() const {
-    return m_device.Get();
-}
-
-ID3D11DeviceContext* D3D11Presenter::GetContext() const {
-    return m_context.Get();
+    m_cb_valid = false;
 }
 
 size_t D3D11Presenter::GetVramUsageMB() const {
-    if (m_is_software_mode) {
-        return 0; // Pure CPU decoding consumes 0 MB dedicated video memory
+    if (m_is_software_mode || !m_device) {
+        return 0;
     }
-    if (!m_device) return 0;
-    
+
     ComPtr<IDXGIDevice> dxgiDevice;
     if (SUCCEEDED(m_device.As(&dxgiDevice))) {
         ComPtr<IDXGIAdapter> adapter;
@@ -702,94 +674,13 @@ size_t D3D11Presenter::GetVramUsageMB() const {
     return 0;
 }
 
-
-bool D3D11Presenter::CaptureBackBufferRGB(std::vector<uint8_t>& outRgb, int& outWidth, int& outHeight) {
-    if (!m_swapchain || !m_device || !m_context) return false;
-
-    ComPtr<ID3D11Texture2D> backBuffer;
-    if (FAILED(m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
-        return false;
-    }
-
-    D3D11_TEXTURE2D_DESC desc;
-    backBuffer->GetDesc(&desc);
-
-    // Reuse or create staging texture to prevent GPU VRAM churn
-    if (!m_capture_staging_texture || m_capture_width != desc.Width || m_capture_height != desc.Height) {
-        m_capture_staging_texture.Reset();
-        D3D11_TEXTURE2D_DESC stagingDesc = desc;
-        stagingDesc.ArraySize = 1;
-        stagingDesc.MipLevels = 1;
-        stagingDesc.Usage = D3D11_USAGE_STAGING;
-        stagingDesc.BindFlags = 0;
-        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        stagingDesc.MiscFlags = 0;
-
-        if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &m_capture_staging_texture))) {
-            return false;
-        }
-        m_capture_width = desc.Width;
-        m_capture_height = desc.Height;
-    }
-
-    m_context->CopyResource(m_capture_staging_texture.Get(), backBuffer.Get());
-
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(m_context->Map(m_capture_staging_texture.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
-        return false;
-    }
-
-    int width = static_cast<int>(desc.Width);
-    int height = static_cast<int>(desc.Height);
-    outRgb.resize(static_cast<size_t>(width) * height * 3);
-
-    const uint8_t* src = reinterpret_cast<const uint8_t*>(mapped.pData);
-    for (int y = 0; y < height; ++y) {
-        const uint8_t* rowSrc = src + y * mapped.RowPitch;
-        size_t rowDst = static_cast<size_t>(y) * width * 3;
-        for (int x = 0; x < width; ++x) {
-            outRgb[rowDst + x * 3 + 0] = rowSrc[x * 4 + 2]; // R
-            outRgb[rowDst + x * 3 + 1] = rowSrc[x * 4 + 1]; // G
-            outRgb[rowDst + x * 3 + 2] = rowSrc[x * 4 + 0]; // B
-        }
-    }
-
-    m_context->Unmap(m_capture_staging_texture.Get(), 0);
-    outWidth = width;
-    outHeight = height;
-    return true;
-}
-
-bool D3D11Presenter::CaptureBackBufferAsJpg(const std::wstring& outputPath, int quality) {
-    std::vector<uint8_t> rgbData;
-    int width = 0, height = 0;
-    if (!CaptureBackBufferRGB(rgbData, width, height)) {
-        return false;
-    }
-
-    std::string utf8Path = WideToUtf8Presenter(outputPath);
-    return stbi_write_jpg(utf8Path.c_str(), width, height, 3, rgbData.data(), quality) != 0;
-}
-
-void D3D11Presenter::Flush() {
-    if (m_context) {
-        m_context->Flush();
-    }
-}
-
 void D3D11Presenter::Cleanup() {
     g_shared_device = nullptr;
     g_shared_context = nullptr;
-    ResetStartFrame();
-    m_capture_staging_texture.Reset();
-    m_capture_width = 0;
-    m_capture_height = 0;
-    m_frame_latency_waitable_object = nullptr;
-    m_srv_uv.Reset();
-    m_srv_y.Reset();
-    m_srv_texture.Reset();
-    m_srv_width = 0;
-    m_srv_height = 0;
+
+    ReleaseVideoResources();
+    CloseWaitableHandle();
+
     m_scaling_cb.Reset();
     m_sampler.Reset();
     m_nv12_ps.Reset();

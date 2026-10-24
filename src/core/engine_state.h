@@ -2,8 +2,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <string>
 #include <mutex>
+#include <string>
 
 namespace miniwp {
 
@@ -51,10 +51,6 @@ struct EngineState {
         std::lock_guard<std::mutex> lock(str_mutex);
         strncpy_s(last_error, sizeof(last_error), err.c_str(), _TRUNCATE);
     }
-    void SetActiveRendererName(const std::string& name) {
-        std::lock_guard<std::mutex> lock(str_mutex);
-        strncpy_s(active_renderer_name, sizeof(active_renderer_name), name.c_str(), _TRUNCATE);
-    }
     void SetActiveGpuInfo(const std::string& name, const std::string& type) {
         std::lock_guard<std::mutex> lock(str_mutex);
         strncpy_s(active_renderer_name, sizeof(active_renderer_name), name.c_str(), _TRUNCATE);
@@ -71,10 +67,6 @@ struct EngineState {
     std::string GetLastError() const {
         std::lock_guard<std::mutex> lock(str_mutex);
         return std::string(last_error);
-    }
-    std::string GetActiveRendererName() const {
-        std::lock_guard<std::mutex> lock(str_mutex);
-        return std::string(active_renderer_name);
     }
     std::string GetActiveGpuName() const {
         std::lock_guard<std::mutex> lock(str_mutex);

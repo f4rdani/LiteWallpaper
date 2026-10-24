@@ -1,46 +1,30 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "config.h"
 #include "video_optimizer.h"
 #include "ui/thumbnail_manager.h"
 #include <windows.h>
 #include <shlobj.h>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 
 namespace miniwp {
 
 Config g_config;
 
-static std::wstring Utf8ToWide(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
-    std::wstring wstr(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size_needed);
-    return wstr;
-}
-
-static std::string WideToUtf8(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string str(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
-    return str;
-}
-
 // v2 rebranding repair: rewrite stale absolute paths that still point into the
-// legacy %APPDATA%\LiteWallpaper root (e.g. optimized cache paths stored before
-// the LiteWallpaper -> MiniWallpaper rename) so an upgraded install keeps
-// playing its current wallpaper instead of failing with "file not found".
-// Returns true when at least one path was changed.
+// legacy %APPDATA%\LiteWallpaper root so an upgraded install keeps playing its
+// current wallpaper instead of failing with "file not found".
 static bool RepairLegacyBrandedPaths(AppConfig& cfg) {
     wchar_t appDataPath[MAX_PATH] = {};
-    if (FAILED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) return false;
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appDataPath))) return false;
 
     std::string oldRoot = WideToUtf8(std::wstring(appDataPath) + L"\\LiteWallpaper");
     std::string newRoot = WideToUtf8(std::wstring(appDataPath) + L"\\MiniWallpaper");
     if (oldRoot.empty() || newRoot.empty() || oldRoot == newRoot) return false;
 
-    // Handle both separator styles (paths come from dialogs, drag & drop, or caches)
     std::string oldRootFwd = oldRoot;
     std::string newRootFwd = newRoot;
     for (char& c : oldRootFwd) if (c == '\\') c = '/';
@@ -71,14 +55,15 @@ static bool RepairLegacyBrandedPaths(AppConfig& cfg) {
     return changed;
 }
 
+static void SanitizeGalleryHistory(std::vector<std::string>& history) {
+    auto it = std::remove_if(history.begin(), history.end(), [](const std::string& s) {
+        return s.empty() || IsOptimizedCachePath(s);
+    });
+    history.erase(it, history.end());
+}
+
 std::string Config::GetConfigDir() {
-    wchar_t appDataPath[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
-        std::wstring dir = std::wstring(appDataPath) + L"\\MiniWallpaper";
-        CreateDirectoryW(dir.c_str(), NULL);
-        return WideToUtf8(dir);
-    }
-    return ".";
+    return GetAppDataDirUtf8();
 }
 
 std::string Config::GetConfigFilePath() {
@@ -87,27 +72,16 @@ std::string Config::GetConfigFilePath() {
 
 bool Config::Load() {
     m_config.config_path = GetConfigFilePath();
-    std::wstring wpath = Utf8ToWide(m_config.config_path);
+    std::filesystem::path wpath = PathFromUtf8(m_config.config_path);
 
-    std::ifstream file(wpath);
+    std::ifstream file(wpath, std::ios::binary);
     if (!file.is_open()) {
-        // File does not exist, initialize defaults and save
-        m_config.target_fps = 30;
-        m_config.pause_on_fullscreen = true;
-        m_config.pause_on_battery = false;
-        m_config.battery_fps = 15;
-        m_config.pause_on_lock = true;
-        m_config.update_lockscreen = true;
-        m_config.run_on_startup = false;
-        m_config.auto_smooth_loop = true;
-        m_config.smooth_loop_duration = 0.8f;
+        m_config = AppConfig{};
+        m_config.config_path = GetConfigFilePath();
         return Save();
     }
 
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string content = buffer.str();
-
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     auto j = nlohmann::json::parse(content, nullptr, false);
     if (j.is_discarded() || !j.is_object()) {
         return false;
@@ -115,30 +89,19 @@ bool Config::Load() {
 
     m_config = j.get<AppConfig>();
     m_config.config_path = GetConfigFilePath();
+    m_dirty = false;
 
-    // Repair stale paths captured before the v2 rebranding rename (runs on every
-    // load; idempotent and cheap) so migrated optimized wallpapers still resolve.
     bool paths_repaired = RepairLegacyBrandedPaths(m_config);
+    SanitizeGalleryHistory(m_config.gallery_history);
 
-    // Clean up empty strings and internal cache paths from gallery history
-    auto is_invalid = [](const std::string& s) {
-        if (s.empty()) return true;
-        if (s.find("\\MiniWallpaper\\optimized\\") != std::string::npos ||
-            s.find("/MiniWallpaper/optimized/") != std::string::npos ||
-            s.find("\\optimized\\") != std::string::npos ||
-            s.find("/optimized/") != std::string::npos) {
-            return true;
-        }
-        return false;
-    };
-    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), is_invalid);
-    m_config.gallery_history.erase(it, m_config.gallery_history.end());
-
-    // Clean up any orphaned cache files that don't belong to current gallery or active wallpaper
+    // Clean up orphaned cache files that don't belong to current gallery or active wallpaper
     std::vector<std::string> all_active = m_config.gallery_history;
     for (const auto& w : m_config.wallpapers) {
         if (!w.video_path.empty()) all_active.push_back(w.video_path);
     }
+    if (!m_config.desktop_static_video_path.empty()) all_active.push_back(m_config.desktop_static_video_path);
+    if (!m_config.lockscreen_video_path.empty()) all_active.push_back(m_config.lockscreen_video_path);
+
     VideoOptimizer::CleanOrphanCaches(all_active);
     ThumbnailManager::CleanOrphanThumbnails(all_active);
 
@@ -151,38 +114,51 @@ bool Config::Load() {
 
 bool Config::Save() {
     m_config.config_path = GetConfigFilePath();
-    std::wstring wpath = Utf8ToWide(m_config.config_path);
+    SanitizeGalleryHistory(m_config.gallery_history);
 
-    // Clean up empty strings and internal cache paths before saving
-    auto is_invalid = [](const std::string& s) {
-        if (s.empty()) return true;
-        if (s.find("\\MiniWallpaper\\optimized\\") != std::string::npos ||
-            s.find("/MiniWallpaper/optimized/") != std::string::npos ||
-            s.find("\\optimized\\") != std::string::npos ||
-            s.find("/optimized/") != std::string::npos) {
-            return true;
+    std::filesystem::path target_path = PathFromUtf8(m_config.config_path);
+    std::filesystem::path temp_path = target_path;
+    temp_path += L".tmp";
+
+    {
+        std::ofstream file(temp_path, std::ios::binary | std::ios::trunc);
+        if (!file.is_open()) {
+            return false;
         }
-        return false;
-    };
-    auto it = std::remove_if(m_config.gallery_history.begin(), m_config.gallery_history.end(), is_invalid);
-    m_config.gallery_history.erase(it, m_config.gallery_history.end());
-
-    std::ofstream file(wpath);
-    if (!file.is_open()) {
-        return false;
+        nlohmann::json j = m_config;
+        std::string payload = j.dump(4);
+        file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+        if (!file.good()) {
+            return false;
+        }
     }
 
-    nlohmann::json j = m_config;
-    file << j.dump(4);
+    if (!MoveFileExW(temp_path.c_str(), target_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        // Fallback direct overwrite if atomic rename fails (e.g. antivirus lock)
+        std::ofstream direct_file(target_path, std::ios::binary | std::ios::trunc);
+        if (!direct_file.is_open()) return false;
+        nlohmann::json j = m_config;
+        direct_file << j.dump(4);
+        std::error_code ec;
+        std::filesystem::remove(temp_path, ec);
+    }
+
+    m_dirty = false;
     return true;
 }
 
-AppConfig& Config::Get() {
-    return m_config;
+void Config::MarkDirty() noexcept {
+    m_dirty = true;
+    m_last_dirty_tick_ms = GetTickCount64();
 }
 
-const AppConfig& Config::Get() const {
-    return m_config;
+bool Config::FlushIfDirty(bool force, uint64_t debounce_ms) {
+    if (!m_dirty) return true;
+    if (!force) {
+        uint64_t elapsed = GetTickCount64() - m_last_dirty_tick_ms;
+        if (elapsed < debounce_ms) return true;
+    }
+    return Save();
 }
 
 } // namespace miniwp

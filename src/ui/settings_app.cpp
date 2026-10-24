@@ -2,46 +2,47 @@
 #define NOMINMAX
 #endif
 #include "settings_app.h"
+#include "ui_internal.h"
+#include "ui_modals.h"
+#include "ui_pages.h"
+#include "ui_widgets.h"
+#include "thumbnail_manager.h"
+#include "icons_fontawesome6.h"
+
+#include "core/config.h"
+#include "core/engine_controller.h"
+#include "core/engine_state.h"
+#include "core/logger.h"
+#include "core/video_optimizer.h"
+#include "core/win_utils.h"
+#include "platform/win32/d3d11_presenter.h"
+#include "platform/win32/hardware_info.h"
+
 #include <windows.h>
 #include <d3d11.h>
+#include <dwmapi.h>
 #include <dxgi.h>
 #if __has_include(<dxgi1_4.h>)
 #include <dxgi1_4.h>
 #endif
-#include <wrl/client.h>
-#include <dwmapi.h>
-#include <shellapi.h>
-#include <psapi.h>
-#include <commdlg.h>
 #include <oleidl.h>
+#include <psapi.h>
+#include <shellapi.h>
 #include <wincodec.h>
-#pragma comment(lib, "windowscodecs.lib")
-#include <string>
-#include <vector>
-#include <filesystem>
-#include <iostream>
-#include <algorithm>
-#include <thread>
-#include <deque>
-#include <mutex>
-#include <condition_variable>
-#include <cmath>
-#include <unordered_map>
+#include <wrl/client.h>
 
 #include <imgui.h>
-#include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
+#include <imgui_impl_win32.h>
+#include <mimalloc.h>
 
-#include "core/config.h"
-#include "core/logger.h"
-#include "core/ipc_server.h"
-#include "core/engine_state.h"
-#include "core/video_optimizer.h"
-#include "platform/win32/d3d11_presenter.h"
-#include "platform/win32/hardware_info.h"
-#include "platform/win32/lockscreen_manager.h"
-#include "thumbnail_manager.h"
-#include "icons_fontawesome6.h"
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -57,192 +58,182 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace miniwp {
 
-static HWND                     g_hWnd = nullptr;
-static HINSTANCE                g_hInstance = nullptr;
-static ID3D11Device*            g_pd3dDevice = nullptr;
-static ID3D11DeviceContext*     g_pd3dDeviceContext = nullptr;
-static IDXGISwapChain*          g_pSwapChain = nullptr;
-static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
-static bool                     g_isOpen = false;
-static bool                     g_ownsD3DDevice = false;   // false when the device is shared with the daemon
-static bool                     g_inRenderFrame = false;   // guards deferred teardown while a frame is in flight
-static bool                     g_closeRequested = false;  // Close() was called during RenderFrame()
+namespace ui {
 
-// Hardware telemetry cache
-static SystemHardwareInfo       g_hardwareInfo;
-static bool                     g_hardwareInfoInit = false;
+UiContext g_ui;
 
-// Performance metrics cache
-static bool   g_daemonConnected = false;
-static bool   g_daemonPlaying = false;
-static bool   g_daemonPaused = false;
-static std::string g_daemonCurrentVideo = "";
-static int    g_daemonFps = 0;
-static double g_daemonVideoFps = 0.0;
-static int    g_daemonWidth = 0;
-static int    g_daemonHeight = 0;
-static double g_daemonDuration = 0.0;
-static double g_daemonCurrentTimeSec = 0.0;
-static std::string g_daemonCodec = "";
-static size_t g_daemonRamMB = 0;
-static size_t g_daemonRamPrivateMB = 0;
-static size_t g_daemonVramMB = 0;
-static double g_daemonCpuPercent = 0.0;
-static bool   g_daemonInjected = false;
-static bool   g_daemonHwDecode = false;
-static int    g_daemonActiveGpuIndex = 0;
-static std::string g_daemonGpuName = "";
-static std::string g_daemonGpuType = "";
-static uint64_t g_daemonFramesRendered = 0;
-static std::string g_daemonLastError = "";
-
-// Modal state for video optimization prompt
-static bool g_showOptimizeModal = false;
-static std::string g_pendingOptimizePath;
-static std::string g_pendingOptimizeAction;
-static int g_pendingSourceW = 0;
-static int g_pendingSourceH = 0;
-static int g_pendingTargetW = 1920;
-static int g_pendingTargetH = 1080;
-static bool g_rememberDownscaleChoice = false;
-
-// Modal state for Static Frame Capture & Target Selector
-static bool g_showCaptureModal = false;
-static std::string g_captureModalPath;
-static double g_captureModalDuration = 10.0;
-static double g_captureModalFps = 30.0;
-static int g_captureModalSourceW = 1920;
-static int g_captureModalSourceH = 1080;
-static float g_captureModalTimeSec = 1.0f;
-static int g_captureModalFrameNum = 30;
-static bool g_captureModalTargetDesktop = true;
-static bool g_captureModalTargetLockscreen = true;
-static std::string g_captureModalStatus;
-
-// Preview state in capture modal
-static ComPtr<ID3D11ShaderResourceView> g_captureModalPreviewSRV;
-static float g_captureModalPreviewSec = -1.0f;
-static std::atomic<bool> g_captureModalPreviewPending{false};
-static std::vector<uint8_t> g_captureModalPreviewBgra;
-static int g_captureModalPreviewW = 320;
-static int g_captureModalPreviewH = 180;
-static std::atomic<bool> g_captureModalPreviewWorkerActive{false};
-static std::atomic<bool> g_captureModalPreviewQueued{false};
-static std::atomic<float> g_captureModalQueuedSec{0.0f};
-static bool g_captureModalAutoPreviewRequested = false;
-static uint64_t g_captureModalLastChangeTick = 0;
-
-// Modern shell state: floating dock navigation + collapsible detail panel
-static int  g_activePage = 0; // 0 Gallery, 1 Lock&Static, 2 General, 3 Performance
-static int  g_selectedGalleryIdx = -1;
-static bool g_detailVisible = false;
-static float g_dpiScale = 1.0f;
-static ImFont* g_fontSemibold = nullptr;
-
-static void SetupImGuiStyle() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    ImVec4* colors = style.Colors;
-
-    style.WindowRounding    = 12.0f;
-    style.ChildRounding     = 14.0f;
-    style.FrameRounding     = 10.0f;
-    style.PopupRounding     = 12.0f;
-    style.ScrollbarRounding = 8.0f;
-    style.GrabRounding      = 8.0f;
-    style.TabRounding       = 10.0f;
-
-    style.WindowBorderSize  = 1.0f;
-    style.FrameBorderSize   = 1.0f;
-    style.PopupBorderSize   = 1.0f;
-    style.ChildBorderSize   = 1.0f;
-
-    style.WindowPadding     = ImVec2(18.0f, 14.0f);
-    style.FramePadding      = ImVec2(10.0f, 7.0f);
-    style.ItemSpacing       = ImVec2(12.0f, 10.0f);
-    style.ItemInnerSpacing  = ImVec2(8.0f, 6.0f);
-    style.ScrollbarSize     = 10.0f;
-
-    colors[ImGuiCol_Text]                  = ImVec4(0.945f, 0.961f, 0.976f, 1.00f);
-    colors[ImGuiCol_TextDisabled]          = ImVec4(0.580f, 0.639f, 0.722f, 1.00f);
-    colors[ImGuiCol_WindowBg]              = ImVec4(0.032f, 0.045f, 0.078f, 0.50f);
-    colors[ImGuiCol_ChildBg]               = ImVec4(0.055f, 0.075f, 0.125f, 0.50f);
-    colors[ImGuiCol_PopupBg]               = ImVec4(0.067f, 0.090f, 0.149f, 0.95f);
-    colors[ImGuiCol_Border]                = ImVec4(0.220f, 0.910f, 1.000f, 0.18f);
-    colors[ImGuiCol_BorderShadow]          = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-    colors[ImGuiCol_FrameBg]               = ImVec4(0.090f, 0.126f, 0.208f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.122f, 0.165f, 0.267f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]         = ImVec4(0.150f, 0.200f, 0.320f, 1.00f);
-    colors[ImGuiCol_TitleBg]               = ImVec4(0.035f, 0.047f, 0.082f, 1.00f);
-    colors[ImGuiCol_TitleBgActive]         = ImVec4(0.055f, 0.075f, 0.125f, 1.00f);
-    colors[ImGuiCol_MenuBarBg]             = ImVec4(0.067f, 0.090f, 0.149f, 1.00f);
-    colors[ImGuiCol_ScrollbarBg]           = ImVec4(0.035f, 0.047f, 0.082f, 0.35f);
-    colors[ImGuiCol_ScrollbarGrab]         = ImVec4(0.220f, 0.910f, 1.000f, 0.45f);
-    colors[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.220f, 0.910f, 1.000f, 0.65f);
-    colors[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.220f, 0.910f, 1.000f, 0.90f);
-    colors[ImGuiCol_CheckMark]             = ImVec4(0.220f, 0.910f, 1.000f, 1.00f);
-    colors[ImGuiCol_SliderGrab]            = ImVec4(0.220f, 0.910f, 1.000f, 1.00f);
-    colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.945f, 0.961f, 0.976f, 1.00f);
-    colors[ImGuiCol_Button]                = ImVec4(0.220f, 0.910f, 1.000f, 0.12f);
-    colors[ImGuiCol_ButtonHovered]         = ImVec4(0.220f, 0.910f, 1.000f, 0.22f);
-    colors[ImGuiCol_ButtonActive]          = ImVec4(0.220f, 0.910f, 1.000f, 0.32f);
-    colors[ImGuiCol_Header]                = ImVec4(0.220f, 0.910f, 1.000f, 0.10f);
-    colors[ImGuiCol_HeaderHovered]         = ImVec4(0.220f, 0.910f, 1.000f, 0.16f);
-    colors[ImGuiCol_HeaderActive]          = ImVec4(0.220f, 0.910f, 1.000f, 0.26f);
-    colors[ImGuiCol_Separator]             = ImVec4(0.220f, 0.910f, 1.000f, 0.14f);
-    colors[ImGuiCol_SeparatorHovered]      = ImVec4(0.220f, 0.910f, 1.000f, 0.55f);
-    colors[ImGuiCol_SeparatorActive]       = ImVec4(0.220f, 0.910f, 1.000f, 0.90f);
-    colors[ImGuiCol_Tab]                   = ImVec4(0.067f, 0.090f, 0.149f, 1.00f);
-    colors[ImGuiCol_TabHovered]            = ImVec4(0.122f, 0.165f, 0.267f, 1.00f);
-    colors[ImGuiCol_TabActive]             = ImVec4(0.100f, 0.140f, 0.230f, 1.00f);
-    colors[ImGuiCol_TabUnfocused]          = ImVec4(0.045f, 0.060f, 0.100f, 1.00f);
-    colors[ImGuiCol_TabUnfocusedActive]    = ImVec4(0.067f, 0.090f, 0.149f, 1.00f);
-    colors[ImGuiCol_PlotLines]             = ImVec4(0.220f, 0.910f, 1.000f, 1.00f);
-    colors[ImGuiCol_PlotLinesHovered]      = ImVec4(1.000f, 0.820f, 0.400f, 1.00f);
-    colors[ImGuiCol_PlotHistogram]         = ImVec4(0.220f, 0.910f, 1.000f, 1.00f);
-    colors[ImGuiCol_PlotHistogramHovered]  = ImVec4(1.000f, 0.820f, 0.400f, 1.00f);
-    colors[ImGuiCol_NavHighlight]          = ImVec4(0.220f, 0.910f, 1.000f, 0.80f);
-    colors[ImGuiCol_NavWindowingDimBg]     = ImVec4(0.020f, 0.030f, 0.060f, 0.55f);
-    colors[ImGuiCol_ModalWindowDimBg]      = ImVec4(0.020f, 0.030f, 0.060f, 0.62f);
+void MarkUiInteraction() noexcept {
+    g_ui.lastInteractionTickMs = GetTickCount64();
 }
 
-static void CreateRenderTarget() {
+void EnsureHardwareInfoLoaded() {
+    if (!g_ui.hardwareInfoInit) {
+        g_ui.hardwareInfo = HardwareDetector::QuerySystemInfo();
+        g_ui.hardwareInfoInit = true;
+    }
+}
+
+void ApplyAction(const std::string& utf8_path, const std::string& action) {
+    if (action == "stop") {
+        EngineController::StopToStatic();
+        g_ui.daemon.playing = false;
+        g_ui.daemon.paused = false;
+        g_ui.daemon.currentVideo.clear();
+        return;
+    }
+    if (action == "resume") {
+        EngineController::Resume();
+        g_ui.daemon.playing = true;
+        g_ui.daemon.paused = false;
+        return;
+    }
+
+    if (utf8_path.empty()) return;
+    if (!IsOptimizedCachePath(utf8_path)) {
+        g_config.Get().AddToGallery(utf8_path);
+        g_config.Save();
+        InvalidateGalleryCache();
+    }
+
+    if (action == "wallpaper") {
+        EngineController::SetWallpaper(utf8_path);
+        g_ui.daemon.currentVideo = utf8_path;
+        g_ui.daemon.playing = true;
+        g_ui.daemon.paused = false;
+    }
+}
+
+void StartVideoOptimization(
+    const std::string& input_path,
+    int target_w,
+    int target_h,
+    const std::string& action,
+    int crop_mode
+) {
+    g_config.Get().AddToGallery(input_path);
+    g_config.Save();
+    InvalidateGalleryCache();
+    MarkUiInteraction();
+
+    g_video_optimizer.StartOptimizeAsync(
+        input_path,
+        target_w,
+        target_h,
+        crop_mode,
+        nullptr,
+        [action](bool success, const std::string& output_path) {
+            EngineController::PostToMainThread([action, success, output_path]() {
+                InvalidateGalleryCache();
+                if (success && !output_path.empty()) {
+                    ApplyAction(output_path, action);
+                }
+            });
+        }
+    );
+}
+
+void RequestApplyVideo(const std::string& utf8_path, const std::string& action) {
+    if (action == "stop" || action == "resume") {
+        ApplyAction(utf8_path, action);
+        return;
+    }
+    if (utf8_path.empty()) return;
+
+    g_config.Get().AddToGallery(utf8_path);
+    g_config.Save();
+    InvalidateGalleryCache();
+
+    auto& cfg = g_config.Get();
+    int screen_w = GetSystemMetrics(SM_CXSCREEN);
+    int screen_h = GetSystemMetrics(SM_CYSCREEN);
+    if (screen_w <= 0) screen_w = 1920;
+    if (screen_h <= 0) screen_h = 1080;
+
+    auto probe = VideoOptimizer::Probe(utf8_path);
+    auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(
+        probe.width, probe.height, screen_w, screen_h, cfg.optimizer_crop_mode
+    );
+
+    if (VideoOptimizer::HasOptimizedCache(utf8_path, target_w, target_h)) {
+        std::string opt_path = VideoOptimizer::GetOptimizedPath(utf8_path, target_w, target_h);
+        ApplyAction(opt_path, action);
+        return;
+    }
+
+    if (probe.valid && (probe.width > screen_w || probe.height > screen_h || probe.fps > 60.0)) {
+        if (cfg.prompt_downscale) {
+            OpenOptimizeModal(utf8_path, action, probe.width, probe.height, target_w, target_h);
+            return;
+        }
+        if (cfg.auto_downscale_highres) {
+            StartVideoOptimization(utf8_path, target_w, target_h, action, cfg.optimizer_crop_mode);
+            return;
+        }
+    }
+
+    ApplyAction(utf8_path, action);
+}
+
+} // namespace ui
+
+namespace {
+
+static HINSTANCE               g_hInstance = nullptr;
+static IDXGISwapChain*         g_pSwapChain = nullptr;
+static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
+static bool                    g_isOpen = false;
+static bool                    g_ownsD3DDevice = false;
+static bool                    g_inRenderFrame = false;
+static bool                    g_closeRequested = false;
+
+static IDropTarget*            g_dropTarget = nullptr;
+static bool                    g_dropComInit = false;
+
+// Shared icon font buffer kept alive across ImGui 1.92+ dynamic glyph baking
+// and released immediately after ImGui::DestroyContext() on panel close.
+static std::vector<uint8_t>    g_iconFontBytes;
+
+bool IsSupportedVideoExtension(const fs::path& filePath) {
+    std::string ext = PathToUtf8(filePath.extension());
+    for (char& c : ext) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov");
+}
+
+void CreateRenderTarget() {
     ID3D11Texture2D* pBackBuffer = nullptr;
     if (g_pSwapChain && SUCCEEDED(g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer)))) {
-        g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
+        ui::g_ui.device->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
         pBackBuffer->Release();
     }
 }
 
-static void CleanupRenderTarget() {
+void CleanupRenderTarget() {
     if (g_mainRenderTargetView) {
         g_mainRenderTargetView->Release();
         g_mainRenderTargetView = nullptr;
     }
 }
 
-static bool CreateDeviceD3D(HWND hWnd) {
-    // Prefer the daemon's shared device: creating a second D3D11 device + driver
-    // allocation just for the panel costs several MB of private working set.
+bool CreateDeviceD3D(HWND hWnd) {
     ID3D11Device* sharedDevice = GetSharedD3DDevice();
     ID3D11DeviceContext* sharedContext = GetSharedD3DDeviceContext();
 
     if (sharedDevice && sharedContext) {
-        g_pd3dDevice = sharedDevice;
-        g_pd3dDevice->AddRef();
-        g_pd3dDeviceContext = sharedContext;
-        g_pd3dDeviceContext->AddRef();
+        ui::g_ui.device = sharedDevice;
+        ui::g_ui.device->AddRef();
+        ui::g_ui.deviceContext = sharedContext;
+        ui::g_ui.deviceContext->AddRef();
         g_ownsD3DDevice = false;
 
         ComPtr<IDXGIDevice> dxgiDevice;
         ComPtr<IDXGIAdapter> adapter;
         ComPtr<IDXGIFactory> factory;
-        if (SUCCEEDED(g_pd3dDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice))) &&
+        if (SUCCEEDED(ui::g_ui.device->QueryInterface(IID_PPV_ARGS(&dxgiDevice))) &&
             SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) &&
             SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
 
-            // Use the flip model when available: its back buffers live in video
-            // memory, while the legacy BitBlt (DISCARD) model is backed by system
-            // memory, costing an extra ~2 * W * H * 4 bytes of private working set.
             ComPtr<IDXGIFactory2> factory2;
             if (SUCCEEDED(factory.As(&factory2))) {
                 DXGI_SWAP_CHAIN_DESC1 sd1 = {};
@@ -260,7 +251,7 @@ static bool CreateDeviceD3D(HWND hWnd) {
                 sd1.Flags = 0;
 
                 ComPtr<IDXGISwapChain1> sc1;
-                if (SUCCEEDED(factory2->CreateSwapChainForHwnd(g_pd3dDevice, hWnd, &sd1, nullptr, nullptr, &sc1))) {
+                if (SUCCEEDED(factory2->CreateSwapChainForHwnd(ui::g_ui.device, hWnd, &sd1, nullptr, nullptr, &sc1))) {
                     g_pSwapChain = sc1.Detach();
                     factory2->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
                     CreateRenderTarget();
@@ -268,7 +259,6 @@ static bool CreateDeviceD3D(HWND hWnd) {
                 }
             }
 
-            // Fallback: legacy BitBlt swap chain (Windows 7 SP1+).
             DXGI_SWAP_CHAIN_DESC sd = {};
             sd.BufferCount = 2;
             sd.BufferDesc.Width = 0;
@@ -284,17 +274,16 @@ static bool CreateDeviceD3D(HWND hWnd) {
             sd.Windowed = TRUE;
             sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-            if (SUCCEEDED(factory->CreateSwapChain(g_pd3dDevice, &sd, &g_pSwapChain))) {
+            if (SUCCEEDED(factory->CreateSwapChain(ui::g_ui.device, &sd, &g_pSwapChain))) {
                 CreateRenderTarget();
                 return true;
             }
         }
 
-        // Shared device path failed: fall back to a private device below.
-        g_pd3dDeviceContext->Release();
-        g_pd3dDeviceContext = nullptr;
-        g_pd3dDevice->Release();
-        g_pd3dDevice = nullptr;
+        ui::g_ui.deviceContext->Release();
+        ui::g_ui.deviceContext = nullptr;
+        ui::g_ui.device->Release();
+        ui::g_ui.device = nullptr;
     }
 
     DXGI_SWAP_CHAIN_DESC sd = {};
@@ -312,7 +301,6 @@ static bool CreateDeviceD3D(HWND hWnd) {
     sd.Windowed = TRUE;
     sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-    UINT createDeviceFlags = 0;
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
 
@@ -320,15 +308,15 @@ static bool CreateDeviceD3D(HWND hWnd) {
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
-        createDeviceFlags,
+        0,
         featureLevelArray,
         2,
         D3D11_SDK_VERSION,
         &sd,
         &g_pSwapChain,
-        &g_pd3dDevice,
+        &ui::g_ui.device,
         &featureLevel,
-        &g_pd3dDeviceContext
+        &ui::g_ui.deviceContext
     );
 
     if (res != S_OK) {
@@ -340,3240 +328,52 @@ static bool CreateDeviceD3D(HWND hWnd) {
     return true;
 }
 
-static void CleanupDeviceD3D() {
+void CleanupDeviceD3D() {
     CleanupRenderTarget();
     if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
-    // When the device is shared with the daemon we only drop our references;
-    // a private device (screenshot/standalone mode) is fully released.
-    if (g_pd3dDeviceContext) { g_pd3dDeviceContext->Release(); g_pd3dDeviceContext = nullptr; }
-    if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
+    if (ui::g_ui.deviceContext) { ui::g_ui.deviceContext->Release(); ui::g_ui.deviceContext = nullptr; }
+    if (ui::g_ui.device) { ui::g_ui.device->Release(); ui::g_ui.device = nullptr; }
     g_ownsD3DDevice = false;
 }
 
-// Fire-and-forget IPC to the daemon. Uses one long-lived worker thread instead
-// of spawning (and reserving ~1 MB of stack for) a throw-away thread per call.
-namespace {
-struct IpcAsyncQueue {
-    std::mutex mutex;
-    std::condition_variable cv;
-    std::deque<std::string> items;
-    bool stop = false;
-    std::thread worker;
-
-    IpcAsyncQueue() {
-        worker = std::thread([this]() {
-            for (;;) {
-                std::string request;
-                {
-                    std::unique_lock<std::mutex> lock(mutex);
-                    cv.wait(lock, [this]() { return stop || !items.empty(); });
-                    if (stop && items.empty()) return;
-                    request = std::move(items.front());
-                    items.pop_front();
-                }
-                IpcClient client;
-                client.SendRequest(request);
-            }
-        });
-    }
-};
-
-IpcAsyncQueue& GetIpcAsyncQueue() {
-    // Intentionally leaked: the worker is a process-lifetime service, so it must
-    // outlive static destructors registered by other translation units.
-    static IpcAsyncQueue* s_queue = new IpcAsyncQueue();
-    return *s_queue;
-}
-} // namespace
-
-static void SendIpcAsync(const std::string& request_json) {
-    IpcAsyncQueue& q = GetIpcAsyncQueue();
-    {
-        std::lock_guard<std::mutex> lock(q.mutex);
-        q.items.push_back(request_json);
-    }
-    q.cv.notify_one();
-}
-
-static void ApplyAction(std::string utf8_path, std::string action) {
-    if (action == "stop") {
-        SendIpcAsync("{\"cmd\":\"stop\"}");
-        g_daemonPlaying = false;
-        g_daemonPaused = false;
-        g_daemonCurrentVideo.clear();
-        auto& cfg = g_config.Get();
-        if (!cfg.wallpapers.empty()) {
-            cfg.wallpapers[0].video_path = "";
-            g_config.Save();
-        }
-        return;
-    }
-    if (action == "resume") {
-        SendIpcAsync("{\"cmd\":\"resume\"}");
-        g_daemonPlaying = true;
-        g_daemonPaused = false;
-        return;
-    }
-
-    if (utf8_path.empty()) return;
-    if (utf8_path.find("\\MiniWallpaper\\optimized\\") == std::string::npos &&
-        utf8_path.find("/MiniWallpaper/optimized/") == std::string::npos &&
-        utf8_path.find("\\optimized\\") == std::string::npos &&
-        utf8_path.find("/optimized/") == std::string::npos) {
-        g_config.Get().AddToGallery(utf8_path);
-        g_config.Save();
-    }
-
-    if (action == "wallpaper") {
-        nlohmann::json req{{"cmd", "set_wallpaper"}, {"path", utf8_path}};
-        SendIpcAsync(req.dump());
-    }
-}
-
-static void StartVideoOptimization(const std::string& input_path, int target_w, int target_h, const std::string& action, int crop_mode = 0) {
-    // Add source path to gallery immediately so user sees card right away
-    g_config.Get().AddToGallery(input_path);
-    g_config.Save();
-
-    g_video_optimizer.StartOptimizeAsync(
-        input_path,
-        target_w,
-        target_h,
-        crop_mode,
-        nullptr,
-        [action](bool success, const std::string& output_path) {
-            if (success && !output_path.empty()) {
-                ApplyAction(output_path, action);
-            }
-        }
-    );
-}
-
-static void RequestApplyVideo(std::string utf8_path, std::string action) {
-    if (action == "stop" || action == "resume") {
-        ApplyAction(utf8_path, action);
-        return;
-    }
-    if (utf8_path.empty()) return;
-
-    // Always ensure source path is in gallery
-    g_config.Get().AddToGallery(utf8_path);
-    g_config.Save();
-
-    auto& cfg = g_config.Get();
-    int screen_w = GetSystemMetrics(SM_CXSCREEN);
-    int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    if (screen_w <= 0) screen_w = 1920;
-    if (screen_h <= 0) screen_h = 1080;
-
-    auto probe = VideoOptimizer::Probe(utf8_path);
-    auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h, cfg.optimizer_crop_mode);
-
-    // Check if optimized version already exists in cache
-    if (VideoOptimizer::HasOptimizedCache(utf8_path, target_w, target_h)) {
-        std::string opt_path = VideoOptimizer::GetOptimizedPath(utf8_path, target_w, target_h);
-        ApplyAction(opt_path, action);
-        return;
-    }
-
-    // Probe source video dimensions and framerate
-    if (probe.valid && (probe.width > screen_w || probe.height > screen_h || probe.fps > 60.0)) {
-        if (cfg.prompt_downscale) {
-            g_pendingOptimizePath = utf8_path;
-            g_pendingOptimizeAction = action;
-            g_pendingSourceW = probe.width;
-            g_pendingSourceH = probe.height;
-            g_pendingTargetW = target_w;
-            g_pendingTargetH = target_h;
-            g_showOptimizeModal = true;
-            return;
-        } else if (cfg.auto_downscale_highres) {
-            StartVideoOptimization(utf8_path, target_w, target_h, action, cfg.optimizer_crop_mode);
-            return;
-        }
-    }
-
-    ApplyAction(utf8_path, action);
-}
-
-static LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
-        return true;
-    }
-
-    switch (msg) {
-        case WM_NCCALCSIZE: {
-            if (wParam) {
-                if (IsZoomed(hWnd)) {
-                    auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
-                    HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-                    MONITORINFO mi = { sizeof(mi) };
-                    if (GetMonitorInfoW(hMon, &mi)) {
-                        params->rgrc[0] = mi.rcWork;
-                    }
-                }
-                return 0;
-            }
-            return DefWindowProcW(hWnd, msg, wParam, lParam);
-        }
-
-        case WM_NCHITTEST: {
-            if (IsZoomed(hWnd)) return HTCLIENT;
-
-            POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
-            ScreenToClient(hWnd, &pt);
-            RECT cr;
-            GetClientRect(hWnd, &cr);
-            const int border = 8;
-            bool left = (pt.x < border);
-            bool right = (pt.x >= cr.right - border);
-            bool top = (pt.y < border);
-            bool bottom = (pt.y >= cr.bottom - border);
-
-            // Do not intercept top-right window buttons
-            if (top && pt.x >= cr.right - 145) return HTCLIENT;
-
-            if (top && left) return HTTOPLEFT;
-            if (top && right) return HTTOPRIGHT;
-            if (bottom && left) return HTBOTTOMLEFT;
-            if (bottom && right) return HTBOTTOMRIGHT;
-            if (left) return HTLEFT;
-            if (right) return HTRIGHT;
-            if (bottom) return HTBOTTOM;
-            if (top) return HTTOP;
-
-            return HTCLIENT;
-        }
-
-        case WM_SIZE:
-            // Minimizing the panel (title bar button, taskbar menu, Win+Down)
-            // must behave exactly like close: release the whole UI stack so a
-            // hidden panel costs ~0 MB instead of keeping ImGui + swap chain +
-            // thumbnails resident. Closing from the message handler is safe
-            // (WM_CLOSE goes through the same Close() path).
-            if (wParam == SIZE_MINIMIZED) {
-                SettingsUI::Close();
-                return 0;
-            }
-            if (g_pd3dDevice != nullptr && wParam != SIZE_MINIMIZED) {
-                CleanupRenderTarget();
-                g_pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam), (UINT)HIWORD(lParam), DXGI_FORMAT_UNKNOWN, 0);
-                CreateRenderTarget();
-            }
-            return 0;
-
-        case WM_DROPFILES: {
-            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
-            UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
-            for (UINT i = 0; i < fileCount; i++) {
-                wchar_t filePath[MAX_PATH] = {};
-                if (DragQueryFileW(hDrop, i, filePath, MAX_PATH)) {
-                    int size_needed = WideCharToMultiByte(CP_UTF8, 0, filePath, -1, NULL, 0, NULL, NULL);
-                    std::string utf8_path(size_needed - 1, 0);
-                    WideCharToMultiByte(CP_UTF8, 0, filePath, -1, &utf8_path[0], size_needed, NULL, NULL);
-
-                    std::error_code ec;
-                    auto ext = fs::path(filePath).extension().string();
-                    for (auto& c : ext) c = (char)::tolower(c);
-                    if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov") {
-                        RequestApplyVideo(utf8_path, "wallpaper");
-                        break;
-                    }
-                }
-            }
-            DragFinish(hDrop);
-            return 0;
-        }
-
-        case WM_GETMINMAXINFO: {
-            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
-            mmi->ptMinTrackSize.x = (LONG)(600 * g_dpiScale);
-            mmi->ptMinTrackSize.y = (LONG)(420 * g_dpiScale);
-            return 0;
-        }
-
-        case WM_SYSCOMMAND:
-            if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
-            break;
-
-        case WM_CLOSE:
-            SettingsUI::Close();
-            return 0;
-    }
-    return DefWindowProcW(hWnd, msg, wParam, lParam);
-}
-
-static void FetchDaemonStatus() {
+void FetchDaemonStatus() {
     static uint64_t s_lastFetchTick = 0;
     uint64_t now = GetTickCount64();
     if (now - s_lastFetchTick < 200) return; // 5Hz sampling rate avoids CPU busywork
     s_lastFetchTick = now;
 
-    g_daemonConnected = g_shared_engine_state.connected.load();
-    g_daemonPlaying = g_shared_engine_state.playing.load();
-    g_daemonPaused = g_shared_engine_state.paused.load();
-    g_daemonCurrentVideo = g_shared_engine_state.GetCurrentVideo();
-    g_daemonFps = g_shared_engine_state.fps.load();
-    g_daemonVideoFps = g_shared_engine_state.video_fps.load();
-    g_daemonWidth = g_shared_engine_state.width.load();
-    g_daemonHeight = g_shared_engine_state.height.load();
-    g_daemonDuration = g_shared_engine_state.duration.load();
-    g_daemonCurrentTimeSec = g_shared_engine_state.current_time_sec.load();
-    g_daemonCodec = g_shared_engine_state.GetCodec();
-    g_daemonRamMB = g_shared_engine_state.ram_mb.load();
-    g_daemonRamPrivateMB = g_shared_engine_state.ram_private_mb.load();
-    g_daemonVramMB = g_shared_engine_state.vram_mb.load();
-    g_daemonCpuPercent = g_shared_engine_state.cpu_percent.load();
-    g_daemonInjected = g_shared_engine_state.injected.load();
-    g_daemonHwDecode = g_shared_engine_state.hw_decode.load();
-    g_daemonActiveGpuIndex = g_shared_engine_state.active_gpu_index.load();
-    g_daemonGpuName = g_shared_engine_state.GetActiveGpuName();
-    g_daemonGpuType = g_shared_engine_state.GetActiveGpuType();
-    g_daemonFramesRendered = g_shared_engine_state.frames_rendered.load();
-    g_daemonLastError = g_shared_engine_state.GetLastError();
+    auto& d = ui::g_ui.daemon;
+    d.connected = g_shared_engine_state.connected.load();
+    d.playing = g_shared_engine_state.playing.load();
+    d.paused = g_shared_engine_state.paused.load();
+    d.currentVideo = g_shared_engine_state.GetCurrentVideo();
+    d.fps = g_shared_engine_state.fps.load();
+    d.videoFps = g_shared_engine_state.video_fps.load();
+    d.width = g_shared_engine_state.width.load();
+    d.height = g_shared_engine_state.height.load();
+    d.duration = g_shared_engine_state.duration.load();
+    d.currentTimeSec = g_shared_engine_state.current_time_sec.load();
+    d.codec = g_shared_engine_state.GetCodec();
+    d.ramMB = g_shared_engine_state.ram_mb.load();
+    d.ramPrivateMB = g_shared_engine_state.ram_private_mb.load();
+    d.vramMB = g_shared_engine_state.vram_mb.load();
+    d.cpuPercent = g_shared_engine_state.cpu_percent.load();
+    d.injected = g_shared_engine_state.injected.load();
+    d.hwDecode = g_shared_engine_state.hw_decode.load();
+    d.activeGpuIndex = g_shared_engine_state.active_gpu_index.load();
+    d.gpuName = g_shared_engine_state.GetActiveGpuName();
+    d.gpuType = g_shared_engine_state.GetActiveGpuType();
+    d.framesRendered = g_shared_engine_state.frames_rendered.load();
+    d.lastError = g_shared_engine_state.GetLastError();
 
-    // Fallback if engine loop has not ticked: measure process memory directly
-    if (g_daemonRamMB == 0) {
+    if (d.ramMB == 0) {
         PROCESS_MEMORY_COUNTERS_EX pmc = {};
-        if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-            g_daemonRamMB = pmc.WorkingSetSize / (1024 * 1024);
-            g_daemonRamPrivateMB = pmc.PrivateUsage / (1024 * 1024);
+        if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
+            d.ramMB = pmc.WorkingSetSize / (1024 * 1024);
+            d.ramPrivateMB = pmc.PrivateUsage / (1024 * 1024);
         }
     }
 }
-
-static void OpenCaptureModal(const std::string& video_path, int targetFilter = 0);
-static void ApplyAction(std::string utf8_path, std::string action);
-static void RequestApplyVideo(std::string utf8_path, std::string action);
-static void StartVideoOptimization(const std::string& input_path, int target_w, int target_h, const std::string& action, int crop_mode);
-
-// Bayangan lembut berlapis utk elemen melayang (efek z-index: terlihat ngambang, bukan ditempel).
-static void DrawFloatingShadow(ImVec2 p0, ImVec2 p1, float rounding) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(p0.x - 12.0f, p0.y - 6.0f), ImVec2(p1.x + 12.0f, p1.y + 14.0f), IM_COL32(0, 0, 0, 26), rounding + 12.0f);
-    dl->AddRectFilled(ImVec2(p0.x - 7.0f, p0.y - 3.0f), ImVec2(p1.x + 7.0f, p1.y + 9.0f), IM_COL32(0, 0, 0, 34), rounding + 7.0f);
-    dl->AddRectFilled(ImVec2(p0.x - 3.0f, p0.y - 1.0f), ImVec2(p1.x + 3.0f, p1.y + 5.0f), IM_COL32(0, 0, 0, 42), rounding + 3.0f);
-}
-
-// =========================================================================
-// STARTORCH UI KIT (MiniWallpaper edition) — atomic widgets
-// Palet: biru → putih (+ aksen gold, pink starlume, & merah). Tanpa emoji/glyph dekoratif.
-// =========================================================================
-#define ST_BG_BASE     IM_COL32(9, 12, 21, 255)
-#define ST_PANEL       IM_COL32(17, 23, 38, 245)
-#define ST_PANEL_ELEV  IM_COL32(23, 32, 53, 255)
-#define ST_GLASS       IM_COL32(20, 28, 46, 195)
-#define ST_GLASS_HOVER IM_COL32(29, 41, 66, 215)
-#define ST_CYAN        IM_COL32(56, 232, 255, 255)
-#define ST_WHITE       IM_COL32(241, 245, 249, 255)
-#define ST_TEXT        IM_COL32(241, 245, 249, 255)
-#define ST_TEXT_DIM    IM_COL32(148, 163, 184, 255)
-#define ST_TEXT_MUTED  IM_COL32(100, 116, 139, 255)
-#define ST_GOLD        IM_COL32(255, 209, 102, 255)
-#define ST_RED         IM_COL32(255, 77, 109, 255)
-#define ST_CYAN_LINE   IM_COL32(56, 232, 255, 46)
-#define ST_CYAN_EDGE   IM_COL32(56, 232, 255, 107)
-#define ST_PINK        IM_COL32(255, 148, 178, 255) // aksen starlume (kit)
-#define ST_PINK_SOFT   IM_COL32(255, 196, 214, 255)
-#define ST_GREEN       IM_COL32(46, 229, 157, 255)
-
-static ImU32 StAlpha(ImU32 col, float a) {
-    ImVec4 f = ImGui::ColorConvertU32ToFloat4(col);
-    f.w = a;
-    return ImGui::ColorConvertFloat4ToU32(f);
-}
-
-static ImU32 StMix(ImU32 a, ImU32 b, float t) {
-    ImVec4 ca = ImGui::ColorConvertU32ToFloat4(a);
-    ImVec4 cb = ImGui::ColorConvertU32ToFloat4(b);
-    return ImGui::ColorConvertFloat4ToU32(ImVec4(
-        ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t,
-        ca.z + (cb.z - ca.z) * t, ca.w + (cb.w - ca.w) * t));
-}
-
-// Animasi nilai per-widget (hover/toggle lerp) berbasis ID widget.
-static std::unordered_map<ImGuiID, float> g_animFloats;
-static float AnimTowards(ImGuiID key, float target, float speed) {
-    float& v = g_animFloats[key];
-    float dt = ImGui::GetIO().DeltaTime;
-    if (dt <= 0.0f || dt > 0.2f) dt = 1.0f / 60.0f;
-    float step = speed * dt;
-    if (target > v) v = (target - v < step) ? target : v + step;
-    else if (target < v) v = (v - target < step) ? target : v - step;
-    return v;
-}
-
-// Bar gradien horizontal dgn ujung membulat (cap solid + body gradien, seamless).
-static void StGradientBar(ImDrawList* dl, ImVec2 a, ImVec2 b, float rounding, ImU32 leftCol, ImU32 rightCol) {
-    float w = b.x - a.x;
-    if (w <= 1.0f) return;
-    float r = rounding;
-    if (w < r * 3.0f) {
-        dl->AddRectFilled(a, b, leftCol, r);
-        return;
-    }
-    dl->AddRectFilled(a, ImVec2(a.x + r * 2.0f, b.y), leftCol, r, ImDrawFlags_RoundCornersLeft);
-    dl->AddRectFilled(ImVec2(b.x - r * 2.0f, a.y), b, rightCol, r, ImDrawFlags_RoundCornersRight);
-    dl->AddRectFilledMultiColor(ImVec2(a.x + r, a.y), ImVec2(b.x - r, b.y), leftCol, rightCol, rightCol, leftCol);
-}
-
-// Bar gradien starlume 3-stop (cyan → pink → gold, sesuai kit) dgn ujung membulat.
-static void StGradientStarlume(ImDrawList* dl, ImVec2 a, ImVec2 b, float rounding) {
-    float w = b.x - a.x;
-    if (w <= 1.5f) return;
-    float midX = a.x + w * 0.52f;
-    dl->AddRectFilledMultiColor(a, ImVec2(midX, b.y), ST_CYAN, ST_PINK, ST_PINK, ST_CYAN);
-    dl->AddRectFilledMultiColor(ImVec2(midX, a.y), b, ST_PINK, ST_GOLD, ST_GOLD, ST_PINK);
-    float cap = (std::min)(rounding * 2.0f, w * 0.5f);
-    dl->AddRectFilled(a, ImVec2(a.x + cap, b.y), ST_CYAN, rounding, ImDrawFlags_RoundCornersLeft);
-    dl->AddRectFilled(ImVec2(b.x - cap, a.y), b, ST_GOLD, rounding, ImDrawFlags_RoundCornersRight);
-}
-
-// Glow lembut utk rounded-rect (digambar di belakang shape).
-static void DrawGlowRect(ImDrawList* dl, ImVec2 a, ImVec2 b, float rounding, ImU32 color, float strength) {
-    if (strength <= 0.01f) return;
-    for (int i = 3; i >= 1; --i) {
-        float off = (float)i * 2.2f;
-        dl->AddRectFilled(ImVec2(a.x - off, a.y - off), ImVec2(b.x + off, b.y + off),
-                          StAlpha(color, 0.06f * strength / (float)i), rounding + off);
-    }
-}
-
-// Sweep shine (Startorch Holo): band menyala melintas sekali saat hover.
-static void StDrawSweep(ImDrawList* dl, ImVec2 a, ImVec2 b, float progress, ImU32 color) {
-    float w = b.x - a.x;
-    if (w <= 2.0f || progress < 0.0f || progress > 1.0f) return;
-    float bw = w * 0.42f;
-    float bx = a.x - bw + (w + 2.0f * bw) * progress;
-    dl->PushClipRect(a, b, true);
-    ImU32 peak = StAlpha(color, 0.32f);
-    ImU32 none = StAlpha(color, 0.0f);
-    dl->AddRectFilledMultiColor(ImVec2(bx, a.y), ImVec2(bx + bw * 0.5f, b.y), none, peak, peak, none);
-    dl->AddRectFilledMultiColor(ImVec2(bx + bw * 0.5f, a.y), ImVec2(bx + bw, b.y), peak, none, none, peak);
-    dl->PopClipRect();
-}
-
-// ---- Tombol Holo (Startorch Variant 2: Secondary Holo + Sweep) ----
-static bool HoloButtonEx(const char* label, ImVec2 size, bool danger, bool compact) {
-    std::string txt(label ? label : "");
-    for (auto& c : txt) if (c >= 'a' && c <= 'z') c = (char)(c - 32); // uppercase ASCII; byte UTF-8 (ikon) aman
-
-    ImFont* font = ImGui::GetFont();
-    float fs = ImGui::GetFontSize() + (compact ? 0.0f : 0.5f);
-    ImVec2 tsz = font->CalcTextSizeA(fs, 10000.0f, 0.0f, txt.c_str());
-    float h = compact ? 27.0f : 36.0f;
-    float padX = compact ? 11.0f : 17.0f;
-    if (size.x > 0.0f) size.x = (std::max)(size.x, tsz.x + padX * 2.0f);
-    else size.x = tsz.x + padX * 2.0f;
-    if (size.y > 0.0f) h = size.y;
-
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImGuiID id = ImGui::GetID(label ? label : "");
-    ImGui::InvisibleButton(label ? label : "##btn", ImVec2(size.x, h));
-    bool hovered = ImGui::IsItemHovered();
-    bool clicked = ImGui::IsItemClicked();
-    float ht = AnimTowards(id ^ 0x4857u, hovered ? 1.0f : 0.0f, 10.0f);
-
-    float& sw = g_animFloats[id ^ 0x5357u];
-    if (!hovered) sw = -1.0f;
-    else if (sw < 0.0f) sw = 0.0f;
-    if (sw >= 0.0f && sw < 1.0f) {
-        sw += ImGui::GetIO().DeltaTime / 0.55f;
-        if (sw > 1.0f) sw = 1.0f;
-    }
-
-    float lift = ht * 2.0f;
-    ImVec2 a = ImVec2(pos.x, pos.y - lift);
-    ImVec2 b = ImVec2(pos.x + size.x, pos.y + h - lift);
-    ImU32 accent = danger ? ST_RED : ST_CYAN;
-    ImU32 fill = StAlpha(accent, (danger ? 0.15f : 0.09f) + (danger ? 0.22f : 0.10f) * ht);
-    ImU32 border = StAlpha(accent, 0.42f + 0.58f * ht);
-    ImU32 txtCol = StMix(accent, ST_WHITE, 0.35f + 0.45f * ht);
-    float round = compact ? 8.0f : 10.0f;
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (ht > 0.01f) DrawGlowRect(dl, a, b, round, accent, ht);
-    dl->AddRectFilled(a, b, fill, round);
-    if (sw >= 0.0f && sw <= 1.0f) StDrawSweep(dl, a, b, sw, accent);
-    dl->AddRect(a, b, border, round, 0, ht > 0.45f ? 1.5f : 1.1f);
-
-    ImVec2 tp = ImVec2(a.x + (size.x - tsz.x) * 0.5f, a.y + (h - tsz.y) * 0.5f);
-    dl->AddText(font, fs, tp, txtCol, txt.c_str());
-    return clicked;
-}
-
-static bool HoloButton(const char* label, ImVec2 size = ImVec2(0, 0)) { return HoloButtonEx(label, size, false, false); }
-static bool HoloDangerButton(const char* label, ImVec2 size = ImVec2(0, 0)) { return HoloButtonEx(label, size, true, false); }
-static bool HoloButtonSmall(const char* label) { return HoloButtonEx(label, ImVec2(0, 0), false, true); }
-static bool HoloDangerButtonSmall(const char* label) { return HoloButtonEx(label, ImVec2(0, 0), true, true); }
-
-// ---- Slot ikon (dock & pill): gaya segmented-pill, tanpa teks ----
-static bool HoloIconButton(const char* id, const char* icon, float w, float h, float rounding, bool danger, bool active, const char* tooltip) {
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImGuiID uid = ImGui::GetID(id);
-    ImGui::InvisibleButton(id, ImVec2(w, h));
-    bool hovered = ImGui::IsItemHovered();
-    bool clicked = ImGui::IsItemClicked();
-    float ht = AnimTowards(uid ^ 0x1C07u, hovered ? 1.0f : 0.0f, 12.0f);
-
-    ImU32 accent = danger ? ST_RED : ST_CYAN;
-    ImVec2 a = pos, b = ImVec2(pos.x + w, pos.y + h);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    if (active) {
-        DrawGlowRect(dl, a, b, rounding, accent, 0.9f);
-        dl->AddRectFilled(a, b, StAlpha(accent, 0.22f), rounding);
-        dl->AddRect(a, b, StAlpha(accent, 0.60f), rounding, 0, 1.2f);
-        StGradientBar(dl, ImVec2(a.x + w * 0.28f, b.y - 4.0f), ImVec2(b.x - w * 0.28f, b.y - 1.5f), 1.25f, StAlpha(accent, 0.55f), ST_WHITE);
-    } else if (ht > 0.01f) {
-        dl->AddRectFilled(a, b, StAlpha(accent, 0.10f * ht), rounding);
-        dl->AddRect(a, b, StAlpha(accent, 0.35f * ht), rounding, 0, 1.0f);
-    }
-
-    ImU32 fg = active ? ST_WHITE : StMix(ST_TEXT_DIM, accent, ht);
-    ImVec2 tsz = ImGui::CalcTextSize(icon);
-    dl->AddText(ImVec2(a.x + (w - tsz.x) * 0.5f, a.y + (h - tsz.y) * 0.5f), fg, icon);
-    if (hovered && tooltip) ImGui::SetTooltip("%s", tooltip);
-    return clicked;
-}
-
-// ---- Toggle switch (pengganti checkbox) ----
-static bool ToggleSwitch(const char* label, bool* v) {
-    const float w = 48.0f, h = 26.0f, gap = 10.0f;
-    bool hasLabel = (label && label[0] != '\0');
-    ImVec2 tsz = hasLabel ? ImGui::CalcTextSize(label) : ImVec2(0, 0);
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    float totalW = w + (hasLabel ? gap + tsz.x : 0.0f);
-    ImGuiID id = ImGui::GetID(hasLabel ? label : "##tgl");
-    ImGui::InvisibleButton(hasLabel ? label : "##tgl", ImVec2(totalW, h));
-    bool hovered = ImGui::IsItemHovered();
-    bool clicked = ImGui::IsItemClicked();
-    if (clicked) *v = !(*v);
-    float t = AnimTowards(id ^ 0x70B5u, *v ? 1.0f : 0.0f, 13.0f);
-    float hov = AnimTowards(id ^ 0x70B6u, hovered ? 1.0f : 0.0f, 10.0f);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 a = pos, b = ImVec2(pos.x + w, pos.y + h);
-    if (t > 0.02f) DrawGlowRect(dl, a, b, h * 0.5f, ST_CYAN, t * 0.7f);
-    dl->AddRectFilled(a, b, StMix(ST_PANEL_ELEV, StAlpha(ST_CYAN, 0.20f), t), h * 0.5f);
-    ImU32 border = StMix(StAlpha(ST_CYAN, 0.16f + 0.24f * hov), StAlpha(ST_CYAN, 0.85f), t);
-    dl->AddRect(a, b, border, h * 0.5f, 0, 1.1f);
-
-    float thumbX = a.x + 12.0f + t * (w - 24.0f);
-    float cy = a.y + h * 0.5f;
-    if (t > 0.02f) dl->AddCircleFilled(ImVec2(thumbX, cy), 11.0f, StAlpha(ST_CYAN, 0.16f * t));
-    dl->AddCircleFilled(ImVec2(thumbX, cy), 9.0f, StMix(ST_TEXT_MUTED, ST_CYAN, t));
-    dl->AddCircle(ImVec2(thumbX, cy), 9.0f, IM_COL32(9, 12, 21, 170), 0, 1.2f);
-
-    if (hasLabel) {
-        dl->AddText(ImVec2(a.x + w + gap, pos.y + (h - tsz.y) * 0.5f), ST_TEXT, label);
-    }
-    return clicked;
-}
-
-// ---- Slider Starlume (Variant 6): track gradien biru→putih, thumb diamond gold ----
-static bool StarlumeSliderEx(const char* label, float* v, float vmin, float vmax, int decimals, const char* suffix, float width) {
-    if (vmax <= vmin) return false;
-    ImGui::PushID(label);
-    float availW = ImGui::GetContentRegionAvail().x;
-    float w = (width > 0.0f) ? (std::min)(width, availW) : availW;
-    if (w < 40.0f) w = 40.0f;
-
-    char valBuf[64];
-    snprintf(valBuf, sizeof(valBuf), "%.*f%s", decimals, (double)*v, suffix ? suffix : "");
-
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddText(pos, ST_TEXT_DIM, label);
-    ImVec2 vtsz = ImGui::CalcTextSize(valBuf);
-    dl->AddText(ImVec2(pos.x + w - vtsz.x, pos.y), ST_GOLD, valBuf);
-    ImGui::Dummy(ImVec2(w, ImGui::GetFontSize() + 5.0f));
-
-    float trackH = 24.0f;
-    ImVec2 tpos = ImGui::GetCursorScreenPos();
-    ImGuiID id = ImGui::GetID("##slider");
-    ImGui::InvisibleButton("##slider", ImVec2(w, trackH));
-    bool hovered = ImGui::IsItemHovered();
-    bool active = ImGui::IsItemActive();
-    bool changed = false;
-    if (active) {
-        float nx = (ImGui::GetIO().MousePos.x - tpos.x) / w;
-        nx = (std::min)(1.0f, (std::max)(0.0f, nx));
-        float nv = vmin + nx * (vmax - vmin);
-        if (nv != *v) { *v = nv; changed = true; }
-    }
-    float frac = (*v - vmin) / (vmax - vmin);
-    frac = (std::min)(1.0f, (std::max)(0.0f, frac));
-    float ht = AnimTowards(id ^ 0x5A17u, (hovered || active) ? 1.0f : 0.0f, 12.0f);
-
-    ImVec2 a = ImVec2(tpos.x, tpos.y + (trackH - 7.0f) * 0.5f);
-    ImVec2 b = ImVec2(tpos.x + w, a.y + 7.0f);
-    dl->AddRectFilled(a, b, ST_BG_BASE, 3.5f);
-    float fx = a.x + (b.x - a.x) * frac;
-    if (fx > a.x + 1.5f) StGradientBar(dl, a, ImVec2(fx, b.y), 3.5f, ST_CYAN, ST_WHITE);
-    dl->AddRect(a, b, ST_CYAN_LINE, 3.5f, 0, 1.0f);
-
-    float cx = (std::min)(b.x - 3.0f, (std::max)(a.x + 3.0f, fx));
-    float cyy = (a.y + b.y) * 0.5f;
-    float r = 8.0f + 2.0f * ht;
-    if (ht > 0.01f) {
-        for (int i = 3; i >= 1; --i) {
-            float gr = r + (float)i * 2.0f;
-            ImVec2 gp[4] = { ImVec2(cx, cyy - gr), ImVec2(cx + gr, cyy), ImVec2(cx, cyy + gr), ImVec2(cx - gr, cyy) };
-            dl->AddConvexPolyFilled(gp, 4, StAlpha(ST_GOLD, 0.06f * ht / (float)i));
-        }
-    }
-    ImVec2 dp[4] = { ImVec2(cx, cyy - r), ImVec2(cx + r, cyy), ImVec2(cx, cyy + r), ImVec2(cx - r, cyy) };
-    dl->AddConvexPolyFilled(dp, 4, ST_GOLD);
-    dl->AddPolyline(dp, 4, ST_BG_BASE, 2.0f, ImDrawFlags_Closed);
-    ImGui::Dummy(ImVec2(w, 2.0f));
-    ImGui::PopID();
-    return changed;
-}
-
-static bool StarlumeSliderInt(const char* label, int* v, int vmin, int vmax, const char* suffix = "", float width = -1.0f) {
-    float fv = (float)*v;
-    if (StarlumeSliderEx(label, &fv, (float)vmin, (float)vmax, 0, suffix, width)) {
-        int nv = (int)std::lround(fv);
-        nv = (std::min)(vmax, (std::max)(vmin, nv));
-        if (nv != *v) { *v = nv; return true; }
-    }
-    return false;
-}
-
-static bool StarlumeSliderFloat(const char* label, float* v, float vmin, float vmax, int decimals = 1, const char* suffix = "", float width = -1.0f) {
-    return StarlumeSliderEx(label, v, vmin, vmax, decimals, suffix, width);
-}
-
-// ---- Resource usage bars (Startorch Variant 1: STARLUME HARMONY) ----
-static void StBarHeader(const char* label, const char* valText, ImU32 valCol, ImU32 labelCol) {
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    float w = ImGui::GetContentRegionAvail().x;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddText(pos, labelCol, label);
-    ImVec2 vtsz = ImGui::CalcTextSize(valText);
-    dl->AddText(ImVec2(pos.x + w - vtsz.x, pos.y), valCol, valText);
-    ImGui::Dummy(ImVec2(w, ImGui::GetFontSize() + 4.0f));
-}
-
-static void StarlumeBarInternal(const char* valText, float pct01, bool withHeader, const char* label, ImU32 valCol, ImU32 labelCol, float marker01) {
-    pct01 = (std::min)(1.0f, (std::max)(0.0f, pct01));
-    float w = ImGui::GetContentRegionAvail().x;
-    if (withHeader) StBarHeader(label, valText, valCol, labelCol);
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImVec2 a = pos, b = ImVec2(pos.x + w, pos.y + 10.0f);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, b, ST_BG_BASE, 5.0f);
-    float fx = a.x + (b.x - a.x) * pct01;
-    if (fx > a.x + 2.0f) {
-        StGradientStarlume(dl, a, ImVec2(fx, b.y), 5.0f);
-        if (fx > a.x + 8.0f) {
-            dl->PushClipRect(a, ImVec2(fx - 1.0f, b.y), true);
-            float bw = (b.x - a.x) * 0.30f;
-            float phase = fmodf((float)ImGui::GetTime() * 0.55f, 1.0f);
-            float bx = a.x - bw + ((b.x - a.x) + 2.0f * bw) * phase;
-            ImU32 peak = StAlpha(ST_WHITE, 0.30f);
-            ImU32 none = StAlpha(ST_WHITE, 0.0f);
-            dl->AddRectFilledMultiColor(ImVec2(bx, a.y), ImVec2(bx + bw * 0.5f, b.y), none, peak, peak, none);
-            dl->AddRectFilledMultiColor(ImVec2(bx + bw * 0.5f, a.y), ImVec2(bx + bw, b.y), peak, none, none, peak);
-            dl->PopClipRect();
-        }
-    }
-    dl->AddRect(a, b, StAlpha(ST_CYAN, 0.25f), 5.0f, 0, 1.0f);
-    if (marker01 >= 0.0f) {
-        float mx = a.x + (b.x - a.x) * (std::min)(1.0f, (std::max)(0.0f, marker01));
-        dl->AddLine(ImVec2(mx, a.y - 2.0f), ImVec2(mx, b.y + 2.0f), StAlpha(ST_GOLD, 0.85f), 1.6f);
-    }
-    ImGui::Dummy(ImVec2(w, 10.0f));
-}
-
-static void StarlumeBar(const char* label, float pct01, const char* valText, ImU32 valCol = ST_GOLD, ImU32 labelCol = ST_PINK_SOFT, float marker01 = -1.0f) {
-    StarlumeBarInternal(valText, pct01, true, label, valCol, labelCol, marker01);
-}
-
-// ---- Progress bar Starlume (utk progress optimisasi) ----
-static void StarlumeProgress(float pct01, float h, const char* text) {
-    pct01 = (std::min)(1.0f, (std::max)(0.0f, pct01));
-    float w = ImGui::GetContentRegionAvail().x;
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImVec2 a = pos, b = ImVec2(pos.x + w, pos.y + h);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float r = h * 0.5f;
-    dl->AddRectFilled(a, b, ST_BG_BASE, r);
-    float fx = a.x + (b.x - a.x) * pct01;
-    if (fx > a.x + 1.5f) {
-        StGradientBar(dl, a, ImVec2(fx, b.y), r, ST_CYAN, ST_WHITE);
-        dl->PushClipRect(a, ImVec2(fx, b.y), true);
-        float bw = (b.x - a.x) * 0.25f;
-        float phase = fmodf((float)ImGui::GetTime() * 0.7f, 1.0f);
-        float bx = a.x - bw + ((b.x - a.x) + 2.0f * bw) * phase;
-        ImU32 peak = StAlpha(ST_WHITE, 0.35f);
-        ImU32 none = StAlpha(ST_WHITE, 0.0f);
-        dl->AddRectFilledMultiColor(ImVec2(bx, a.y), ImVec2(bx + bw * 0.5f, b.y), none, peak, peak, none);
-        dl->AddRectFilledMultiColor(ImVec2(bx + bw * 0.5f, a.y), ImVec2(bx + bw, b.y), peak, none, none, peak);
-        dl->PopClipRect();
-    }
-    dl->AddRect(a, b, ST_CYAN_LINE, r, 0, 1.0f);
-    if (text && text[0]) {
-        ImVec2 tsz = ImGui::CalcTextSize(text);
-        dl->AddText(ImVec2(a.x + (w - tsz.x) * 0.5f, a.y + (h - tsz.y) * 0.5f), ST_TEXT, text);
-    }
-    ImGui::Dummy(ImVec2(w, h));
-}
-
-// ---- Module card (Startorch Variant 4: Chamfered Module) ----
-enum StCardState { ST_CARD_NORMAL = 0, ST_CARD_SELECTED = 1, ST_CARD_ACTIVE = 2 };
-
-static void StChamferPath(ImVec2 a, ImVec2 b, float chamfer, float inflate, ImVec2* p) {
-    p[0] = ImVec2(a.x - inflate, a.y - inflate);
-    p[1] = ImVec2(b.x - chamfer - inflate, a.y - inflate);
-    p[2] = ImVec2(b.x + inflate, a.y + chamfer + inflate);
-    p[3] = ImVec2(b.x + inflate, b.y + inflate);
-    p[4] = ImVec2(a.x + chamfer + inflate, b.y + inflate);
-    p[5] = ImVec2(a.x - inflate, b.y - chamfer - inflate);
-}
-
-static bool BeginModuleCard(const char* id, ImVec2 size, float chamfer = 18.0f, int state = ST_CARD_NORMAL, ImGuiWindowFlags flags = 0, float padX = 16.0f, float padY = 14.0f) {
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImVec2 sz = size;
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    if (sz.x <= 0.0f) sz.x = avail.x;
-    if (sz.y <= 0.0f) sz.y = avail.y;
-    ImVec2 a = pos, b = ImVec2(pos.x + sz.x, pos.y + sz.y);
-
-    ImGuiID uid = ImGui::GetID(id);
-    bool hovered = ImGui::IsMouseHoveringRect(a, b);
-    float ht = AnimTowards(uid ^ 0x0C0Du, (hovered && state == ST_CARD_NORMAL) ? 1.0f : 0.0f, 9.0f);
-
-    ImU32 accent = (state == ST_CARD_ACTIVE) ? ST_GOLD : ST_CYAN;
-    float glow = (state == ST_CARD_SELECTED) ? 0.55f : (state == ST_CARD_ACTIVE ? 0.5f : ht * 0.45f);
-    ImU32 fill = ST_GLASS;
-    if (state == ST_CARD_NORMAL && hovered) fill = ST_GLASS_HOVER;
-    else if (state == ST_CARD_SELECTED) fill = IM_COL32(24, 38, 60, 240);
-    else if (state == ST_CARD_ACTIVE) fill = IM_COL32(38, 34, 22, 240);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p[6];
-    if (glow > 0.02f) {
-        for (int i = 3; i >= 1; --i) {
-            float off = (float)i * 2.4f;
-            StChamferPath(a, b, chamfer, off, p);
-            dl->AddConvexPolyFilled(p, 6, StAlpha(accent, 0.045f * glow / (float)i));
-        }
-    }
-    StChamferPath(a, b, chamfer, 0.0f, p);
-    dl->AddConvexPolyFilled(p, 6, fill);
-    ImU32 border = (state != ST_CARD_NORMAL) ? StAlpha(accent, 0.85f) : StMix(ST_CYAN_LINE, ST_CYAN_EDGE, ht);
-    dl->AddPolyline(p, 6, border, (state == ST_CARD_NORMAL) ? 1.2f : 1.6f, ImDrawFlags_Closed);
-
-    ImGuiChildFlags cf = (padX > 0.0f || padY > 0.0f) ? ImGuiChildFlags_AlwaysUseWindowPadding : ImGuiChildFlags_None;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, padY));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
-    ImGui::BeginChild(id, sz, cf, flags);
-    return hovered;
-}
-
-static void EndModuleCard() {
-    ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(2);
-}
-
-// ---- Glass card (Startorch Variant 1: Exo-Genesis Standard Glass + L-brackets) ----
-static void StDrawLBrackets(ImDrawList* dl, ImVec2 a, ImVec2 b, float t) {
-    float L = 12.0f + 10.0f * t; // melebar saat hover (12 → 22 px)
-    ImU32 cyan = StMix(ST_CYAN, ST_WHITE, 0.35f * t);
-    ImU32 pink = StMix(ST_PINK, ST_WHITE, 0.35f * t);
-    if (t > 0.05f) {
-        ImU32 gcy = StAlpha(ST_CYAN, 0.16f * t);
-        ImU32 gpk = StAlpha(ST_PINK, 0.16f * t);
-        dl->AddLine(ImVec2(a.x + 2.0f, a.y + 2.0f + L), ImVec2(a.x + 2.0f, a.y + 2.0f), gcy, 5.0f);
-        dl->AddLine(ImVec2(a.x + 2.0f, a.y + 2.0f), ImVec2(a.x + 2.0f + L, a.y + 2.0f), gcy, 5.0f);
-        dl->AddLine(ImVec2(b.x - 2.0f, b.y - 2.0f - L), ImVec2(b.x - 2.0f, b.y - 2.0f), gpk, 5.0f);
-        dl->AddLine(ImVec2(b.x - 2.0f, b.y - 2.0f), ImVec2(b.x - 2.0f - L, b.y - 2.0f), gpk, 5.0f);
-    }
-    dl->AddLine(ImVec2(a.x + 2.0f, a.y + 2.0f + L), ImVec2(a.x + 2.0f, a.y + 2.0f), cyan, 2.0f);
-    dl->AddLine(ImVec2(a.x + 2.0f, a.y + 2.0f), ImVec2(a.x + 2.0f + L, a.y + 2.0f), cyan, 2.0f);
-    dl->AddLine(ImVec2(b.x - 2.0f, b.y - 2.0f - L), ImVec2(b.x - 2.0f, b.y - 2.0f), pink, 2.0f);
-    dl->AddLine(ImVec2(b.x - 2.0f, b.y - 2.0f), ImVec2(b.x - 2.0f - L, b.y - 2.0f), pink, 2.0f);
-}
-
-struct StGlassCardPending {
-    ImGuiID uid;
-    bool brackets;
-    bool autoY;
-    float padY;
-};
-static StGlassCardPending g_stGlassPending[8];
-static int g_stGlassPendingN = 0;
-
-// size.y <= 0 → tinggi kartu mengikuti konten (auto-fit child). Latar + border
-// digambar di EndGlassCard setelah ukuran child final, jadi auto-height akurat.
-static void BeginGlassCard(const char* id, ImVec2 size, float padX = 20.0f, float padY = 18.0f,
-                           ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse,
-                           bool brackets = false) {
-    ImVec2 sz = size;
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    if (sz.x <= 0.0f) sz.x = avail.x;
-
-    bool autoY = (sz.y <= 0.0f);
-    // CRITICAL: Dear ImGui 1.90+ defaults non-bordered child windows to WindowPadding=(0,0).
-    // ImGuiChildFlags_AlwaysUseWindowPadding is MANDATORY so that padX and padY are applied to contents!
-    ImGuiChildFlags cf = ImGuiChildFlags_AlwaysUseWindowPadding;
-    if (autoY) cf |= ImGuiChildFlags_AutoResizeY;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, padY));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
-    ImGui::BeginChild(id, ImVec2(sz.x, autoY ? 0.0f : sz.y), cf, flags);
-
-    if (g_stGlassPendingN < IM_ARRAYSIZE(g_stGlassPending)) {
-        g_stGlassPending[g_stGlassPendingN].uid = ImGui::GetID(id);
-        g_stGlassPending[g_stGlassPendingN].brackets = brackets;
-        g_stGlassPending[g_stGlassPendingN].autoY = autoY;
-        g_stGlassPending[g_stGlassPendingN].padY = padY;
-        g_stGlassPendingN++;
-    }
-}
-
-// Return: tinggi kartu aktual (utk menyusun kartu berikutnya).
-static float EndGlassCard() {
-    ImGuiID uid = 0;
-    bool brackets = false;
-    bool autoY = false;
-    float padY = 18.0f;
-    if (g_stGlassPendingN > 0) {
-        g_stGlassPendingN--;
-        uid = g_stGlassPending[g_stGlassPendingN].uid;
-        brackets = g_stGlassPending[g_stGlassPendingN].brackets;
-        autoY = g_stGlassPending[g_stGlassPendingN].autoY;
-        padY = g_stGlassPending[g_stGlassPendingN].padY;
-    }
-
-    if (autoY) {
-        // Berikan bottom padding agar konten terakhir tidak menempel ke border bawah kartu
-        ImGui::Dummy(ImVec2(0.0f, padY));
-    }
-
-    ImGui::EndChild();
-    ImVec2 a = ImGui::GetItemRectMin();
-    ImVec2 b = ImGui::GetItemRectMax();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(2);
-
-    bool hovered = ImGui::IsMouseHoveringRect(a, b);
-    float ht = AnimTowards(uid ^ 0x61A5u, hovered ? 1.0f : 0.0f, 8.0f);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, b, hovered ? ST_GLASS_HOVER : ST_GLASS, 12.0f);
-    dl->AddRect(a, b, StMix(ST_CYAN_LINE, ST_CYAN_EDGE, ht), 12.0f, 0, 1.0f);
-    if (brackets) StDrawLBrackets(dl, a, b, ht);
-    return b.y - a.y;
-}
-
-// Header kartu: teks judul bersih tanpa background pill dan tanpa kode/tag kanan
-static void GlassCardHeader(const char* titleText) {
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    float w = ImGui::GetContentRegionAvail().x;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImFont* headerFont = g_fontSemibold ? g_fontSemibold : ImGui::GetFont();
-    float fsize = ImGui::GetFontSize();
-
-    // Judul kartu: bersih, elegan tanpa background capsule/card
-    dl->AddText(headerFont, fsize, pos, ST_WHITE, titleText);
-    ImGui::Dummy(ImVec2(w, fsize + 12.0f));
-}
-
-static void TextDim(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(ST_TEXT_MUTED));
-    ImGui::TextV(fmt, args);
-    ImGui::PopStyleColor();
-    va_end(args);
-}
-
-static std::string StEllipsize(const std::string& s, size_t maxChars) {
-    if (s.size() <= maxChars || maxChars < 4) return s;
-    return s.substr(0, maxChars - 3) + "...";
-}
-
-// ---- Telemetry metric tile (Startorch Variant 3: Telemetry Metric) ----
-static void TelemetryTile(const char* id, const char* label, float pct01, const char* valueText, const char* unitText,
-                          const char* statusText, ImU32 statusCol, const float* hist5, const char* subText, ImVec2 size) {
-    (void)statusText; (void)statusCol; // Dihapus sesuai permintaan user ("hapus ini" pada status pill)
-    pct01 = (std::min)(1.0f, (std::max)(0.0f, pct01));
-    BeginGlassCard(id, size, 22.0f, 20.0f, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, false);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float w = ImGui::GetContentRegionAvail().x;
-
-    // Baris 1: label bersih (tanpa pill badge)
-    {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        dl->AddText(pos, ST_TEXT_DIM, label);
-        ImGui::Dummy(ImVec2(w, ImGui::GetFontSize() + 6.0f));
-    }
-
-    // Baris 2: nilai besar + unit + mini sparkbar (riwayat 5 sampel)
-    {
-        ImVec2 vpos = ImGui::GetCursorScreenPos();
-        ImFont* bigFont = g_fontSemibold ? g_fontSemibold : ImGui::GetFont();
-        float bigSize = ImGui::GetFontSize() * 1.8f;
-        dl->AddText(bigFont, bigSize, vpos, ST_WHITE, valueText);
-        ImVec2 vsz = bigFont->CalcTextSizeA(bigSize, 10000.0f, 0.0f, valueText);
-        if (unitText && unitText[0]) {
-            float uSize = ImGui::GetFontSize() * 0.95f;
-            ImVec2 usz = bigFont->CalcTextSizeA(uSize, 10000.0f, 0.0f, unitText);
-            dl->AddText(bigFont, uSize, ImVec2(vpos.x + vsz.x + 4.0f, vpos.y + vsz.y - usz.y - 2.0f), ST_CYAN, unitText);
-        }
-
-        const float barW = 6.0f, barGap = 4.0f;
-        float areaH = (std::max)(22.0f, vsz.y);
-        float ox = vpos.x + w - (barW * 5.0f + barGap * 4.0f);
-        for (int i = 0; i < 5; ++i) {
-            float v01 = (std::min)(1.0f, (std::max)(0.0f, hist5 ? hist5[i] * 0.01f : 0.0f));
-            float hh = 7.0f + v01 * (areaH - 8.0f);
-            ImVec2 ba = ImVec2(ox + (float)i * (barW + barGap), vpos.y + areaH - hh);
-            ImVec2 bb = ImVec2(ba.x + barW, vpos.y + areaH);
-            ImU32 col = (i >= 3) ? ((i == 4) ? ST_PINK : StAlpha(ST_PINK, 0.80f))
-                                 : StAlpha(ST_CYAN, (i == 1) ? 0.60f : 0.42f);
-            if (i == 4) dl->AddRectFilled(ImVec2(ba.x - 2.5f, ba.y - 2.5f), ImVec2(bb.x + 2.5f, bb.y + 2.5f), StAlpha(ST_PINK, 0.20f), 4.0f);
-            dl->AddRectFilled(ba, bb, col, 2.5f);
-        }
-        ImGui::Dummy(ImVec2(w, areaH + 8.0f));
-    }
-
-    // Baris 3: sub-info + bar starlume mini
-    if (subText && subText[0]) {
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ST_TEXT_MUTED), "%s", subText);
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    }
-    {
-        ImVec2 a = ImGui::GetCursorScreenPos();
-        ImVec2 b = ImVec2(a.x + w, a.y + 6.0f);
-        dl->AddRectFilled(a, b, IM_COL32(17, 22, 34, 255), 3.0f);
-        float fx = a.x + (b.x - a.x) * pct01;
-        if (fx > a.x + 2.0f) {
-            StGradientStarlume(dl, a, ImVec2(fx, b.y), 3.0f);
-            if (fx > a.x + 8.0f) {
-                dl->PushClipRect(a, ImVec2(fx - 1.0f, b.y), true);
-                float bw = (b.x - a.x) * 0.35f;
-                float phase = fmodf((float)ImGui::GetTime() * 0.7f, 1.0f);
-                float bx = a.x - bw + ((b.x - a.x) + 2.0f * bw) * phase;
-                ImU32 peak = StAlpha(ST_WHITE, 0.28f);
-                ImU32 none = StAlpha(ST_WHITE, 0.0f);
-                dl->AddRectFilledMultiColor(ImVec2(bx, a.y), ImVec2(bx + bw * 0.5f, b.y), none, peak, peak, none);
-                dl->AddRectFilledMultiColor(ImVec2(bx + bw * 0.5f, a.y), ImVec2(bx + bw, b.y), peak, none, none, peak);
-                dl->PopClipRect();
-            }
-        }
-        dl->AddRect(a, b, StAlpha(ST_CYAN, 0.20f), 3.0f, 0, 1.0f);
-        ImGui::Dummy(ImVec2(w, 8.0f));
-    }
-    EndGlassCard();
-}
-
-static void RenderFloatingDock() {
-    const float btnW = 44.0f;
-    const float btnH = 34.0f;
-    const float btnGap = 6.0f;
-    const float padX = 6.0f;
-    const float padY = 5.0f;
-    const float dockW = padX * 2.0f + 4.0f * btnW + 3.0f * btnGap; // 206.0f
-    const float dockH = padY * 2.0f + btnH;                          // 44.0f
-    const float dockRounding = dockH * 0.5f;                         // 22.0f
-    const float pillRounding = 12.0f;
-
-    // Overlay absolut di atas konten + bayangan lembut melayang
-    ImVec2 winPos = ImGui::GetWindowPos();
-    ImVec2 winSize = ImGui::GetWindowSize();
-    ImVec2 dockPos = ImVec2(winPos.x + (winSize.x - dockW) * 0.5f, winPos.y + winSize.y - dockH - 12.0f);
-    DrawFloatingShadow(dockPos, ImVec2(dockPos.x + dockW, dockPos.y + dockH), 22.0f);
-    ImGui::SetCursorScreenPos(dockPos);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, dockRounding);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, padY));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.065f, 0.090f, 0.155f, 0.65f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.220f, 0.910f, 1.000f, 0.35f));
-    ImGui::BeginChild("FloatingDock", ImVec2(dockW, dockH), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    {
-        static const char* icons[4] = { ICON_FA_IMAGES, ICON_FA_LOCK, ICON_FA_SLIDERS, ICON_FA_GAUGE_HIGH };
-        static const char* tips[4] = { "Wallpaper Gallery", "Lock Screen & Static", "General Settings", "Performance & Advanced" };
-        ImVec2 dockOrigin = ImGui::GetCursorScreenPos();
-
-        // Animasi perpindahan halaman yang sangat halus (smooth sliding pill)
-        static float s_dockAnimPage = -1.0f;
-        if (s_dockAnimPage < 0.0f) {
-            s_dockAnimPage = static_cast<float>(g_activePage);
-        } else {
-            float dt = ImGui::GetIO().DeltaTime;
-            if (dt > 0.05f) dt = 0.05f;
-            float target = static_cast<float>(g_activePage);
-            s_dockAnimPage += (target - s_dockAnimPage) * (1.0f - expf(-18.0f * dt));
-            if (fabsf(s_dockAnimPage - target) < 0.001f) {
-                s_dockAnimPage = target;
-            }
-        }
-
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-
-        // 1. Sliding Glowing Active Capsule (fit mepet, tanpa garis bawah)
-        float curPillX = dockOrigin.x + s_dockAnimPage * (btnW + btnGap);
-        float curPillY = dockOrigin.y;
-        ImVec2 a = ImVec2(curPillX, curPillY);
-        ImVec2 b = ImVec2(curPillX + btnW, curPillY + btnH);
-
-        DrawGlowRect(dl, a, b, pillRounding, ST_CYAN, 0.70f);
-        dl->AddRectFilled(a, b, StAlpha(ST_CYAN, 0.22f), pillRounding);
-        dl->AddRect(a, b, StAlpha(ST_CYAN, 0.65f), pillRounding, 0, 1.2f);
-        // Note: Garis bawah (StGradientBar) sudah dimatikan sesuai permintaan user
-
-        // 2. Interactive buttons & icon cross-fading
-        for (int i = 0; i < 4; ++i) {
-            ImVec2 bp0 = ImVec2(dockOrigin.x + i * (btnW + btnGap), dockOrigin.y);
-            ImGui::SetCursorScreenPos(bp0);
-            char btnId[32]; snprintf(btnId, sizeof(btnId), "##dock%d", i);
-
-            ImGui::InvisibleButton(btnId, ImVec2(btnW, btnH));
-            bool hov = ImGui::IsItemHovered();
-            bool clk = ImGui::IsItemClicked();
-
-            float dist = (std::min)(1.0f, fabsf(s_dockAnimPage - static_cast<float>(i)));
-            ImU32 iconCol = StMix(ST_WHITE, (hov ? ST_CYAN : ST_TEXT_DIM), dist);
-
-            if (hov && dist > 0.45f) {
-                dl->AddRectFilled(bp0, ImVec2(bp0.x + btnW, bp0.y + btnH), StAlpha(ST_CYAN, 0.08f), pillRounding);
-            }
-
-            ImVec2 isz = ImGui::CalcTextSize(icons[i]);
-            dl->AddText(ImVec2(bp0.x + (btnW - isz.x) * 0.5f, bp0.y + (btnH - isz.y) * 0.5f), iconCol, icons[i]);
-            if (hov && tips[i]) ImGui::SetTooltip("%s", tips[i]);
-
-            if (clk) {
-                g_activePage = i;
-            }
-        }
-    }
-    ImGui::EndChild();
-    // Glass edge highlight di bibir atas dock
-    {
-        ImDrawList* gdl = ImGui::GetWindowDrawList();
-        ImVec2 dMin = ImGui::GetItemRectMin(), dMax = ImGui::GetItemRectMax();
-        gdl->AddLine(ImVec2(dMin.x + 20.0f, dMin.y + 1.5f), ImVec2(dMax.x - 20.0f, dMin.y + 1.5f), IM_COL32(255, 255, 255, 45), 1.0f);
-    }
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
-}
-
-static void RenderOriginalTooltip(const VideoProbeResult& probe, const char* size_str, const std::string& /*path*/) {
-    if (ImGui::IsItemHovered()) {
-        ImGui::BeginTooltip();
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::TextColored(ImVec4(0.94f, 0.95f, 0.97f, 1.0f), ICON_FA_CIRCLE_INFO "  Original Video Details");
-        if (g_fontSemibold) ImGui::PopFont();
-        ImGui::Separator();
-        if (probe.valid) {
-            const char* resCategory = (probe.width >= 3840) ? "4K Ultra HD" :
-                                      (probe.width >= 2560) ? "1440p Quad HD" :
-                                      (probe.width >= 1920) ? "1080p Full HD" : "Standard HD";
-            ImGui::Text("Resolution : %d x %d (%s)", probe.width, probe.height, resCategory);
-            ImGui::Text("Frame Rate : %.1f FPS", probe.fps);
-            ImGui::Text("Codec      : %s", probe.codec_name.empty() ? "H.264 / AVC" : probe.codec_name.c_str());
-            if (probe.duration > 0.0) {
-                int totalSec = static_cast<int>(probe.duration);
-                int mm = totalSec / 60;
-                int ss = totalSec % 60;
-                ImGui::Text("Duration   : %02d:%02d", mm, ss);
-            }
-        } else {
-            ImGui::Text("Resolution : Probing on playback...");
-        }
-        if (size_str && size_str[0] != '\0') {
-            ImGui::Text("File Size  : %s", size_str);
-        }
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.65f, 0.70f, 0.80f, 1.00f), "Direct playback of original source with hardware acceleration.");
-        ImGui::EndTooltip();
-    }
-}
-
-static void RenderGalleryDetailPanel(const std::string& path, const std::string& filename, const VideoProbeResult& probe, const char* size_str, int target_w, int target_h, const std::string& opt_path, bool has_opt, bool is_already_optimal, bool is_playing_opt, bool is_playing_ori, bool is_current, float detailH) {
-    auto& cfg = g_config.Get();
-    BeginModuleCard("GalleryDetail", ImVec2(312, detailH), 18.0f, ST_CARD_NORMAL, ImGuiWindowFlags_AlwaysVerticalScrollbar);
-    {
-        // Header row: title + close
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::TextColored(ImVec4(0.945f, 0.961f, 0.976f, 1.0f), ICON_FA_CIRCLE_INFO "  Detail Video");
-        if (g_fontSemibold) ImGui::PopFont();
-        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 38.0f);
-        if (HoloButtonSmall(ICON_FA_XMARK)) { g_detailVisible = false; }
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        // Large preview 16:9
-        float pvW = ImGui::GetContentRegionAvail().x;
-        float pvH = pvW * 9.0f / 16.0f;
-        ImVec2 pp0 = ImGui::GetCursorScreenPos();
-        ImVec2 pp1 = ImVec2(pp0.x + pvW, pp0.y + pvH);
-        ImDrawList* pdl = ImGui::GetWindowDrawList();
-        ID3D11ShaderResourceView* big_srv = ThumbnailManager::Instance().GetThumbnailSRV(g_pd3dDevice, path);
-        if (big_srv) {
-            pdl->AddImageRounded((ImTextureID)big_srv, pp0, pp1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 12.0f);
-        } else {
-            pdl->AddRectFilled(pp0, pp1, IM_COL32(20, 22, 28, 255), 12.0f);
-            pdl->AddRect(pp0, pp1, IM_COL32(45, 50, 62, 255), 12.0f);
-            const char* lt = "Loading preview...";
-            ImVec2 lts = ImGui::CalcTextSize(lt);
-            pdl->AddText(ImVec2(pp0.x + (pvW - lts.x) * 0.5f, pp0.y + (pvH - lts.y) * 0.5f), IM_COL32(140, 145, 160, 255), lt);
-        }
-        pdl->AddRect(pp0, pp1, IM_COL32(56, 232, 255, 46), 12.0f);
-        if (is_current) {
-            // Active glow border (gold = sedang dipakai)
-            pdl->AddRect(pp0, pp1, IM_COL32(255, 209, 102, 220), 12.0f, 0, 2.0f);
-        }
-        ImGui::Dummy(ImVec2(pvW, pvH + 4.0f));
-
-        // Badge
-        std::string badgeText; ImU32 bBg, bFg;
-        if (is_current) {
-            if (is_playing_opt) { badgeText = ICON_FA_BOLT "  ACTIVE (OPTIMIZED)"; bBg = IM_COL32(255, 209, 102, 38); bFg = IM_COL32(255, 209, 102, 255); }
-            else { badgeText = ICON_FA_CIRCLE_PLAY "  ACTIVE (ORIGINAL)"; bBg = IM_COL32(56, 232, 255, 34); bFg = IM_COL32(56, 232, 255, 255); }
-        } else if (has_opt) { badgeText = ICON_FA_CHECK "  Optimized Ready"; bBg = IM_COL32(56, 232, 255, 26); bFg = IM_COL32(140, 220, 245, 255); }
-        else if (is_already_optimal) { badgeText = "1080p Optimal"; bBg = IM_COL32(255, 209, 102, 26); bFg = IM_COL32(255, 209, 102, 235); }
-        else { badgeText = ICON_FA_FILM "  Video File"; bBg = IM_COL32(255, 255, 255, 16); bFg = IM_COL32(148, 163, 184, 255); }
-        ImVec2 btsz = ImGui::CalcTextSize(badgeText.c_str());
-        ImVec2 bcur = ImGui::GetCursorScreenPos();
-        pdl->AddRectFilled(bcur, ImVec2(bcur.x + btsz.x + 18.0f, bcur.y + btsz.y + 8.0f), bBg, 8.0f);
-        pdl->AddText(ImVec2(bcur.x + 9.0f, bcur.y + 4.0f), bFg, badgeText.c_str());
-        ImGui::Dummy(ImVec2(btsz.x + 18.0f, btsz.y + 10.0f));
-
-        // Filename (wrapped, 2 lines max feel)
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-        ImGui::TextUnformatted(filename.c_str());
-        ImGui::PopTextWrapPos();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nPath: %s", filename.c_str(), path.c_str());
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-        ImGui::TextColored(ImVec4(0.50f, 0.55f, 0.64f, 1.0f), "%s", path.c_str());
-        ImGui::PopTextWrapPos();
-        ImGui::Spacing();
-
-        // Metadata box
-        int metaLines = probe.valid ? 3 : 1;
-        if (size_str && size_str[0] != '\0') metaLines++;
-        float metaH = metaLines * ImGui::GetTextLineHeightWithSpacing() + 12.0f * 2.0f;
-        BeginModuleCard("DetailMeta", ImVec2(0, metaH), 10.0f, ST_CARD_NORMAL, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, 12.0f, 12.0f);
-        if (probe.valid) {
-            ImGui::Text("Resolusi  : %d x %d", probe.width, probe.height);
-            ImGui::Text("Framerate : %.0f FPS", probe.fps);
-            ImGui::Text("Codec     : %s", probe.codec_name.empty() ? "H.264 / AVC" : probe.codec_name.c_str());
-            if (size_str && size_str[0]) ImGui::Text("Ukuran    : %s", size_str);
-        } else {
-            ImGui::TextColored(ImVec4(0.58f, 0.64f, 0.72f, 1.0f), "Probing video info...");
-            if (size_str && size_str[0]) ImGui::Text("Ukuran : %s", size_str);
-        }
-        EndModuleCard();
-        ImGui::Spacing();
-
-        float fullW = ImGui::GetContentRegionAvail().x;
-        if (is_current) {
-            if (HoloDangerButton(ICON_FA_STOP "  Stop Wallpaper", ImVec2(fullW, 0))) ApplyAction("", "stop");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop video wallpaper and return to Windows static desktop");
-            ImGui::Spacing();
-            if (is_playing_opt) {
-                if (HoloButton(ICON_FA_PLAY "  Play Original", ImVec2(fullW, 0))) ApplyAction(path, "wallpaper");
-                RenderOriginalTooltip(probe, size_str, path);
-            } else {
-                if (has_opt) {
-                    if (HoloButton(ICON_FA_BOLT "  Switch to Optimized", ImVec2(fullW, 0))) ApplyAction(opt_path, "wallpaper");
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switch to pre-rendered optimized version to save ~70% GPU");
-                } else if (!is_already_optimal) {
-                    if (HoloButton(ICON_FA_DOWNLOAD "  Optimize Video", ImVec2(fullW, 0))) StartVideoOptimization(path, target_w, target_h, "wallpaper", cfg.optimizer_crop_mode);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pre-render hardware-optimized 1080p copy (Low GPU load)");
-                }
-            }
-        } else {
-            if (has_opt) {
-                if (HoloButton(ICON_FA_BOLT "  Play Optimized", ImVec2(fullW, 0))) ApplyAction(opt_path, "wallpaper");
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play pre-rendered optimized version (Low GPU usage)");
-                if (HoloButton(ICON_FA_PLAY "  Play Original", ImVec2(fullW, 0))) ApplyAction(path, "wallpaper");
-                RenderOriginalTooltip(probe, size_str, path);
-            } else if (is_already_optimal) {
-                if (HoloButton(ICON_FA_PLAY "  Play Wallpaper", ImVec2(fullW, 0))) RequestApplyVideo(path, "wallpaper");
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play 1080p native video directly");
-            } else {
-                if (HoloButton(ICON_FA_PLAY "  Play Original", ImVec2(fullW, 0))) RequestApplyVideo(path, "wallpaper");
-                RenderOriginalTooltip(probe, size_str, path);
-                if (HoloButton(ICON_FA_DOWNLOAD "  Optimize Video", ImVec2(fullW, 0))) StartVideoOptimization(path, target_w, target_h, "wallpaper", cfg.optimizer_crop_mode);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pre-render hardware-optimized 1080p copy (Low GPU load)");
-            }
-        }
-        ImGui::Spacing();
-        if (HoloButton(ICON_FA_CAMERA "  Capture Frame", ImVec2(fullW, 0))) OpenCaptureModal(path);
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-            ImGui::TextColored(ImVec4(0.94f, 0.95f, 0.97f, 1.0f), ICON_FA_CAMERA "  Capture Frame (Visual Wallpaper)");
-            if (g_fontSemibold) ImGui::PopFont();
-            ImGui::Separator();
-            ImGui::Text("Ambil gambar frame statis dari video ini untuk:");
-            ImGui::BulletText("Desktop Wallpaper (0s instant boot visual)");
-            ImGui::BulletText("Windows Lock Screen (Win+L seamless transition)");
-            ImGui::EndTooltip();
-        }
-        if (HoloDangerButton(ICON_FA_TRASH_CAN "  Remove from Gallery", ImVec2(fullW, 0))) {
-            bool wasCur = is_current;
-            if (wasCur) ApplyAction("", "stop");
-            ThumbnailManager::DeleteThumbnailCache(path);
-            VideoOptimizer::DeleteOptimizedCache(path);
-            cfg.RemoveFromGallery(path);
-            g_config.Save();
-            g_detailVisible = false;
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove video from gallery");
-        ImGui::Dummy(ImVec2(1.0f, 56.0f));
-    }
-    EndModuleCard();
-}
-
-// Pill aksi (tambah/refresh/hapus) melayang DI ATAS cards gallery — digambar terakhir biar paling atas.
-static void RenderSidePillOverlay(ImVec2 rowTop, float rowH) {
-    auto& cfg = g_config.Get();
-    const float sideBtn = 40.0f;
-    const float sideGap = 8.0f;
-    const float sidePillH = sideBtn * 3.0f + sideGap * 2.0f + 16.0f;
-    float sidePillY = (rowH - sidePillH) * 0.5f;
-    if (sidePillY < 4.0f) sidePillY = 4.0f;
-    ImVec2 pillPos = ImVec2(rowTop.x + 12.0f, rowTop.y + sidePillY);
-    DrawFloatingShadow(pillPos, ImVec2(pillPos.x + 48.0f, pillPos.y + sidePillH), 24.0f);
-    ImGui::SetCursorScreenPos(pillPos);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 24.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 8.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f, 0.110f, 0.180f, 0.62f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.220f, 0.910f, 1.000f, 0.35f));
-    ImGui::BeginChild("SideMenuPill", ImVec2(48, sidePillH), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    {
-        ImGui::PushID("SideMenu");
-        ImGui::SetWindowFontScale(1.30f);
-        if (HoloIconButton("##pill_add", ICON_FA_PLUS, sideBtn, sideBtn, 13.0f, false, false, "Tambah video")) {
-            wchar_t filename[MAX_PATH] = L"";
-            OPENFILENAMEW ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = g_hWnd;
-            ofn.lpstrFilter = L"Video Files (*.mp4;*.webm;*.mkv;*.avi;*.mov)\0*.mp4;*.webm;*.mkv;*.avi;*.mov\0All Files (*.*)\0*.*\0";
-            ofn.lpstrFile = filename;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
-            if (GetOpenFileNameW(&ofn)) {
-                int size_needed = WideCharToMultiByte(CP_UTF8, 0, filename, -1, NULL, 0, NULL, NULL);
-                std::string utf8_path(size_needed - 1, 0);
-                WideCharToMultiByte(CP_UTF8, 0, filename, -1, &utf8_path[0], size_needed, NULL, NULL);
-                RequestApplyVideo(utf8_path, "wallpaper");
-            }
-        }
-        if (HoloIconButton("##pill_refresh", ICON_FA_ROTATE, sideBtn, sideBtn, 13.0f, false, false, "Refresh galeri")) {
-            g_config.Load();
-        }
-        if (HoloIconButton("##pill_clear", ICON_FA_TRASH_CAN, sideBtn, sideBtn, 13.0f, true, false, "Hapus semua video")) {
-            for (const auto& pp2 : cfg.gallery_history) {
-                ThumbnailManager::DeleteThumbnailCache(pp2);
-                VideoOptimizer::DeleteOptimizedCache(pp2);
-            }
-            cfg.gallery_history.clear();
-            g_config.Save();
-        }
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopID();
-    }
-    ImGui::EndChild();
-    // Glass edge highlight di bibir atas pill
-    {
-        ImDrawList* pdl = ImGui::GetWindowDrawList();
-        ImVec2 pmn = ImGui::GetItemRectMin(), pmx = ImGui::GetItemRectMax();
-        pdl->AddLine(ImVec2(pmn.x + 14.0f, pmn.y + 1.5f), ImVec2(pmx.x - 14.0f, pmn.y + 1.5f), IM_COL32(56, 232, 255, 65), 1.0f);
-    }
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
-}
-
-static void RenderGalleryTab() {
-    auto& cfg = g_config.Get();
-    auto galleryCopy = cfg.gallery_history;
-
-    int screen_w = GetSystemMetrics(SM_CXSCREEN);
-    int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    if (screen_w <= 0) screen_w = 1920;
-    if (screen_h <= 0) screen_h = 1080;
-
-    // Galeri tanpa header (judul & status ada di title bar; hint drop muncul sbg overlay saat drag file).
-
-    // Toolbar tambah/refresh/hapus ada di pill vertikal mengambang sisi kiri.
-
-    const float marginX = 22.0f;       // Spasi dari tepi kiri dan kanan window
-    const float marginTop = 18.0f;     // Spasi dari tepi bawah custom titlebar
-    const float marginBottom = 20.0f;  // Spasi dari tepi bawah window
-
-    ImVec2 winOrigin = ImGui::GetWindowPos();
-    ImVec2 basePos = winOrigin;
-    ImVec2 winSize = ImGui::GetWindowSize();
-    float usableW = winSize.x - marginX * 2.0f;
-    if (usableW < 200.0f) usableW = 200.0f;
-
-    ImVec2 gridRowTop = ImVec2(winOrigin.x + marginX, winOrigin.y + marginTop);
-
-    // Multi-Monitor Target Checkboxes in Gallery
-    if (!g_hardwareInfoInit) {
-        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
-        g_hardwareInfoInit = true;
-    }
-
-    if (g_hardwareInfo.displays.size() > 1) {
-        ImGui::SetCursorScreenPos(gridRowTop);
-        BeginModuleCard("MultiMonitorBanner", ImVec2(usableW, 54.0f), 14.0f, ST_CARD_NORMAL, ImGuiWindowFlags_NoScrollbar, 16.0f, 12.0f);
-
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ImVec4(0.945f, 0.961f, 0.976f, 1.0f), ICON_FA_TV " Target Desktops:");
-        if (g_fontSemibold) ImGui::PopFont();
-        ImGui::SameLine(0, 16.0f);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
-
-        bool all_checked = cfg.target_displays.empty() || (cfg.target_displays.size() == g_hardwareInfo.displays.size());
-        if (ToggleSwitch("All Monitors", &all_checked)) {
-            if (all_checked) {
-                cfg.target_displays.clear();
-            } else {
-                cfg.target_displays = { 0 };
-            }
-            g_config.Save();
-            nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
-            SendIpcAsync(req.dump());
-        }
-
-        for (size_t d = 0; d < g_hardwareInfo.displays.size(); ++d) {
-            ImGui::SameLine(0, 16.0f);
-            bool is_d_checked = cfg.IsDisplayEnabled(static_cast<int>(d));
-            std::string disp_label = "Display " + std::to_string(d + 1) + (g_hardwareInfo.displays[d].is_primary ? " (Primary)" : "");
-            if (ToggleSwitch(disp_label.c_str(), &is_d_checked)) {
-                cfg.SetDisplayEnabled(static_cast<int>(d), is_d_checked);
-                g_config.Save();
-                nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
-                SendIpcAsync(req.dump());
-            }
-        }
-
-        EndModuleCard();
-        gridRowTop.y += 54.0f + 12.0f;
-    }
-
-    bool isGalleryEmpty = galleryCopy.empty();
-
-    // Clamp selection
-    if (!isGalleryEmpty && (g_selectedGalleryIdx < 0 || g_selectedGalleryIdx >= (int)galleryCopy.size())) {
-        // Auto-select currently playing video if any
-        g_selectedGalleryIdx = -1;
-        for (size_t k = 0; k < galleryCopy.size(); ++k) {
-            const std::string& pp = galleryCopy[k];
-            if (!g_daemonCurrentVideo.empty() && (g_daemonCurrentVideo == pp)) { g_selectedGalleryIdx = (int)k; break; }
-        }
-        if (g_selectedGalleryIdx < 0 && !cfg.wallpapers.empty()) {
-            for (size_t k = 0; k < galleryCopy.size(); ++k) {
-                if (cfg.wallpapers[0].video_path == galleryCopy[k]) { g_selectedGalleryIdx = (int)k; break; }
-            }
-        }
-    }
-    bool showDetail = !isGalleryEmpty && g_detailVisible && g_selectedGalleryIdx >= 0 && g_selectedGalleryIdx < (int)galleryCopy.size();
-
-    float gridH = (winOrigin.y + winSize.y) - gridRowTop.y - marginBottom;
-    if (gridH < 160.0f) gridH = 160.0f;
-
-    float gridAvailW = usableW - (showDetail ? (312.0f + 12.0f) : 0.0f);
-    if (gridAvailW < 200.0f) gridAvailW = 200.0f;
-
-    if (isGalleryEmpty) {
-        ImGui::SetCursorScreenPos(gridRowTop);
-        BeginModuleCard("GalleryEmpty", ImVec2(gridAvailW, gridH), 18.0f);
-        ImVec2 ec = ImGui::GetCursorScreenPos();
-        ImVec2 esz = ImGui::GetContentRegionAvail();
-        const char* et = "Belum ada video - klik + atau drag & drop ke sini";
-        ImVec2 ets = ImGui::CalcTextSize(et);
-        ImGui::SetCursorScreenPos(ImVec2(ec.x + (esz.x - ets.x) * 0.5f, ec.y + (esz.y - ets.y) * 0.5f));
-        ImGui::TextColored(ImVec4(0.580f, 0.639f, 0.722f, 1.0f), "%s", et);
-        EndModuleCard();
-        RenderSidePillOverlay(ImVec2(basePos.x, gridRowTop.y), gridH);
-        return;
-    }
-
-    ImGui::SetCursorScreenPos(gridRowTop);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::BeginChild("GalleryGrid", ImVec2(gridAvailW, gridH), false, ImGuiWindowFlags_NoScrollbar);
-
-    float availW = ImGui::GetContentRegionAvail().x;
-    float cardMinW = 230.0f;
-    float spacingX = 14.0f;
-    float spacingY = 14.0f;
-    int numCols = (int)((availW + spacingX) / (cardMinW + spacingX));
-    if (numCols < 1) numCols = 1;
-    if (numCols > 4) numCols = 4;
-    float cardWidth = (availW - spacingX * (numCols - 1)) / numCols;
-    if (cardWidth < 180.0f) cardWidth = availW;
-    float thumbH = cardWidth * 9.0f / 16.0f;
-    float footerH = 62.0f;
-    float cardHeight = thumbH + footerH + 20.0f;
-
-    for (size_t i = 0; i < galleryCopy.size(); ++i) {
-        const auto& path = galleryCopy[i];
-
-        // Culling: cards outside the visible scroll window only advance the
-        // layout — no ffprobe, no filesystem stats, no thumbnail uploads.
-        {
-            const float cull_scroll_y = ImGui::GetScrollY();
-            const float cull_view_h = ImGui::GetWindowHeight();
-            const float cull_card_y = ImGui::GetCursorPosY();
-            const float cull_pad = 80.0f;
-            if (cull_card_y + cardHeight < cull_scroll_y - cull_pad ||
-                cull_card_y > cull_scroll_y + cull_view_h + cull_pad) {
-                ImGui::Dummy(ImVec2(cardWidth, cardHeight));
-                bool cull_last_in_row = ((i + 1) % numCols == 0) || (i + 1 >= galleryCopy.size());
-                if (!cull_last_in_row) ImGui::SameLine(0, spacingX);
-                else ImGui::Dummy(ImVec2(1.0f, spacingY));
-                continue;
-            }
-        }
-
-        fs::path p(path);
-        std::string filename = p.filename().string();
-        if (filename.empty()) filename = path;
-
-        int target_w = screen_w;
-        int target_h = screen_h;
-        auto probe = VideoOptimizer::Probe(path);
-        if (probe.valid) {
-            auto [pw, ph] = VideoOptimizer::CalculateTargetDimensions(probe.width, probe.height, screen_w, screen_h, cfg.optimizer_crop_mode);
-            target_w = pw;
-            target_h = ph;
-        }
-
-        std::string opt_path = VideoOptimizer::GetOptimizedPath(path, target_w, target_h);
-        bool has_opt = VideoOptimizer::HasOptimizedCache(path, target_w, target_h);
-        bool is_already_optimal = (probe.valid && probe.width <= screen_w && probe.height <= screen_h && probe.fps <= 60.5);
-
-        bool is_playing_opt = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == opt_path);
-        bool is_playing_ori = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == path);
-        bool is_current = is_playing_opt || is_playing_ori ||
-                          (!cfg.wallpapers.empty() && (cfg.wallpapers[0].video_path == path || cfg.wallpapers[0].video_path == opt_path));
-
-        // Format file size and metadata summary line
-        char size_str[32] = {};
-        std::error_code fsec;
-        if (fs::exists(path, fsec)) {
-            uintmax_t bytes = fs::file_size(path, fsec);
-            if (bytes >= 1024 * 1024 * 1024) {
-                snprintf(size_str, sizeof(size_str), "%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0));
-            } else if (bytes >= 1024 * 1024) {
-                snprintf(size_str, sizeof(size_str), "%.1f MB", bytes / (1024.0 * 1024.0));
-            } else if (bytes > 0) {
-                snprintf(size_str, sizeof(size_str), "%.0f KB", bytes / 1024.0);
-            }
-        }
-
-        std::string meta_line;
-        if (probe.valid) {
-            char meta_buf[128];
-            snprintf(meta_buf, sizeof(meta_buf), "%dx%d • %.0f FPS • %s",
-                     probe.width, probe.height, probe.fps,
-                     probe.codec_name.empty() ? "video" : probe.codec_name.c_str());
-            meta_line = meta_buf;
-            if (size_str[0] != '\0') {
-                meta_line += " • ";
-                meta_line += size_str;
-            }
-        }
-
-        ImGui::PushID(static_cast<int>(i));
-        bool is_selected = (g_selectedGalleryIdx == (int)i);
-        int cardState = is_current ? ST_CARD_ACTIVE : ((is_selected && showDetail) ? ST_CARD_SELECTED : ST_CARD_NORMAL);
-
-        BeginModuleCard("VCard", ImVec2(cardWidth, cardHeight), 14.0f, cardState, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse, 0.0f, 0.0f);
-        {
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            ImVec2 cardPos = ImGui::GetCursorScreenPos();
-            float innerW = cardWidth;
-            // Thumbnail top (full-bleed)
-            ImVec2 t0 = ImVec2(cardPos.x + 6.0f, cardPos.y + 6.0f);
-            ImVec2 t1 = ImVec2(cardPos.x + innerW - 10.0f, cardPos.y + 6.0f + thumbH);
-            ID3D11ShaderResourceView* thumb_srv = ThumbnailManager::Instance().GetThumbnailSRV(g_pd3dDevice, path);
-            if (thumb_srv) {
-                draw_list->AddImageRounded((ImTextureID)thumb_srv, t0, t1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 10.0f);
-            } else {
-                draw_list->AddRectFilled(t0, t1, IM_COL32(17, 23, 38, 255), 10.0f);
-                draw_list->AddRect(t0, t1, IM_COL32(56, 232, 255, 40), 10.0f);
-                const char* lt = "Loading...";
-                ImVec2 lts = ImGui::CalcTextSize(lt);
-                draw_list->AddText(ImVec2(t0.x + (innerW - 16.0f - lts.x) * 0.5f, t0.y + (thumbH - lts.y) * 0.5f), IM_COL32(140, 152, 168, 255), lt);
-            }
-            draw_list->AddRect(t0, t1, IM_COL32(56, 232, 255, 40), 10.0f);
-            if (is_current) draw_list->AddRect(t0, t1, IM_COL32(255, 209, 102, 210), 10.0f, 0, 1.6f);
-            // Play overlay icon on hover/current
-            ImVec2 hovMin = t0, hovMax = t1;
-            bool thumbHovered = ImGui::IsMouseHoveringRect(hovMin, hovMax);
-            if (is_current || thumbHovered) {
-                ImVec2 cc = ImVec2((t0.x + t1.x) * 0.5f, (t0.y + t1.y) * 0.5f);
-                draw_list->AddCircleFilled(cc, 20.0f, IM_COL32(9, 12, 21, 178));
-                draw_list->AddCircle(cc, 20.0f, IM_COL32(56, 232, 255, 90), 0, 1.2f);
-                const char* pic = is_current ? ICON_FA_PAUSE : ICON_FA_PLAY;
-                ImVec2 psz = ImGui::CalcTextSize(pic);
-                draw_list->AddText(ImVec2(cc.x - psz.x * 0.5f, cc.y - psz.y * 0.5f), is_current ? IM_COL32(255, 209, 102, 255) : IM_COL32(241, 245, 249, 255), pic);
-            }
-            ImGui::Dummy(ImVec2(innerW, thumbH + 12.0f));
-
-            // Footer: name + version badge
-            ImGui::SetCursorPosX(12.0f);
-            ImGui::BeginGroup();
-            float footW = innerW - 24.0f;
-            std::string verBadge;
-            ImU32 verBg, verFg;
-            if (is_playing_opt || (is_current && has_opt)) { verBadge = "OPTIMIZED"; verBg = IM_COL32(56, 232, 255, 30); verFg = IM_COL32(56, 232, 255, 255); }
-            else if (has_opt) { verBadge = "ORI + OPT"; verBg = IM_COL32(255, 255, 255, 20); verFg = IM_COL32(241, 245, 249, 220); }
-            else if (is_already_optimal) { verBadge = "ORI - Optimal"; verBg = IM_COL32(255, 209, 102, 28); verFg = IM_COL32(255, 209, 102, 235); }
-            else { verBadge = "ORIGINAL"; verBg = IM_COL32(255, 255, 255, 14); verFg = IM_COL32(148, 163, 184, 255); }
-            if (is_current) { verBadge = std::string(ICON_FA_CIRCLE_PLAY "  ") + verBadge; }
-
-            std::string titleStr = filename;
-            ImVec2 verSz = ImGui::CalcTextSize(verBadge.c_str());
-            float verW = verSz.x + 16.0f;
-            float maxTitleW = footW - verW - 10.0f;
-            if (maxTitleW < 60.0f) maxTitleW = 60.0f;
-            while (titleStr.length() > 6 && ImGui::CalcTextSize((titleStr + "...").c_str()).x > maxTitleW) titleStr.pop_back();
-            if (titleStr != filename) titleStr += "...";
-
-            ImVec2 fpos = ImGui::GetCursorScreenPos();
-            ImGui::TextUnformatted(titleStr.c_str());
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nPath: %s", filename.c_str(), path.c_str());
-            ImVec2 bp0 = ImVec2(fpos.x + footW - verW, fpos.y);
-            ImVec2 bp1 = ImVec2(bp0.x + verW, bp0.y + verSz.y + 6.0f);
-            draw_list->AddRectFilled(bp0, bp1, verBg, 6.0f);
-            draw_list->AddText(ImVec2(bp0.x + 8.0f, bp0.y + 3.0f), verFg, verBadge.c_str());
-
-            if (!meta_line.empty()) ImGui::TextColored(ImVec4(0.580f, 0.639f, 0.722f, 1.0f), "%s", meta_line.c_str());
-            else ImGui::TextColored(ImVec4(0.520f, 0.575f, 0.660f, 1.0f), "Video source ready");
-            ImGui::EndGroup();
-        }
-        EndModuleCard();
-        // Click handling (select + toggle detail)
-        bool cardHovered = ImGui::IsItemHovered();
-        if (cardHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (g_selectedGalleryIdx == (int)i && g_detailVisible) g_detailVisible = false;
-            else { g_selectedGalleryIdx = (int)i; g_detailVisible = true; }
-        }
-        if (cardHovered) ImGui::SetTooltip("Klik untuk %s detail", (g_detailVisible && is_selected) ? "tutup" : "buka");
-        ImGui::PopID();
-
-        // Responsive vertical-card grid
-        bool isLastInRow = ((i + 1) % numCols == 0) || (i + 1 >= galleryCopy.size());
-        if (!isLastInRow) {
-            ImGui::SameLine(0, spacingX);
-        } else {
-            ImGui::Dummy(ImVec2(1.0f, spacingY));
-        }
-    }
-
-    // Ruang bawah agar baris terakhir bisa scroll ke atas dock yg melayang
-    ImGui::Dummy(ImVec2(1.0f, 54.0f));
-
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
-
-    if (showDetail) {
-        // Sejajarkan top panel detail dgn top grid (SameLine menempelkannya di bawah grid sehingga kepotong)
-        ImGui::SetCursorScreenPos(ImVec2(gridRowTop.x + gridAvailW + 12.0f, gridRowTop.y));
-        // Resolve selected video data for detail panel (same logic as cards)
-        const std::string& selPath = galleryCopy[(size_t)g_selectedGalleryIdx];
-        fs::path selFs(selPath);
-        std::string selName = selFs.filename().string();
-        if (selName.empty()) selName = selPath;
-        auto selProbe = VideoOptimizer::Probe(selPath);
-        int selTW = screen_w, selTH = screen_h;
-        if (selProbe.valid) {
-            auto dims = VideoOptimizer::CalculateTargetDimensions(selProbe.width, selProbe.height, screen_w, screen_h, cfg.optimizer_crop_mode);
-            selTW = dims.first; selTH = dims.second;
-        }
-        std::string selOpt = VideoOptimizer::GetOptimizedPath(selPath, selTW, selTH);
-        bool selHasOpt = VideoOptimizer::HasOptimizedCache(selPath, selTW, selTH);
-        bool selOptimal = (selProbe.valid && selProbe.width <= screen_w && selProbe.height <= screen_h && selProbe.fps <= 60.5);
-        bool selPlayOpt = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == selOpt);
-        bool selPlayOri = (!g_daemonCurrentVideo.empty() && g_daemonCurrentVideo == selPath);
-        bool selCur = selPlayOpt || selPlayOri ||
-                      (!cfg.wallpapers.empty() && (cfg.wallpapers[0].video_path == selPath || cfg.wallpapers[0].video_path == selOpt));
-        char selSize[32] = {};
-        std::error_code selEc;
-        if (fs::exists(selPath, selEc)) {
-            uintmax_t b = fs::file_size(selPath, selEc);
-            if (b >= 1024ull * 1024ull * 1024ull) snprintf(selSize, sizeof(selSize), "%.1f GB", b / (1024.0 * 1024.0 * 1024.0));
-            else if (b >= 1024ull * 1024ull) snprintf(selSize, sizeof(selSize), "%.1f MB", b / (1024.0 * 1024.0));
-            else if (b > 0) snprintf(selSize, sizeof(selSize), "%.0f KB", b / 1024.0);
-        }
-        RenderGalleryDetailPanel(selPath, selName, selProbe, selSize, selTW, selTH, selOpt, selHasOpt, selOptimal, selPlayOpt, selPlayOri, selCur, gridH);
-    }
-    // Pill aksi overlay paling atas (di atas cards).
-    RenderSidePillOverlay(ImVec2(basePos.x, gridRowTop.y), gridH);
-}
-
-// Header bar modern & cantik: strip kaca ramping, badge ikon menyala, judul tebal + subjudul inline.
-static void RenderPageTitle(const char* icon, const char* title, const char* desc) {
-    float availW = ImGui::GetContentRegionAvail().x;
-    const float headerH = 34.0f;
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    // 1. Subtle glass background strip
-    ImVec2 b0 = pos;
-    ImVec2 b1 = ImVec2(pos.x + availW, pos.y + headerH);
-    dl->AddRectFilled(b0, b1, IM_COL32(14, 20, 34, 150), 8.0f);
-    dl->AddRect(b0, b1, IM_COL32(56, 232, 255, 38), 8.0f, 0, 1.0f);
-
-    // 2. Icon Badge
-    const float badgeSz = 24.0f;
-    ImVec2 badge0 = ImVec2(pos.x + 5.0f, pos.y + 5.0f);
-    ImVec2 badge1 = ImVec2(badge0.x + badgeSz, badge0.y + badgeSz);
-    dl->AddRectFilled(badge0, badge1, IM_COL32(56, 232, 255, 32), 6.0f);
-    dl->AddRect(badge0, badge1, IM_COL32(56, 232, 255, 75), 6.0f, 0, 1.0f);
-
-    ImVec2 icoSz = ImGui::CalcTextSize(icon);
-    dl->AddText(ImVec2(badge0.x + (badgeSz - icoSz.x) * 0.5f, badge0.y + (badgeSz - icoSz.y) * 0.5f), IM_COL32(56, 232, 255, 255), icon);
-
-    // 3. Title text (Semibold)
-    ImFont* font = g_fontSemibold ? g_fontSemibold : ImGui::GetFont();
-    float fsize = ImGui::GetFontSize();
-    float textY = pos.y + (headerH - fsize) * 0.5f;
-    float textX = badge1.x + 10.0f;
-
-    dl->AddText(font, fsize, ImVec2(textX, textY), IM_COL32(245, 248, 252, 255), title);
-    float titleW = font->CalcTextSizeA(fsize, 1000.0f, 0.0f, title).x;
-
-    // 4. Dot separator and description
-    if (desc && desc[0] != '\0') {
-        float dotX = textX + titleW + 8.0f;
-        const char* dotStr = "•";
-        dl->AddText(ImVec2(dotX, textY), IM_COL32(56, 232, 255, 140), dotStr);
-        float dotW = ImGui::CalcTextSize(dotStr).x;
-
-        float descX = dotX + dotW + 8.0f;
-        float remainingW = (b1.x - 12.0f) - descX;
-        if (remainingW > 60.0f) {
-            dl->PushClipRect(ImVec2(descX, pos.y), ImVec2(b1.x - 12.0f, b1.y), true);
-            dl->AddText(ImVec2(descX, textY), IM_COL32(148, 163, 184, 240), desc);
-            dl->PopClipRect();
-        }
-    }
-
-    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + headerH + 12.0f));
-}
-
-static void RenderLockscreenTab() {
-    auto& cfg = g_config.Get();
-
-    RenderPageTitle(ICON_FA_LOCK, "Lock Screen & Static", "Configure instant 0s Windows boot visuals and lock screen transitions with zero continuous CPU load.");
-
-    float availW = ImGui::GetContentRegionAvail().x;
-    ImVec2 pageStart = ImGui::GetCursorScreenPos();
-    bool isNarrow = (availW < 680.0f);
-    float colGap = 16.0f;
-    float colW = isNarrow ? availW : (availW - colGap) * 0.5f;
-    const float cardPadX = 22.0f;
-    const float cardPadY = 20.0f;
-    float contentW = colW - cardPadX * 2.0f;
-
-    float leftX = pageStart.x;
-    float rightX = isNarrow ? pageStart.x : (pageStart.x + colW + colGap);
-    float colY = pageStart.y;
-    float colY2 = isNarrow ? 0.0f : pageStart.y;
-
-    // ================= KOLOM KIRI =================
-
-    // KARTU 1: Windows Desktop Static Wallpaper (0s Instant Boot Visual)
-    ImGui::SetCursorScreenPos(ImVec2(leftX, colY));
-    BeginGlassCard("DesktopStaticCard", ImVec2(colW, 0.0f), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_DESKTOP "  DESKTOP STATIC WALLPAPER");
-
-    if (ToggleSwitch("Enable Desktop Static Wallpaper", &cfg.update_desktop_wallpaper)) {
-        g_config.Save();
-        if (cfg.update_desktop_wallpaper) {
-            if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
-                nlohmann::json req{
-                    {"cmd", "sync_desktop_wallpaper"},
-                    {"path", cfg.desktop_static_video_path},
-                    {"desktop", true},
-                    {"lockscreen", false},
-                    {"timestamp", cfg.desktop_static_timestamp}
-                };
-                SendIpcAsync(req.dump());
-            } else {
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":true,\"lockscreen\":false}");
-            }
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Injects a high-definition static frame directly into Windows Desktop Wallpaper.\nWhen Windows boots, your desktop appears in 0.0s with no black screen or loading delay.");
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
-    if (cfg.update_desktop_wallpaper) {
-        if (cfg.desktop_static_source_mode == 0) {
-            ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.0f), ICON_FA_ROTATE " Active: Auto-Sync (Live Video)");
-        } else {
-            fs::path p(cfg.desktop_static_video_path);
-            std::string vidName = p.filename().string();
-            if (vidName.empty()) vidName = cfg.desktop_static_video_path;
-            int curMin = static_cast<int>(cfg.desktop_static_timestamp) / 60;
-            float curSec = static_cast<float>(cfg.desktop_static_timestamp) - curMin * 60.0f;
-            ImGui::TextColored(ImVec4(1.00f, 0.82f, 0.40f, 1.0f), ICON_FA_IMAGE " Custom: %s [%02d:%05.2f]", StEllipsize(vidName, 22).c_str(), curMin, curSec);
-
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            if (HoloButtonSmall("Reset to Auto-Sync")) {
-                cfg.desktop_static_source_mode = 0;
-                g_config.Save();
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_desktop_auto\":true}");
-            }
-        }
-
-        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
-        if (cfg.desktop_static_source_mode == 1 && !cfg.desktop_static_video_path.empty()) {
-            cur_vid = cfg.desktop_static_video_path;
-        }
-        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
-            cur_vid = cfg.gallery_history[0];
-        }
-
-        ImGui::Dummy(ImVec2(0.0f, 8.0f));
-        if (HoloButton(ICON_FA_CAMERA "  Choose Custom Frame...", ImVec2(contentW, 0))) {
-            if (!cur_vid.empty()) {
-                OpenCaptureModal(cur_vid, 1);
-            }
-        }
-    } else {
-        ImGui::TextDisabled("Desktop static wallpaper is disabled.");
-    }
-    colY += EndGlassCard() + colGap;
-
-    // KARTU 2: Windows Screensaver Integration
-    if (isNarrow) colY = colY;
-    ImGui::SetCursorScreenPos(ImVec2(leftX, colY));
-    BeginGlassCard("ScreensaverCard", ImVec2(colW, 0.0f), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_TV "  SCREENSAVER INTEGRATION");
-
-    static bool scr_checked = false;
-    static bool scr_installed = false;
-    if (!scr_checked) {
-        scr_installed = LockScreenManager::IsScreensaverInstalled();
-        scr_checked = true;
-    }
-
-    if (ToggleSwitch("Enable as Windows Screensaver", &scr_installed)) {
-        if (scr_installed) {
-            wchar_t exePathBuf[MAX_PATH] = {};
-            GetModuleFileNameW(nullptr, exePathBuf, MAX_PATH);
-            std::wstring exePath(exePathBuf);
-            std::wstring scrPath = exePath.substr(0, exePath.find_last_of(L'.')) + L".scr";
-            if (!fs::exists(scrPath)) {
-                CopyFileW(exePath.c_str(), scrPath.c_str(), FALSE);
-            }
-            LockScreenManager::InstallScreensaver(scrPath, 300, true);
-        } else {
-            LockScreenManager::UninstallScreensaver();
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Plays your live video wallpaper at full 60 FPS when your computer is idle!\nWhen waking the PC, it transitions seamlessly back.");
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    if (HoloButton(ICON_FA_GEAR "  Configure in Windows...", ImVec2(contentW, 0))) {
-        LockScreenManager::OpenWindowsScreensaverSettings();
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 3.0f));
-    ImGui::TextColored(ImVec4(0.580f, 0.639f, 0.722f, 1.0f), "Plays live wallpaper when idle, waking up immediately on mouse move.");
-    ImGui::PopStyleVar();
-
-    colY += EndGlassCard() + colGap;
-
-    // ================= KOLOM KANAN =================
-
-    // KARTU 3: Windows Lock Screen Wallpaper (Win + L Seamless Transition)
-    if (isNarrow) colY2 = colY;
-    ImGui::SetCursorScreenPos(ImVec2(rightX, colY2));
-    BeginGlassCard("LockscreenCard", ImVec2(colW, 0.0f), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_LOCK "  LOCK SCREEN WALLPAPER");
-
-    if (ToggleSwitch("Enable Windows Lock Screen Wallpaper", &cfg.update_lockscreen)) {
-        g_config.Save();
-        if (cfg.update_lockscreen) {
-            if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
-                nlohmann::json req{
-                    {"cmd", "sync_desktop_wallpaper"},
-                    {"path", cfg.lockscreen_video_path},
-                    {"desktop", false},
-                    {"lockscreen", true},
-                    {"timestamp", cfg.lockscreen_timestamp}
-                };
-                SendIpcAsync(req.dump());
-            } else {
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"desktop\":false,\"lockscreen\":true}");
-            }
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Pre-caches a pristine high-definition frame for the Windows Lock Screen.\nWhen pressing Win+L, it displays immediately with 0ms visual delay and 0% background load.");
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-
-    if (cfg.update_lockscreen) {
-        if (cfg.lockscreen_source_mode == 0) {
-            ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.0f), ICON_FA_ROTATE " Active: Auto-Sync (Live Video)");
-        } else {
-            fs::path p(cfg.lockscreen_video_path);
-            std::string vidName = p.filename().string();
-            if (vidName.empty()) vidName = cfg.lockscreen_video_path;
-            int curMin = static_cast<int>(cfg.lockscreen_timestamp) / 60;
-            float curSec = static_cast<float>(cfg.lockscreen_timestamp) - curMin * 60.0f;
-            ImGui::TextColored(ImVec4(1.00f, 0.82f, 0.40f, 1.0f), ICON_FA_IMAGE " Custom: %s [%02d:%05.2f]", StEllipsize(vidName, 22).c_str(), curMin, curSec);
-
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            if (HoloButtonSmall("Reset to Auto-Sync")) {
-                cfg.lockscreen_source_mode = 0;
-                g_config.Save();
-                SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"reset_lockscreen_auto\":true}");
-            }
-        }
-
-        std::string cur_vid = (!cfg.wallpapers.empty()) ? cfg.wallpapers[0].video_path : g_daemonCurrentVideo;
-        if (cfg.lockscreen_source_mode == 1 && !cfg.lockscreen_video_path.empty()) {
-            cur_vid = cfg.lockscreen_video_path;
-        }
-        if (cur_vid.empty() && !cfg.gallery_history.empty()) {
-            cur_vid = cfg.gallery_history[0];
-        }
-
-        ImGui::Dummy(ImVec2(0.0f, 8.0f));
-        if (HoloButton(ICON_FA_CAMERA "  Choose Custom Frame...", ImVec2(contentW, 0))) {
-            if (!cur_vid.empty()) {
-                OpenCaptureModal(cur_vid, 2);
-            }
-        }
-    } else {
-        ImGui::TextDisabled("Lock Screen wallpaper integration is disabled.");
-    }
-    colY2 += EndGlassCard() + colGap;
-
-    // KARTU 4: Status & Transition Guide
-    if (isNarrow) colY2 = colY2;
-    ImGui::SetCursorScreenPos(ImVec2(rightX, colY2));
-    BeginGlassCard("LockscreenInfoCard", ImVec2(colW, 0.0f), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_CIRCLE_INFO "  SEAMLESS TRANSITIONS STATUS");
-
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 4.0f));
-    ImGui::TextColored(cfg.update_desktop_wallpaper ? ImVec4(0.22f, 0.91f, 1.00f, 1.0f) : ImVec4(0.58f, 0.64f, 0.72f, 1.0f),
-        "• Desktop Static: %s", cfg.update_desktop_wallpaper ? "ACTIVE (0s Instant Boot)" : "Disabled");
-    ImGui::TextColored(cfg.update_lockscreen ? ImVec4(0.22f, 0.91f, 1.00f, 1.0f) : ImVec4(0.58f, 0.64f, 0.72f, 1.0f),
-        "• Lock Screen: %s", cfg.update_lockscreen ? "ACTIVE (Win + L Seamless)" : "Disabled");
-    ImGui::TextColored(scr_installed ? ImVec4(0.22f, 0.91f, 1.00f, 1.0f) : ImVec4(0.58f, 0.64f, 0.72f, 1.0f),
-        "• Screensaver: %s", scr_installed ? "ACTIVE (60 FPS Idle)" : "Disabled");
-    ImGui::PopStyleVar();
-
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-    if (HoloButton(ICON_FA_ROTATE "  Refresh Static Frames", ImVec2(contentW, 0))) {
-        SendIpcAsync("{\"cmd\":\"sync_desktop_wallpaper\",\"force\":true}");
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Immediately re-extracts and refreshes desktop and lock screen images from active video.");
-    }
-
-    colY2 += EndGlassCard() + colGap;
-
-    float finalH = (std::max)(colY, colY2) + 40.0f;
-    ImGui::SetCursorScreenPos(ImVec2(leftX, finalH));
-    ImGui::Dummy(ImVec2(1.0f, 1.0f));
-}
-
-static void RenderGeneralSettingsTab() {
-    auto& cfg = g_config.Get();
-
-    RenderPageTitle(ICON_FA_SLIDERS, "General Settings", "Configure display scaling, master volume, Windows autostart, and power-saving rules.");
-
-    float availW = ImGui::GetContentRegionAvail().x;
-    ImVec2 pageStart = ImGui::GetCursorScreenPos();
-    bool isNarrow = (availW < 680.0f);
-    float colGap = 16.0f;
-    float colW = isNarrow ? availW : (availW - colGap) * 0.5f;
-    const float cardPadX = 22.0f;
-    const float cardPadY = 18.0f;
-    float contentW = colW - cardPadX * 2.0f;
-
-    float leftX = pageStart.x;
-    float rightX = isNarrow ? pageStart.x : (pageStart.x + colW + colGap);
-
-    static float s_genRow1H = 215.0f;
-    static float s_genRow2H = 250.0f;
-    float row1TargetH = isNarrow ? 0.0f : s_genRow1H;
-    float row2TargetH = isNarrow ? 0.0f : s_genRow2H;
-
-    // =========================================================================
-    // ROW 1: DISPLAY & SCALING (Kiri) + POWER & OCCLUSION RULES (Kanan)
-    // =========================================================================
-    float row1Top = pageStart.y;
-    ImGui::SetCursorScreenPos(ImVec2(leftX, row1Top));
-    BeginGlassCard("DisplayCard", ImVec2(colW, row1TargetH), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_EXPAND "  DISPLAY & SCALING");
-
-    static const char* scalingModes[] = {
-        "Auto Aspect Fill (Cover - Smart Crop)",
-        "Aspect Fit (Letterbox - Black Bars)",
-        "Stretch to Screen (Ignore Ratio)"
-    };
-    int currentMode = cfg.scaling_mode;
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ST_TEXT_DIM), "Video Scaling & Placement");
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    ImGui::SetNextItemWidth(contentW);
-
-    // Custom stylish dropdown: dark slate frame, glowing cyan border, distinct arrow button
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.078f, 0.118f, 0.196f, 0.95f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.110f, 0.165f, 0.270f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.130f, 0.200f, 0.320f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.220f, 0.910f, 1.000f, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.140f, 0.220f, 0.350f, 0.90f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.220f, 0.910f, 1.000f, 0.40f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.220f, 0.910f, 1.000f, 0.70f));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.067f, 0.090f, 0.150f, 0.98f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 7.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.2f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 8.0f));
-
-    if (ImGui::Combo("##scalingMode", &currentMode, scalingModes, IM_ARRAYSIZE(scalingModes))) {
-        cfg.scaling_mode = currentMode;
-        g_config.Save();
-        nlohmann::json req{{"cmd", "set_scaling"}, {"mode", currentMode}};
-        SendIpcAsync(req.dump());
-    }
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(8);
-
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Changes how video fits the screen when aspect ratio differs from display.");
-    }
-
-    if (!g_hardwareInfoInit) {
-        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
-        g_hardwareInfoInit = true;
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    if (g_hardwareInfo.displays.size() > 1) {
-        TextDim("Target Desktop Display(s):");
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-
-        bool all_checked = cfg.target_displays.empty() || (cfg.target_displays.size() == g_hardwareInfo.displays.size());
-        if (ToggleSwitch("All Monitors", &all_checked)) {
-            if (all_checked) {
-                cfg.target_displays.clear();
-            } else {
-                cfg.target_displays = { 0 };
-            }
-            g_config.Save();
-            nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
-            SendIpcAsync(req.dump());
-        }
-
-        for (size_t d = 0; d < g_hardwareInfo.displays.size(); ++d) {
-            const auto& disp = g_hardwareInfo.displays[d];
-            bool is_d_checked = cfg.IsDisplayEnabled(static_cast<int>(d));
-            std::string label = "Display " + std::to_string(d + 1) + (disp.is_primary ? " (Primary)" : " (Secondary)");
-            if (ToggleSwitch(label.c_str(), &is_d_checked)) {
-                cfg.SetDisplayEnabled(static_cast<int>(d), is_d_checked);
-                g_config.Save();
-                nlohmann::json req{{"cmd", "set_target_displays"}, {"displays", cfg.target_displays}};
-                SendIpcAsync(req.dump());
-            }
-        }
-    } else {
-        if (!g_hardwareInfo.displays.empty()) {
-            const auto& d = g_hardwareInfo.displays[0];
-            ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 0.95f), ICON_FA_DESKTOP "  Active Display: %dx%d (%d Hz)", d.width, d.height, d.refresh_rate > 0 ? d.refresh_rate : 60);
-        }
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        TextDim("Wallpaper automatically fills your primary desktop screen.");
-    }
-    float contentH1 = ImGui::GetCursorPosY() + cardPadY;
-    float h1 = EndGlassCard();
-
-    // KARTU 2 (Kanan): POWER & OCCLUSION RULES
-    float row1RightY = isNarrow ? (row1Top + h1 + colGap) : row1Top;
-    ImGui::SetCursorScreenPos(ImVec2(rightX, row1RightY));
-    BeginGlassCard("PowerCard", ImVec2(colW, row1TargetH), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_BATTERY_HALF "  POWER & OCCLUSION RULES");
-
-    if (ToggleSwitch("Auto-Pause when Fullscreen App/Game is active", &cfg.pause_on_fullscreen)) {
-        g_config.Save();
-    }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    if (ToggleSwitch("Auto-Pause when Window is Maximized", &cfg.pause_on_maximized)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Pauses wallpaper rendering to release GPU/CPU when desktop is covered.");
-    }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    if (ToggleSwitch("Auto-Pause on Battery Power (Laptops)", &cfg.pause_on_battery)) {
-        g_config.Save();
-    }
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    TextDim("%s", "Releases 100% GPU/CPU processing when wallpaper is covered.");
-    float contentH2 = ImGui::GetCursorPosY() + cardPadY;
-    float h2 = EndGlassCard();
-
-    if (!isNarrow) {
-        s_genRow1H = (std::max)(contentH1, contentH2);
-    }
-
-    // =========================================================================
-    // ROW 2: AUDIO & SEAMLESS LOOPING (Kiri) + STARTUP & SYSTEM TRAY (Kanan)
-    // =========================================================================
-    float row2Top = isNarrow ? (row1RightY + h2 + colGap) : (row1Top + (std::max)(h1, h2) + colGap);
-
-    // KARTU 3 (Kiri): Audio & Seamless Looping
-    ImGui::SetCursorScreenPos(ImVec2(leftX, row2Top));
-    BeginGlassCard("AudioLoopCard", ImVec2(colW, row2TargetH), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_VOLUME_HIGH "  AUDIO & SEAMLESS LOOPING");
-
-    static float volume = 0.0f;
-    static bool volume_init = false;
-    if (!volume_init && !cfg.wallpapers.empty()) {
-        volume = cfg.wallpapers[0].volume;
-        volume_init = true;
-    }
-
-    if (StarlumeSliderFloat("Master Volume", &volume, 0.0f, 1.0f, 2, "", contentW)) {
-        if (!cfg.wallpapers.empty()) {
-            cfg.wallpapers[0].volume = volume;
-        }
-        g_config.Save();
-        nlohmann::json req{{"cmd", "set_volume"}, {"volume", volume}};
-        SendIpcAsync(req.dump());
-    }
-    TextDim("Controls background video audio volume level.");
-
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-    if (ToggleSwitch("Enable Auto Smooth Looping (Seamless Crossfade)", &cfg.auto_smooth_loop)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Applies a smooth crossfade transition and time-warp deceleration at loop seams for a seamless continuous loop without hard cuts.");
-    }
-
-    if (cfg.auto_smooth_loop) {
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        const char* loop_presets[] = {
-            "Cinematic Speed Ramp (1.2s)",
-            "Smoothstep S-Curve (0.8s)",
-            "Gentle Flow (1.8s Ambient)",
-            "Instant Snap (0.4s Fast)",
-            "Custom Tuning..."
-        };
-
-        ImGui::SetNextItemWidth(contentW);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.078f, 0.118f, 0.196f, 0.95f));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.110f, 0.165f, 0.270f, 1.00f));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.130f, 0.200f, 0.320f, 1.00f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.220f, 0.910f, 1.000f, 0.55f));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.140f, 0.220f, 0.350f, 0.90f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.220f, 0.910f, 1.000f, 0.40f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.220f, 0.910f, 1.000f, 0.70f));
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.067f, 0.090f, 0.150f, 0.98f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 7.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.2f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 8.0f));
-
-        if (ImGui::Combo("##loop_preset", &cfg.loop_preset, loop_presets, IM_ARRAYSIZE(loop_presets))) {
-            g_config.Save();
-        }
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(8);
-
-        if (cfg.loop_preset == 4) { // Custom Tuning
-            ImGui::Dummy(ImVec2(0.0f, 6.0f));
-            if (StarlumeSliderFloat("Transition Duration", &cfg.smooth_loop_duration, 0.2f, 2.5f, 1, "s", contentW)) {
-                g_config.Save();
-            }
-
-            const char* easing_curves[] = {
-                "Linear (Constant)",
-                "Smoothstep (S-Curve Hermite)",
-                "Sine Wave (Smooth Harmonic)",
-                "Smootherstep (Perlin Ultra-Smooth)"
-            };
-            ImGui::SetNextItemWidth(contentW);
-            if (ImGui::Combo("##loop_easing", &cfg.loop_easing_curve, easing_curves, IM_ARRAYSIZE(easing_curves))) {
-                g_config.Save();
-            }
-
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            if (ToggleSwitch("Enable Speed Ramping", &cfg.loop_speed_ramp)) {
-                g_config.Save();
-            }
-
-            if (cfg.loop_speed_ramp) {
-                ImGui::Dummy(ImVec2(0.0f, 4.0f));
-                if (StarlumeSliderFloat("Min Speed at Seam", &cfg.loop_min_speed, 0.50f, 0.95f, 2, "x", contentW)) {
-                    g_config.Save();
-                }
-            }
-        }
-    } else {
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        TextDim("Seamless crossfade eliminates hard cuts at video loop seams.");
-    }
-    float contentH3 = ImGui::GetCursorPosY() + cardPadY;
-    float h3 = EndGlassCard();
-
-    // KARTU 4 (Kanan): Windows Startup & System Tray
-    float row2RightY = isNarrow ? (row2Top + h3 + colGap) : row2Top;
-    ImGui::SetCursorScreenPos(ImVec2(rightX, row2RightY));
-    BeginGlassCard("StartupTrayCard", ImVec2(colW, row2TargetH), cardPadX, cardPadY);
-    GlassCardHeader(ICON_FA_DESKTOP "  STARTUP & SYSTEM TRAY");
-
-    static bool startup_inited = false;
-    static bool startup_enabled = false;
-    if (!startup_inited) {
-        startup_enabled = WindowsAutostart::IsEnabled();
-        startup_inited = true;
-    }
-
-    if (ToggleSwitch("Start MiniWallpaper on Windows Boot", &startup_enabled)) {
-        WindowsAutostart::SetEnabled(startup_enabled, 0);
-        cfg.run_on_startup = startup_enabled;
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Launches MiniWallpaper silently on Windows boot to instantly resume wallpaper.");
-    }
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    TextDim("Runs silently in the system tray when Windows boots.");
-
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f), ICON_FA_CIRCLE_CHECK "  Auto-Saved in Real-Time");
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    TextDim("All preference changes take effect immediately without restart.");
-
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-    if (HoloButton(ICON_FA_EYE_SLASH "  Hide Window to Tray", ImVec2(contentW, 0))) {
-        SettingsUI::Close();
-    }
-    float contentH4 = ImGui::GetCursorPosY() + cardPadY;
-    float h4 = EndGlassCard();
-
-    if (!isNarrow) {
-        s_genRow2H = (std::max)(contentH3, contentH4);
-    }
-
-    float finalH = (isNarrow ? (row2RightY + h4) : (row2Top + (std::max)(h3, h4))) + 40.0f;
-    ImGui::SetCursorScreenPos(ImVec2(leftX, finalH));
-    ImGui::Dummy(ImVec2(1.0f, 1.0f));
-}
-
-static void RenderPerformancePanel() {
-    auto& cfg = g_config.Get();
-
-    if (!g_hardwareInfoInit) {
-        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
-        g_hardwareInfoInit = true;
-    }
-
-    RenderPageTitle(ICON_FA_GAUGE_HIGH, "Performance & Advanced", "GPU hardware acceleration engine, frame pacing, gamer auto-sleep governor, and live telemetry.");
-
-    float availW = ImGui::GetContentRegionAvail().x;
-    ImVec2 pageStart = ImGui::GetCursorScreenPos();
-    bool isNarrow = (availW < 680.0f);
-    float colGap = 16.0f;
-    float colW = isNarrow ? availW : (availW - colGap) * 0.5f;
-    const float cardPadX = 22.0f;
-    const float cardPadY = 20.0f;
-    float contentW = colW - cardPadX * 2.0f;
-
-    // ---- Sampel telemetri (5 titik, kadens ~1 dtk) utk mini sparkbar ----
-    static float telemCpu[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    static float telemRam[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    static float telemVram[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    static double telemLastT = 0.0;
-    static bool telemInit = false;
-
-    float curCpu = g_daemonConnected ? (float)g_daemonCpuPercent : 0.0f;
-    size_t curAppRam = g_daemonRamMB;
-    size_t curAppPriv = g_daemonRamPrivateMB;
-    size_t curAppVram = g_daemonVramMB;
-    int sys_ram_pct = g_shared_engine_state.system_ram_percent.load();
-    bool is_sleeping = g_shared_engine_state.resource_heavy_sleep.load();
-
-    // Fallback if engine loop has not ticked: measure process memory directly
-    if (curAppRam == 0) {
-        PROCESS_MEMORY_COUNTERS_EX pmc = {};
-        if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-            curAppRam = pmc.WorkingSetSize / (1024 * 1024);
-            curAppPriv = pmc.PrivateUsage / (1024 * 1024);
-        }
-    }
-
-    // Fallback for Windows 11 system RAM load percentage
-    if (sys_ram_pct == 0) {
-        MEMORYSTATUSEX memInfo = {};
-        memInfo.dwLength = sizeof(MEMORYSTATUSEX);
-        if (GlobalMemoryStatusEx(&memInfo)) {
-            sys_ram_pct = static_cast<int>(memInfo.dwMemoryLoad);
-        }
-    }
-
-    // Fallback CPU usage for standalone UI process
-    if (curCpu == 0.0f) {
-        static ULARGE_INTEGER lastCPU = {0}, lastSysCPU = {0}, lastUserCPU = {0};
-        static int numProcessors = -1;
-        static bool s_cpuFirst = true;
-        static float s_lastUiCpu = 0.0f;
-        if (s_cpuFirst) {
-            SYSTEM_INFO sysInfo;
-            FILETIME ftime, fsys, fuser;
-            GetSystemInfo(&sysInfo);
-            numProcessors = (int)sysInfo.dwNumberOfProcessors;
-            GetSystemTimeAsFileTime(&ftime);
-            memcpy(&lastCPU, &ftime, sizeof(FILETIME));
-            GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
-            memcpy(&lastSysCPU, &fsys, sizeof(FILETIME));
-            memcpy(&lastUserCPU, &fuser, sizeof(FILETIME));
-            s_cpuFirst = false;
-        } else {
-            FILETIME ftime, fsys, fuser;
-            ULARGE_INTEGER now, sys, user;
-            GetSystemTimeAsFileTime(&ftime);
-            memcpy(&now, &ftime, sizeof(FILETIME));
-            GetProcessTimes(GetCurrentProcess(), &ftime, &ftime, &fsys, &fuser);
-            memcpy(&sys, &fsys, sizeof(FILETIME));
-            memcpy(&user, &fuser, sizeof(FILETIME));
-            ULONGLONG deltaSys = sys.QuadPart - lastSysCPU.QuadPart;
-            ULONGLONG deltaUser = user.QuadPart - lastUserCPU.QuadPart;
-            ULONGLONG deltaTotal = now.QuadPart - lastCPU.QuadPart;
-            if (deltaTotal > 0 && numProcessors > 0) {
-                double pct = ((deltaSys + deltaUser) * 100.0) / (deltaTotal * numProcessors);
-                s_lastUiCpu = (float)((pct > 100.0) ? 100.0 : pct);
-            }
-            lastCPU = now;
-            lastSysCPU = sys;
-            lastUserCPU = user;
-        }
-        if (s_lastUiCpu > 0.0f) curCpu = s_lastUiCpu;
-    }
-
-    // Determine active rendering engine & GPU dynamically
-    int activeGpuIdx = (g_daemonActiveGpuIndex != 0 || cfg.gpu_device_index == -1) ? g_daemonActiveGpuIndex : cfg.gpu_device_index;
-    bool isCpuDecode = (activeGpuIdx == -1 || cfg.gpu_device_index == -1);
-
-    std::string activeGpuName = g_daemonGpuName;
-    if (isCpuDecode) {
-        activeGpuName = "CPU Software (swscale)";
-        curAppVram = 0;
-    } else if (activeGpuName.empty() || activeGpuName == "CPU (Software Decode)") {
-        if (cfg.gpu_device_index >= 0 && cfg.gpu_device_index < (int)g_hardwareInfo.gpus.size()) {
-            activeGpuName = g_hardwareInfo.gpus[cfg.gpu_device_index].name;
-        } else if (!g_hardwareInfo.gpus.empty()) {
-            activeGpuName = g_hardwareInfo.gpus[0].name;
-        } else {
-            activeGpuName = "DirectX 11 GPU";
-        }
-    }
-
-    // Query DXGI process VRAM directly if engine VRAM is not yet reported or running UI context
-    if (curAppVram == 0 && !isCpuDecode && g_pd3dDevice) {
-        ComPtr<IDXGIDevice> dxgiDevice;
-        if (SUCCEEDED(g_pd3dDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
-            ComPtr<IDXGIAdapter> adapter;
-            if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
-#if __has_include(<dxgi1_4.h>)
-                ComPtr<IDXGIAdapter3> adapter3;
-                if (SUCCEEDED(adapter.As(&adapter3))) {
-                    DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
-                    if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo))) {
-                        size_t v_mb = static_cast<size_t>(memInfo.CurrentUsage / (1024 * 1024));
-                        if (v_mb > 0) curAppVram = v_mb;
-                    }
-                    if (curAppVram == 0 && SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &memInfo))) {
-                        size_t s_mb = static_cast<size_t>(memInfo.CurrentUsage / (1024 * 1024));
-                        if (s_mb > 0) curAppVram = s_mb;
-                    }
-                }
-#endif
-            }
-        }
-    }
-
-    double nowT = ImGui::GetTime();
-    if (!telemInit) {
-        telemInit = true;
-        telemLastT = nowT;
-        for (int i = 0; i < 5; ++i) {
-            telemCpu[i] = curCpu;
-            telemRam[i] = (float)curAppRam;
-            telemVram[i] = (float)curAppVram;
-        }
-    } else if (nowT - telemLastT >= 1.0) {
-        telemLastT = nowT;
-        for (int i = 0; i < 4; ++i) {
-            telemCpu[i] = telemCpu[i + 1];
-            telemRam[i] = telemRam[i + 1];
-            telemVram[i] = telemVram[i + 1];
-        }
-        telemCpu[4] = curCpu;
-        telemRam[4] = (float)curAppRam;
-        telemVram[4] = (float)curAppVram;
-    }
-
-    // ================= Baris telemetri (Variant 3: Startorch Telemetry Metric) =================
-    const float tileH = 144.0f;
-    float colTopY = pageStart.y;
-    {
-        // 1. CPU Metric Tile (MiniWallpaper process CPU load)
-        char cpuVal[32];
-        char cpuSub[96];
-        const char* cpuUnit = "%";
-        const char* cpuStatus;
-        ImU32 cpuCol;
-        if (!g_daemonConnected && curCpu <= 0.0f) {
-            snprintf(cpuVal, sizeof(cpuVal), "--");
-            snprintf(cpuSub, sizeof(cpuSub), "Background engine connecting...");
-            cpuUnit = "";
-            cpuStatus = "STANDBY";
-            cpuCol = ST_TEXT_MUTED;
-        } else {
-            snprintf(cpuVal, sizeof(cpuVal), "%.1f", (double)curCpu);
-            snprintf(cpuSub, sizeof(cpuSub), "MiniWallpaper process • Multi-thread decode");
-            if (curCpu < 4.0f) { cpuStatus = "OPTIMAL"; cpuCol = ST_GREEN; }
-            else if (curCpu < 12.0f) { cpuStatus = "ELEVATED"; cpuCol = ST_GOLD; }
-            else { cpuStatus = "HIGH"; cpuCol = ST_RED; }
-        }
-        float cpuPct01 = (std::min)(1.0f, (std::max)(0.0f, curCpu / 15.0f));
-
-        // 2. RAM Metric Tile (MiniWallpaper process RAM usage in MB)
-        char ramVal[32];
-        char ramSub[110];
-        snprintf(ramVal, sizeof(ramVal), "%zu", curAppRam);
-        if (curAppPriv > 0) {
-            snprintf(ramSub, sizeof(ramSub), "Working Set: %zu MB (Priv: %zu MB) • Sys: %d%%", curAppRam, curAppPriv, sys_ram_pct);
-        } else {
-            snprintf(ramSub, sizeof(ramSub), "Working Set: %zu MB • Windows 11 Load: %d%%", curAppRam, sys_ram_pct);
-        }
-        const char* ramStatus;
-        ImU32 ramCol;
-        if (curAppRam < 60) { ramStatus = "OPTIMAL"; ramCol = ST_GREEN; }
-        else if (curAppRam < 120) { ramStatus = "ELEVATED"; ramCol = ST_GOLD; }
-        else { ramStatus = is_sleeping ? "AUTO-SLEEP" : "HIGH"; ramCol = ST_RED; }
-        float ramPct01 = (std::min)(1.0f, (std::max)(0.0f, (float)curAppRam / 100.0f));
-
-        // 3. VRAM Metric Tile (Dynamic for NVIDIA / Intel iGPU / CPU)
-        char vramVal[32];
-        char vramSub[128];
-        const char* vramUnit = "MB";
-        float vramPct = 0.0f;
-        const char* vramStatus;
-        ImU32 vramCol;
-
-        if (isCpuDecode) {
-            snprintf(vramVal, sizeof(vramVal), "0");
-            snprintf(vramSub, sizeof(vramSub), "CPU swscale • 0 MB dedicated VRAM (RAM only)");
-            vramPct = 0.0f;
-            vramStatus = "CPU MODE";
-            vramCol = ST_CYAN;
-        } else {
-            snprintf(vramVal, sizeof(vramVal), "%zu", curAppVram);
-            if (activeGpuName.find("NVIDIA") != std::string::npos) {
-                snprintf(vramSub, sizeof(vramSub), "NVIDIA RTX • %zu MB dedicated VRAM", curAppVram);
-            } else if (activeGpuName.find("Intel") != std::string::npos) {
-                snprintf(vramSub, sizeof(vramSub), "Intel iGPU • %zu MB video memory", curAppVram);
-            } else if (activeGpuName.find("AMD") != std::string::npos || activeGpuName.find("Radeon") != std::string::npos) {
-                snprintf(vramSub, sizeof(vramSub), "AMD Radeon • %zu MB video memory", curAppVram);
-            } else {
-                snprintf(vramSub, sizeof(vramSub), "%s • %zu MB", activeGpuName.c_str(), curAppVram);
-            }
-            vramPct = (std::min)(1.0f, (std::max)(0.0f, (float)curAppVram / 80.0f));
-            if (curAppVram < 40) { vramStatus = "OPTIMAL"; vramCol = ST_GREEN; }
-            else if (curAppVram < 80) { vramStatus = "ELEVATED"; vramCol = ST_GOLD; }
-            else { vramStatus = is_sleeping ? "AUTO-SLEEP" : "HIGH"; vramCol = ST_RED; }
-        }
-
-        if (availW >= 640.0f) {
-            const float tileGap = 14.0f;
-            float tileW = (availW - tileGap * 2.0f) / 3.0f;
-            TelemetryTile("TelemCPU", "APP CPU LOAD", cpuPct01, cpuVal, cpuUnit, cpuStatus, cpuCol, telemCpu, cpuSub, ImVec2(tileW, tileH));
-            ImGui::SetCursorScreenPos(ImVec2(pageStart.x + tileW + tileGap, pageStart.y));
-            TelemetryTile("TelemRAM", "APP RAM USAGE", ramPct01, ramVal, "MB", ramStatus, ramCol, telemRam, ramSub, ImVec2(tileW, tileH));
-            ImGui::SetCursorScreenPos(ImVec2(pageStart.x + (tileW + tileGap) * 2.0f, pageStart.y));
-            TelemetryTile("TelemVRAM", "APP VRAM USAGE", vramPct, vramVal, vramUnit, vramStatus, vramCol, telemVram, vramSub, ImVec2(tileW, tileH));
-            colTopY = pageStart.y + tileH + 18.0f;
-        } else {
-            // Responsif layar sempit: stack 3 tile secara vertikal
-            TelemetryTile("TelemCPU", "APP CPU LOAD", cpuPct01, cpuVal, cpuUnit, cpuStatus, cpuCol, telemCpu, cpuSub, ImVec2(availW, tileH));
-            ImGui::Dummy(ImVec2(0.0f, 10.0f));
-            TelemetryTile("TelemRAM", "APP RAM USAGE", ramPct01, ramVal, "MB", ramStatus, ramCol, telemRam, ramSub, ImVec2(availW, tileH));
-            ImGui::Dummy(ImVec2(0.0f, 10.0f));
-            TelemetryTile("TelemVRAM", "APP VRAM USAGE", vramPct, vramVal, vramUnit, vramStatus, vramCol, telemVram, vramSub, ImVec2(availW, tileH));
-            colTopY = ImGui::GetCursorScreenPos().y + 14.0f;
-        }
-    }
-
-    float leftX = pageStart.x;
-    float rightX = isNarrow ? pageStart.x : (pageStart.x + colW + colGap);
-    float colY = colTopY;
-
-    // ================= Kolom kiri: kartu kontrol =================
-
-    // Kartu 1: Rendering Engine & Frame Rate
-    ImGui::SetCursorScreenPos(ImVec2(leftX, colY));
-    BeginGlassCard("PerfEngineCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_MICROCHIP "  RENDERING ENGINE");
-
-    std::vector<std::string> deviceNames;
-    std::vector<int> deviceValues;
-
-    for (size_t g = 0; g < g_hardwareInfo.gpus.size(); ++g) {
-        std::string label = "GPU " + std::to_string(g + 1) + ": " + g_hardwareInfo.gpus[g].name + " (DirectX 11 HW)";
-        deviceNames.push_back(label);
-        deviceValues.push_back(static_cast<int>(g));
-    }
-    deviceNames.push_back("CPU: Software Processor Decode (swscale)");
-    deviceValues.push_back(-1);
-
-    int currentDeviceCombo = 0;
-    for (size_t i = 0; i < deviceValues.size(); ++i) {
-        if (deviceValues[i] == cfg.gpu_device_index) {
-            currentDeviceCombo = static_cast<int>(i);
-            break;
-        }
-    }
-
-    std::vector<const char*> comboItems;
-    for (const auto& name : deviceNames) {
-        comboItems.push_back(name.c_str());
-    }
-
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ST_TEXT_DIM), "Video Rendering Engine");
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    ImGui::SetNextItemWidth(contentW);
-
-    // Custom stylish dropdown: dark slate frame, glowing cyan border, distinct arrow button
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.078f, 0.118f, 0.196f, 0.95f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.110f, 0.165f, 0.270f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.130f, 0.200f, 0.320f, 1.00f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.220f, 0.910f, 1.000f, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.140f, 0.220f, 0.350f, 0.90f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.220f, 0.910f, 1.000f, 0.40f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.220f, 0.910f, 1.000f, 0.70f));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.067f, 0.090f, 0.150f, 0.98f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 7.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.2f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 8.0f));
-
-    if (ImGui::Combo("##render_engine", &currentDeviceCombo, comboItems.data(), static_cast<int>(comboItems.size()))) {
-        cfg.gpu_device_index = deviceValues[currentDeviceCombo];
-        g_config.Save();
-        nlohmann::json req{{"cmd", "set_render_device"}, {"gpu_index", cfg.gpu_device_index}};
-        SendIpcAsync(req.dump());
-
-        // Dynamic and instant reflection in UI telemetry
-        if (cfg.gpu_device_index == -1) {
-            g_daemonActiveGpuIndex = -1;
-            g_daemonGpuName = "CPU Software (swscale)";
-            g_daemonGpuType = "CPU Software";
-            g_daemonVramMB = 0;
-            g_shared_engine_state.vram_mb.store(0);
-            g_shared_engine_state.active_gpu_index.store(-1);
-            g_shared_engine_state.SetActiveGpuInfo("CPU Software", "CPU Software");
-        } else if (cfg.gpu_device_index >= 0 && cfg.gpu_device_index < (int)g_hardwareInfo.gpus.size()) {
-            g_daemonActiveGpuIndex = cfg.gpu_device_index;
-            g_daemonGpuName = g_hardwareInfo.gpus[cfg.gpu_device_index].name;
-            g_daemonGpuType = g_hardwareInfo.gpus[cfg.gpu_device_index].is_discrete ? "Dedicated GPU" : "Integrated GPU";
-            g_shared_engine_state.active_gpu_index.store(cfg.gpu_device_index);
-            g_shared_engine_state.SetActiveGpuInfo(g_daemonGpuName, g_daemonGpuType);
-        }
-    }
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(8);
-
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Choose whether video decoding & rendering runs on GPU 1, GPU 2, or CPU Software.");
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 14.0f));
-
-    if (StarlumeSliderInt("Target Render FPS", &cfg.target_fps, 15, 60, "", contentW)) {
-        g_config.Save();
-        nlohmann::json req{{"cmd", "set_fps"}, {"fps", cfg.target_fps}};
-        SendIpcAsync(req.dump());
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f), ICON_FA_CIRCLE_CHECK "  Active: %d FPS", g_daemonFps);
-
-    ImGui::Dummy(ImVec2(0.0f, 12.0f));
-
-    if (StarlumeSliderInt("Battery Saver FPS", &cfg.battery_fps, 10, 30, "", contentW)) {
-        g_config.Save();
-    }
-    colY += EndGlassCard() + colGap;
-
-    // Kartu 2: Smart Resource Governor (Gaming & Heavy Load Auto-Sleep)
-    ImGui::SetCursorScreenPos(ImVec2(leftX, colY));
-    BeginGlassCard("PerfGovernorCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_GAUGE_HIGH "  RESOURCE GOVERNOR");
-
-    if (ToggleSwitch("Auto-Sleep on heavy RAM / VRAM load", &cfg.pause_on_resource_heavy)) {
-        g_config.Save();
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Essential for windowed gaming! When a heavy game or app pushes RAM or VRAM above the threshold, wallpaper enters Deep Sleep (0% CPU, 0 MB VRAM) to yield maximum performance to your game.");
-    }
-
-    if (cfg.pause_on_resource_heavy) {
-        ImGui::Dummy(ImVec2(0.0f, 14.0f));
-        if (StarlumeSliderInt("System RAM Threshold", &cfg.resource_ram_threshold_pct, 60, 95, "%", contentW)) {
-            g_config.Save();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Triggers auto-sleep when overall PC system RAM usage hits this percentage (default 80%).");
-        }
-
-        ImGui::Dummy(ImVec2(0.0f, 12.0f));
-        if (StarlumeSliderInt("GPU VRAM Threshold", &cfg.resource_vram_threshold_pct, 60, 95, "%", contentW)) {
-            g_config.Save();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Triggers auto-sleep when GPU dedicated video memory usage hits this percentage (default 80%).");
-        }
-
-        int cur_ram = sys_ram_pct;
-        int cur_vram = g_shared_engine_state.gpu_vram_percent.load();
-        if (cur_vram == 0 && !isCpuDecode && g_pd3dDevice) {
-            ComPtr<IDXGIDevice> dxgiDev;
-            if (SUCCEEDED(g_pd3dDevice->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                ComPtr<IDXGIAdapter> ad;
-                if (SUCCEEDED(dxgiDev->GetAdapter(&ad))) {
-#if __has_include(<dxgi1_4.h>)
-                    ComPtr<IDXGIAdapter3> ad3;
-                    if (SUCCEEDED(ad.As(&ad3))) {
-                        DXGI_QUERY_VIDEO_MEMORY_INFO qInfo = {};
-                        if (SUCCEEDED(ad3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &qInfo)) && qInfo.Budget > 0) {
-                            cur_vram = static_cast<int>((double)qInfo.CurrentUsage * 100.0 / (double)qInfo.Budget);
-                        }
-                    }
-#endif
-                }
-            }
-        }
-        bool ram_high = (cur_ram >= cfg.resource_ram_threshold_pct);
-        bool vram_high = (cur_vram >= cfg.resource_vram_threshold_pct);
-
-        char ram_buf[64], vram_buf[64];
-        snprintf(ram_buf, sizeof(ram_buf), "%d%%  (limit %d%%)", cur_ram, cfg.resource_ram_threshold_pct);
-        snprintf(vram_buf, sizeof(vram_buf), "%d%%  (limit %d%%)", cur_vram, cfg.resource_vram_threshold_pct);
-
-        ImGui::Dummy(ImVec2(0.0f, 14.0f));
-        StarlumeBar("System RAM Usage", (float)cur_ram / 100.0f, ram_buf, ram_high ? ST_RED : ST_GOLD,
-                    ram_high ? ST_RED : ST_PINK_SOFT, (float)cfg.resource_ram_threshold_pct / 100.0f);
-
-        ImGui::Dummy(ImVec2(0.0f, 8.0f));
-        if (cur_vram > 0) {
-            StarlumeBar("GPU VRAM Usage", (float)cur_vram / 100.0f, vram_buf, vram_high ? ST_RED : ST_GOLD,
-                        vram_high ? ST_RED : ST_PINK_SOFT, (float)cfg.resource_vram_threshold_pct / 100.0f);
-        } else {
-            TextDim("GPU VRAM readout unavailable (software decode).");
-        }
-
-        if (is_sleeping) {
-            ImGui::Dummy(ImVec2(0.0f, 8.0f));
-            ImGui::TextColored(ImVec4(1.00f, 0.82f, 0.40f, 1.00f), ICON_FA_EYE_SLASH "  Auto-Sleep Active: Releasing 100% VRAM & pausing rendering for active game");
-        }
-    }
-    colY += EndGlassCard() + colGap;
-
-    // Kartu 3: Video Optimization Transcoding Mode
-    ImGui::SetCursorScreenPos(ImVec2(leftX, colY));
-    BeginGlassCard("PerfOptimizerCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_EXPAND "  TRANSCODING MODE");
-
-    if (ImGui::RadioButton("Aspect Fit (Proportional - keeps entire frame)", &cfg.optimizer_crop_mode, 0)) {
-        g_config.Save();
-    }
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    TextDim("  Letterboxes the frame if its ratio differs from your screen.");
-
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-    if (ImGui::RadioButton("Aspect Fill / Center Crop (zero black bars)", &cfg.optimizer_crop_mode, 1)) {
-        g_config.Save();
-    }
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    TextDim("  Fills the screen exactly, cropping overflow edges.");
-    colY += EndGlassCard() + colGap;
-
-    // ================= Kolom kanan: status & informasi sistem =================
-
-    // Kartu 4: Real-Time Engine Status & Telemetry
-    float colY2 = isNarrow ? colY : colTopY;
-    ImGui::SetCursorScreenPos(ImVec2(rightX, colY2));
-    BeginGlassCard("PerfStatusCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_CHART_LINE "  ENGINE STATUS");
-
-    if (!g_daemonConnected) {
-        ImGui::TextColored(ImVec4(1.00f, 0.30f, 0.43f, 1.0f), "Background Engine Initializing...");
-    } else {
-        if (g_daemonPlaying && !g_daemonPaused) {
-            ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f), ICON_FA_CIRCLE_CHECK "  Playing (Active)");
-        } else if (g_daemonPaused) {
-            ImGui::TextColored(ImVec4(1.00f, 0.82f, 0.40f, 1.00f), ICON_FA_PAUSE "  Paused");
-        } else {
-            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.00f), ICON_FA_STOP "  Idle");
-        }
-
-        ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        std::string vidName = g_daemonCurrentVideo.empty() ? std::string("(None)") : fs::path(g_daemonCurrentVideo).filename().string();
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 4.0f));
-        ImGui::Text("Active Video: %s", StEllipsize(vidName, 34).c_str());
-        ImGui::Text("Render: %d FPS  |  Source: %.1f FPS", g_daemonFps, g_daemonVideoFps);
-        ImGui::Text("Resolution: %dx%d (%s)", g_daemonWidth, g_daemonHeight, g_daemonCodec.c_str());
-        ImGui::Text("Duration: %.1f seconds", g_daemonDuration);
-        ImGui::PopStyleVar();
-    }
-    colY2 += EndGlassCard() + colGap;
-
-    // Kartu 5: Connected Monitors Topology
-    size_t dispCount = g_hardwareInfo.displays.size();
-    ImGui::SetCursorScreenPos(ImVec2(rightX, colY2));
-    BeginGlassCard("PerfMonitorsCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_TV "  CONNECTED MONITORS");
-
-    if (HoloButtonSmall(ICON_FA_ROTATE "  RE-DETECT DISPLAYS")) {
-        g_hardwareInfo.displays = HardwareDetector::GetDisplayList();
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-
-    if (dispCount == 0) {
-        TextDim("No displays enumerated.");
-    } else {
-        for (size_t idx = 0; idx < dispCount; ++idx) {
-            if (idx > 0) ImGui::Dummy(ImVec2(0.0f, 6.0f));
-            const auto& disp = g_hardwareInfo.displays[idx];
-            if (disp.is_primary) {
-                ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f),
-                    "• Display %zu [PRIMARY]: %s", idx + 1, disp.name.c_str());
-            } else {
-                ImGui::TextColored(ImVec4(0.62f, 0.88f, 1.00f, 1.00f),
-                    "• Display %zu [SECONDARY]: %s", idx + 1, disp.name.c_str());
-            }
-            TextDim("   %d x %d  |  %d Hz  |  pos (%d, %d)",
-                    disp.width, disp.height, disp.refresh_rate, disp.pos_x, disp.pos_y);
-        }
-    }
-    colY2 += EndGlassCard() + colGap;
-
-    // Kartu 6: Hardware Topology (CPU & GPU Detection)
-    size_t gpuCount = g_hardwareInfo.gpus.size();
-    ImGui::SetCursorScreenPos(ImVec2(rightX, colY2));
-    BeginGlassCard("PerfHardwareCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_HARD_DRIVE "  HARDWARE TOPOLOGY");
-
-    if (HoloButtonSmall(ICON_FA_ROTATE "  RE-DETECT HARDWARE")) {
-        g_hardwareInfo = HardwareDetector::QuerySystemInfo();
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
-
-    if (g_daemonActiveGpuIndex == -1) {
-        ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f),
-            "CPU: %s [SOFTWARE RENDER]", StEllipsize(g_hardwareInfo.cpu.model_name, 26).c_str());
-    } else {
-        ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.00f),
-            "CPU: %s", StEllipsize(g_hardwareInfo.cpu.model_name, 36).c_str());
-    }
-    TextDim("   %d physical cores / %d logical threads",
-                g_hardwareInfo.cpu.physical_cores, g_hardwareInfo.cpu.logical_cores);
-
-    if (gpuCount == 0) {
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
-        TextDim("GPU: Standard Display Adapter");
-    } else {
-        for (size_t g_idx = 0; g_idx < gpuCount; ++g_idx) {
-            ImGui::Dummy(ImVec2(0.0f, 6.0f));
-            const auto& gpu = g_hardwareInfo.gpus[g_idx];
-            bool is_this_gpu_active = (g_daemonActiveGpuIndex == static_cast<int>(g_idx));
-            if (is_this_gpu_active) {
-                ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f),
-                    "GPU %zu: %s [ACTIVE D3D11]",
-                    g_idx + 1, StEllipsize(gpu.name, 26).c_str());
-            } else {
-                ImGui::TextColored(ImVec4(0.80f, 0.82f, 0.88f, 1.00f),
-                    "GPU %zu: %s [%s]",
-                    g_idx + 1, StEllipsize(gpu.name, 30).c_str(), gpu.is_discrete ? "dGPU" : "iGPU");
-            }
-            TextDim("   VRAM: %zu MB (%.1f GB)  |  Shared: %zu MB",
-                        gpu.dedicated_vram_mb, static_cast<float>(gpu.dedicated_vram_mb) / 1024.0f,
-                        gpu.shared_vram_mb);
-        }
-    }
-    colY2 += EndGlassCard() + colGap;
-
-    // Kartu 7: Diagnostics & Activity Logs
-    ImGui::SetCursorScreenPos(ImVec2(rightX, colY2));
-    BeginGlassCard("PerfDiagCard", ImVec2(colW, 0.0f), cardPadX, cardPadY, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    GlassCardHeader(ICON_FA_CIRCLE_INFO "  DIAGNOSTICS & LOGS");
-
-    if (g_daemonInjected) {
-        ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f), "Desktop Injection (WorkerW): OK");
-    } else {
-        ImGui::TextColored(ImVec4(1.00f, 0.30f, 0.43f, 1.00f), "Desktop Injection (WorkerW): FAILED");
-    }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    if (g_daemonActiveGpuIndex == -1 || !g_daemonHwDecode) {
-        ImGui::Text("Decoder: Software (CPU swscale)");
-    } else {
-        ImGui::Text("Decoder: Hardware D3D11VA (HW decode)");
-    }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    ImGui::Text("Frames Rendered: %llu", (unsigned long long)g_daemonFramesRendered);
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    if (!g_daemonLastError.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Last Error: %s", StEllipsize(g_daemonLastError, 28).c_str());
-    } else {
-        ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f), "Last Error: (none)");
-    }
-
-    ImGui::Dummy(ImVec2(0.0f, 12.0f));
-
-    {
-        float btnW = (contentW - 8.0f) * 0.5f;
-        if (HoloButtonEx(ICON_FA_EXPAND "  FLASH RENDER", ImVec2(btnW, 27.0f), false, true)) {
-            SendIpcAsync("{\"cmd\":\"test_render\"}");
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Flashes the injected render window cyan for diagnostics.");
-        }
-        ImGui::SameLine(0.0f, 8.0f);
-        if (HoloButtonEx(ICON_FA_FOLDER_OPEN "  OPEN LOG", ImVec2(btnW, 27.0f), false, true)) {
-            const char* appData = getenv("APPDATA");
-            if (appData) {
-                std::string logPath = std::string(appData) + "\\MiniWallpaper\\engine.log";
-                ShellExecuteA(nullptr, "open", "notepad.exe", logPath.c_str(), nullptr, SW_SHOW);
-            }
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Opens the background engine log in Notepad.");
-        }
-    }
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    TextDim("*Cyan flash on the desktop = injection works.");
-    colY2 += EndGlassCard() + colGap;
-
-    // Akhiri layout 2 kolom: lanjutkan dari kolom terpanjang
-    ImGui::SetCursorScreenPos(ImVec2(pageStart.x, (std::max)(colY, colY2)));
-    // Ruang bawah agar konten tidak tertutup dock yg melayang
-    ImGui::Dummy(ImVec2(1.0f, 40.0f));
-}
-
-static void RequestCaptureModalPreview() {
-    if (g_captureModalPath.empty()) return;
-    if (g_captureModalPreviewWorkerActive.load()) {
-        g_captureModalQueuedSec.store(g_captureModalTimeSec);
-        g_captureModalPreviewQueued.store(true);
-        return;
-    }
-    g_captureModalPreviewWorkerActive.store(true);
-
-    std::string vpath = g_captureModalPath;
-    float timeSec = g_captureModalTimeSec;
-    int pw = g_captureModalPreviewW;
-    int ph = g_captureModalPreviewH;
-
-    std::thread([vpath, timeSec, pw, ph]() {
-        float currentTargetSec = timeSec;
-        while (true) {
-            std::vector<uint8_t> bgra;
-            if (ThumbnailManager::ExtractFrameToBGRA(vpath, bgra, pw, ph, static_cast<double>(currentTargetSec))) {
-                g_captureModalPreviewBgra = std::move(bgra);
-                g_captureModalPreviewPending.store(true);
-                g_captureModalPreviewSec = currentTargetSec;
-            }
-            if (g_captureModalPreviewQueued.exchange(false)) {
-                currentTargetSec = g_captureModalQueuedSec.load();
-            } else {
-                break;
-            }
-        }
-        g_captureModalPreviewWorkerActive.store(false);
-    }).detach();
-}
-
-static void OpenCaptureModal(const std::string& video_path, int targetFilter) {
-    if (video_path.empty()) return;
-
-    g_captureModalPath = video_path;
-    auto probe = VideoOptimizer::Probe(video_path);
-    if (probe.valid) {
-        g_captureModalDuration = (probe.duration > 0.0) ? probe.duration : 10.0;
-        g_captureModalFps = (probe.fps > 0.0) ? probe.fps : 30.0;
-        g_captureModalSourceW = probe.width > 0 ? probe.width : 1920;
-        g_captureModalSourceH = probe.height > 0 ? probe.height : 1080;
-    } else {
-        g_captureModalDuration = (g_daemonDuration > 0.0) ? g_daemonDuration : 10.0;
-        g_captureModalFps = (g_daemonVideoFps > 0.0) ? g_daemonVideoFps : 30.0;
-        g_captureModalSourceW = g_daemonWidth > 0 ? g_daemonWidth : 1920;
-        g_captureModalSourceH = g_daemonHeight > 0 ? g_daemonHeight : 1080;
-    }
-
-    auto& cfg = g_config.Get();
-    if (targetFilter == 1) {
-        g_captureModalTargetDesktop = true;
-        g_captureModalTargetLockscreen = false;
-    } else if (targetFilter == 2) {
-        g_captureModalTargetDesktop = false;
-        g_captureModalTargetLockscreen = true;
-    } else {
-        g_captureModalTargetDesktop = cfg.update_desktop_wallpaper;
-        g_captureModalTargetLockscreen = cfg.update_lockscreen;
-        if (!g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) {
-            g_captureModalTargetDesktop = true;
-        }
-    }
-
-    // Default time: if this video matches configured custom desktop/lockscreen or active video, snap to that timestamp
-    if (targetFilter == 1 && cfg.desktop_static_source_mode == 1 && cfg.desktop_static_video_path == video_path) {
-        g_captureModalTimeSec = static_cast<float>(cfg.desktop_static_timestamp);
-    } else if (targetFilter == 2 && cfg.lockscreen_source_mode == 1 && cfg.lockscreen_video_path == video_path) {
-        g_captureModalTimeSec = static_cast<float>(cfg.lockscreen_timestamp);
-    } else if (!g_daemonCurrentVideo.empty() && (g_daemonCurrentVideo == video_path || g_daemonCurrentVideo.find(fs::path(video_path).stem().string()) != std::string::npos)) {
-        g_captureModalTimeSec = static_cast<float>(g_daemonCurrentTimeSec);
-    } else {
-        g_captureModalTimeSec = 1.0f;
-    }
-    if (g_captureModalTimeSec > g_captureModalDuration && g_captureModalDuration > 0.0) {
-        g_captureModalTimeSec = static_cast<float>(g_captureModalDuration * 0.5);
-    }
-    g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-    g_captureModalStatus.clear();
-    g_captureModalPreviewSRV.Reset();
-    g_captureModalPreviewSec = -1.0f;
-    g_captureModalAutoPreviewRequested = false;
-    g_captureModalLastChangeTick = 0;
-    g_captureModalPreviewQueued.store(false);
-    g_showCaptureModal = true;
-}
-
-static void RenderCaptureFrameModal() {
-    if (g_showCaptureModal) {
-        ImGui::OpenPopup("Capture Static Wallpaper / Lock Screen Frame");
-        if (!g_captureModalPreviewSRV && !g_captureModalPreviewWorkerActive.load() && g_captureModalPreviewSec < 0.0f) {
-            RequestCaptureModalPreview();
-        }
-
-        if (g_captureModalAutoPreviewRequested) {
-            uint64_t nowTick = GetTickCount64();
-            if (nowTick >= g_captureModalLastChangeTick + 150) {
-                g_captureModalAutoPreviewRequested = false;
-                RequestCaptureModalPreview();
-            }
-        }
-    }
-
-    if (g_captureModalPreviewPending.exchange(false) && g_pd3dDevice) {
-        g_captureModalPreviewSRV = ThumbnailManager::CreateSRVFromBGRA(
-            g_pd3dDevice,
-            g_captureModalPreviewBgra.data(),
-            g_captureModalPreviewW,
-            g_captureModalPreviewH
-        );
-    }
-
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(ImVec2(center.x, 26.0f), ImGuiCond_Appearing, ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(680, 580));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(560, 300), ImVec2(680, 700));
-
-    if (ImGui::BeginPopupModal("Capture Static Wallpaper / Lock Screen Frame", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::TextColored(ImVec4(0.94f, 0.95f, 0.97f, 1.0f), ICON_FA_CAMERA "  Select Frame & Injection Destination");
-        if (g_fontSemibold) ImGui::PopFont();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        fs::path p(g_captureModalPath);
-        std::string filename = p.filename().string();
-        if (filename.empty()) filename = g_captureModalPath;
-
-        auto& cfg = g_config.Get();
-        if (!cfg.gallery_history.empty()) {
-            int currentIdx = -1;
-            for (size_t i = 0; i < cfg.gallery_history.size(); ++i) {
-                if (cfg.gallery_history[i] == g_captureModalPath) {
-                    currentIdx = static_cast<int>(i);
-                    break;
-                }
-            }
-            std::string currentLabel = (currentIdx >= 0) ? fs::path(cfg.gallery_history[currentIdx]).filename().string() : filename;
-            ImGui::SetNextItemWidth(450.0f);
-            if (ImGui::BeginCombo("Select Video Source", currentLabel.c_str())) {
-                for (size_t i = 0; i < cfg.gallery_history.size(); ++i) {
-                    bool isSel = (static_cast<int>(i) == currentIdx);
-                    std::string itemLabel = fs::path(cfg.gallery_history[i]).filename().string();
-                    if (ImGui::Selectable(itemLabel.c_str(), isSel)) {
-                        int filter = (g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) ? 1 :
-                                     (!g_captureModalTargetDesktop && g_captureModalTargetLockscreen) ? 2 : 0;
-                        OpenCaptureModal(cfg.gallery_history[i], filter);
-                    }
-                    if (isSel) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-        } else {
-            ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.95f, 1.0f), "Video Source: %s", filename.c_str());
-        }
-
-        // Video info row
-        int durMin = static_cast<int>(g_captureModalDuration) / 60;
-        float durSec = static_cast<float>(g_captureModalDuration) - durMin * 60.0f;
-        int totalFrames = static_cast<int>(g_captureModalDuration * g_captureModalFps);
-        ImGui::TextColored(ImVec4(0.65f, 0.68f, 0.75f, 1.0f), "Resolution: %dx%d  |  Framerate: %.1f FPS  |  Duration: %02d:%05.2f (%d frames)",
-            g_captureModalSourceW, g_captureModalSourceH, g_captureModalFps, durMin, durSec, totalFrames);
-        ImGui::Spacing();
-
-        // 1. Destination Checkboxes
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::TextColored(ImVec4(0.94f, 0.95f, 0.97f, 1.0f), ICON_FA_DESKTOP "  Target Destination (Where to inject this frame):");
-        if (g_fontSemibold) ImGui::PopFont();
-        ToggleSwitch("Apply to Windows Desktop Wallpaper (0s Instant Boot Visual)", &g_captureModalTargetDesktop);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Sets this frame directly into the native Windows Desktop Wallpaper.\nIt appears instantly in 0.0s upon Windows boot without black screen or delay.");
-        }
-
-        ToggleSwitch("Apply to Windows Lock Screen (Win + L Seamless Transition)", &g_captureModalTargetLockscreen);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Pre-caches this frame for the Windows Lock Screen.\nWhen pressing Win+L or locking the PC, this image is shown seamlessly.");
-        }
-
-        if (!g_captureModalTargetDesktop && !g_captureModalTargetLockscreen) {
-            ImGui::TextColored(ImVec4(1.00f, 0.30f, 0.43f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " Please select at least one destination (Desktop, Lock Screen, or Both).");
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-
-        float maxTime = static_cast<float>((std::max)(0.1, g_captureModalDuration));
-
-        // Time Slider (Starlume)
-        if (StarlumeSliderFloat("Preview Time", &g_captureModalTimeSec, 0.0f, maxTime, 2, " s", 520.0f)) {
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            g_captureModalAutoPreviewRequested = true;
-            g_captureModalLastChangeTick = GetTickCount64();
-        }
-        if (ImGui::IsItemDeactivated()) {
-            g_captureModalAutoPreviewRequested = false;
-            RequestCaptureModalPreview();
-        }
-
-        // Two-way Synced Numeric Inputs
-        ImGui::PushItemWidth(140.0f);
-        if (ImGui::InputFloat("Time (seconds)", &g_captureModalTimeSec, 0.1f, 1.0f, "%.2f s")) {
-            g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            g_captureModalAutoPreviewRequested = true;
-            g_captureModalLastChangeTick = GetTickCount64();
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            g_captureModalAutoPreviewRequested = false;
-            RequestCaptureModalPreview();
-        }
-        ImGui::SameLine();
-        if (ImGui::InputInt("Frame Number", &g_captureModalFrameNum, 1, 10)) {
-            g_captureModalFrameNum = std::clamp(g_captureModalFrameNum, 0, (std::max)(1, totalFrames));
-            g_captureModalTimeSec = static_cast<float>(g_captureModalFrameNum / g_captureModalFps);
-            g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
-            g_captureModalAutoPreviewRequested = true;
-            g_captureModalLastChangeTick = GetTickCount64();
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            g_captureModalAutoPreviewRequested = false;
-            RequestCaptureModalPreview();
-        }
-        ImGui::PopItemWidth();
-
-        ImGui::SameLine();
-        if (HoloButton(ICON_FA_ROTATE " Preview Frame")) {
-            RequestCaptureModalPreview();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Render a thumbnail preview of the selected frame");
-        }
-
-        // Presets & Snap Button
-        ImGui::Spacing();
-        if (HoloButtonSmall("0s (Start)")) {
-            g_captureModalTimeSec = 0.0f;
-            g_captureModalFrameNum = 0;
-            RequestCaptureModalPreview();
-        }
-        ImGui::SameLine();
-        if (HoloButtonSmall("25%")) {
-            g_captureModalTimeSec = maxTime * 0.25f;
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            RequestCaptureModalPreview();
-        }
-        ImGui::SameLine();
-        if (HoloButtonSmall("50% (Middle)")) {
-            g_captureModalTimeSec = maxTime * 0.50f;
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            RequestCaptureModalPreview();
-        }
-        ImGui::SameLine();
-        if (HoloButtonSmall("75%")) {
-            g_captureModalTimeSec = maxTime * 0.75f;
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            RequestCaptureModalPreview();
-        }
-        ImGui::SameLine();
-        if (HoloButtonSmall("End")) {
-            g_captureModalTimeSec = (std::max)(0.0f, maxTime - 0.1f);
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            RequestCaptureModalPreview();
-        }
-        ImGui::SameLine();
-        if (HoloButtonSmall(ICON_FA_CROSSHAIRS " Snap to Live Video")) {
-            g_captureModalTimeSec = static_cast<float>(g_daemonCurrentTimeSec);
-            g_captureModalTimeSec = std::clamp(g_captureModalTimeSec, 0.0f, maxTime);
-            g_captureModalFrameNum = static_cast<int>(g_captureModalTimeSec * g_captureModalFps);
-            RequestCaptureModalPreview();
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Snap time to the exact position currently playing on your desktop");
-        }
-
-        // Preview box + action buttons side by side
-        ImGui::Spacing();
-        float previewBoxW = 300.0f;
-        float previewBoxH = 169.0f;
-        bool isLoadingPreview = g_captureModalPreviewWorkerActive.load() || g_captureModalAutoPreviewRequested;
-
-        ImVec2 p0 = ImGui::GetCursorScreenPos();
-        ImVec2 p1 = ImVec2(p0.x + previewBoxW, p0.y + previewBoxH);
-
-        if (g_captureModalPreviewSRV) {
-            ImGui::Image((ImTextureID)g_captureModalPreviewSRV.Get(), ImVec2(previewBoxW, previewBoxH));
-            if (isLoadingPreview) {
-                ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                draw_list->AddRectFilled(p0, p1, IM_COL32(9, 12, 21, 150), 4.0f);
-                draw_list->AddRect(p0, p1, IM_COL32(56, 232, 255, 180), 4.0f);
-                draw_list->AddText(ImVec2(p0.x + 95.0f, p0.y + 80.0f), IM_COL32(56, 232, 255, 255), ICON_FA_ROTATE " Loading Frame...");
-            }
-        } else {
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddRectFilled(p0, p1, IM_COL32(17, 23, 38, 255), 4.0f);
-            draw_list->AddRect(p0, p1, IM_COL32(56, 232, 255, 46), 4.0f);
-            if (isLoadingPreview) {
-                draw_list->AddText(ImVec2(p0.x + 80.0f, p0.y + 80.0f), IM_COL32(56, 232, 255, 255), ICON_FA_ROTATE " Extracting Preview...");
-            } else {
-                draw_list->AddText(ImVec2(p0.x + 65.0f, p0.y + 80.0f), IM_COL32(148, 163, 184, 255), "Drag slider to preview frame");
-            }
-            ImGui::Dummy(ImVec2(previewBoxW, previewBoxH));
-        }
-
-        // Action column beside the preview
-        ImGui::SameLine(0, 18.0f);
-        ImGui::BeginGroup();
-        {
-            bool canApply = (g_captureModalTargetDesktop || g_captureModalTargetLockscreen);
-            if (!canApply) ImGui::BeginDisabled();
-            if (HoloButton(ICON_FA_CHECK "  Capture & Apply Static Wallpaper", ImVec2(320, 40))) {
-                if (g_captureModalTargetDesktop) {
-                    cfg.desktop_static_source_mode = 1;
-                    cfg.desktop_static_video_path = g_captureModalPath;
-                    cfg.desktop_static_timestamp = static_cast<double>(g_captureModalTimeSec);
-                    cfg.update_desktop_wallpaper = true;
-                }
-                if (g_captureModalTargetLockscreen) {
-                    cfg.lockscreen_source_mode = 1;
-                    cfg.lockscreen_video_path = g_captureModalPath;
-                    cfg.lockscreen_timestamp = static_cast<double>(g_captureModalTimeSec);
-                    cfg.update_lockscreen = true;
-                }
-                g_config.Save();
-
-                nlohmann::json req{
-                    {"cmd", "sync_desktop_wallpaper"},
-                    {"path", g_captureModalPath},
-                    {"desktop", g_captureModalTargetDesktop},
-                    {"lockscreen", g_captureModalTargetLockscreen},
-                    {"timestamp", static_cast<double>(g_captureModalTimeSec)},
-                    {"save_mode", 1}
-                };
-                SendIpcAsync(req.dump());
-
-                std::string destStr = (g_captureModalTargetDesktop && g_captureModalTargetLockscreen) ? "Desktop & Lock Screen" :
-                                      (g_captureModalTargetDesktop ? "Desktop Wallpaper" : "Lock Screen");
-                char statusMsg[256];
-                sprintf_s(statusMsg, "Pristine static frame at %.2fs successfully injected to %s!", g_captureModalTimeSec, destStr.c_str());
-                g_captureModalStatus = statusMsg;
-
-                g_showCaptureModal = false;
-                ImGui::CloseCurrentPopup();
-            }
-            if (!canApply) ImGui::EndDisabled();
-
-            ImGui::Spacing();
-            if (HoloButton("Cancel", ImVec2(320, 36))) {
-                g_showCaptureModal = false;
-                ImGui::CloseCurrentPopup();
-            }
-
-            if (!g_captureModalStatus.empty()) {
-                ImGui::Spacing();
-                ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.0f), "%s", g_captureModalStatus.c_str());
-            }
-        }
-        ImGui::EndGroup();
-
-        ImGui::EndPopup();
-    }
-}
-
-static void RenderOptimizeModal() {
-    if (g_showOptimizeModal) {
-        ImGui::OpenPopup("Optimize Video for Display?");
-    }
-
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(620, 310));
-
-    if (ImGui::BeginPopupModal("Optimize Video for Display?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::TextColored(ImVec4(0.94f, 0.95f, 0.97f, 1.0f), ICON_FA_COMPACT_DISC "  High-Resolution Video Detected");
-        if (g_fontSemibold) ImGui::PopFont();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        int screen_w = GetSystemMetrics(SM_CXSCREEN);
-        int screen_h = GetSystemMetrics(SM_CYSCREEN);
-        if (screen_w <= 0) screen_w = 1920;
-        if (screen_h <= 0) screen_h = 1080;
-
-        auto& cfg = g_config.Get();
-
-        ImGui::Text("Source Video Resolution : %dx%d", g_pendingSourceW, g_pendingSourceH);
-
-        ImGui::Spacing();
-        if (g_fontSemibold) ImGui::PushFont(g_fontSemibold);
-        ImGui::TextColored(ImVec4(0.94f, 0.95f, 0.97f, 1.0f), ICON_FA_EXPAND "  Optimization Scaling Mode:");
-        if (g_fontSemibold) ImGui::PopFont();
-
-        if (ImGui::RadioButton("Aspect Fit (Proportional - keeps entire frame intact)", &cfg.optimizer_crop_mode, 0)) {
-            g_config.Save();
-        }
-        if (ImGui::RadioButton("Aspect Fill / Center Crop (Exact Full Screen 1080p - zero black bars)", &cfg.optimizer_crop_mode, 1)) {
-            g_config.Save();
-        }
-
-        auto [target_w, target_h] = VideoOptimizer::CalculateTargetDimensions(g_pendingSourceW, g_pendingSourceH, screen_w, screen_h, cfg.optimizer_crop_mode);
-        g_pendingTargetW = target_w;
-        g_pendingTargetH = target_h;
-
-        ImGui::Spacing();
-        if (cfg.optimizer_crop_mode == 0) {
-            ImGui::Text("Target Resolution : %dx%d (Proportional Letterbox)", g_pendingTargetW, g_pendingTargetH);
-        } else {
-            ImGui::Text("Target Resolution : %dx%d (Full Screen Center-Crop)", g_pendingTargetW, g_pendingTargetH);
-        }
-
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.22f, 0.91f, 1.00f, 1.00f),
-            "*Optimizing saves up to 75%% GPU & VRAM with crystal-clear Lanczos downscaling!");
-        
-        ImGui::Spacing();
-        ToggleSwitch("Remember my choice (Auto-downscale in the future)", &g_rememberDownscaleChoice);
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if (HoloButton(ICON_FA_DOWNLOAD "  Optimize Video (Recommended)", ImVec2(260, 36))) {
-            if (g_rememberDownscaleChoice) {
-                cfg.auto_downscale_highres = true;
-                cfg.prompt_downscale = false;
-                g_config.Save();
-            }
-            g_showOptimizeModal = false;
-            ImGui::CloseCurrentPopup();
-            StartVideoOptimization(g_pendingOptimizePath, g_pendingTargetW, g_pendingTargetH, g_pendingOptimizeAction, cfg.optimizer_crop_mode);
-        }
-
-        ImGui::SameLine();
-        if (HoloButton("Play Original", ImVec2(130, 36))) {
-            if (g_rememberDownscaleChoice) {
-                auto& cfg = g_config.Get();
-                cfg.auto_downscale_highres = false;
-                cfg.prompt_downscale = false;
-                g_config.Save();
-            }
-            g_showOptimizeModal = false;
-            ImGui::CloseCurrentPopup();
-            ApplyAction(g_pendingOptimizePath, g_pendingOptimizeAction);
-        }
-
-        ImGui::SameLine();
-        if (HoloButton("Cancel", ImVec2(100, 36))) {
-            g_showOptimizeModal = false;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
-static void RenderOptimizationProgress() {
-    if (!g_video_optimizer.IsRunning()) return;
-
-    BeginModuleCard("OptProgressBanner", ImVec2(0, 100), 14.0f, ST_CARD_NORMAL, ImGuiWindowFlags_NoScrollbar);
-
-    float prog = g_video_optimizer.GetProgress();
-    std::string status = g_video_optimizer.GetCurrentStatus();
-
-    ImGui::TextColored(ImVec4(0.945f, 0.961f, 0.976f, 1.00f), ICON_FA_ROTATE "  %s", status.c_str());
-    ImGui::SameLine(ImGui::GetWindowWidth() - 110);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 5.0f);
-    if (HoloButtonSmall("Cancel")) {
-        g_video_optimizer.Cancel();
-    }
-
-    char progText[32];
-    snprintf(progText, sizeof(progText), "%.0f%%", prog * 100.0f);
-    StarlumeProgress(prog, 14.0f, progText);
-
-    EndModuleCard();
-    ImGui::Spacing();
-}
-
-// Overlay drag & drop: tampil "Drop video here" saat file diseret ke atas window.
-static bool g_dragOverlay = false;
-static IDropTarget* g_dropTarget = nullptr;
-static bool g_dropComInit = false;
 
 class GalleryDropTarget : public IDropTarget {
 public:
@@ -3599,23 +399,29 @@ public:
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* pDataObj, DWORD, POINTL, DWORD* pdwEffect) override {
         bool ok = HasHDrop(pDataObj);
         if (pdwEffect) *pdwEffect = ok ? DROPEFFECT_COPY : DROPEFFECT_NONE;
-        if (ok) g_dragOverlay = true;
+        if (ok) {
+            ui::g_ui.dragOverlay = true;
+            ui::MarkUiInteraction();
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* pdwEffect) override {
-        if (pdwEffect) *pdwEffect = g_dragOverlay ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (pdwEffect) *pdwEffect = ui::g_ui.dragOverlay ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        ui::MarkUiInteraction();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE DragLeave() override {
-        g_dragOverlay = false;
+        ui::g_ui.dragOverlay = false;
+        ui::MarkUiInteraction();
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* pDataObj, DWORD, POINTL, DWORD* pdwEffect) override {
-        g_dragOverlay = false;
+        ui::g_ui.dragOverlay = false;
+        ui::MarkUiInteraction();
         if (pdwEffect) *pdwEffect = DROPEFFECT_COPY;
         if (pDataObj) {
             FORMATETC f = {};
-            f.cfFormat = (CLIPFORMAT)CF_HDROP;
+            f.cfFormat = static_cast<CLIPFORMAT>(CF_HDROP);
             f.dwAspect = DVASPECT_CONTENT;
             f.lindex = -1;
             f.tymed = TYMED_HGLOBAL;
@@ -3625,20 +431,11 @@ public:
                 if (hDrop) {
                     UINT n = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
                     for (UINT i = 0; i < n; i++) {
-                        wchar_t fp[MAX_PATH] = {};
-                        if (DragQueryFileW(hDrop, i, fp, MAX_PATH)) {
-                            std::string ext;
-                            if (wchar_t* dot = wcsrchr(fp, L'.')) {
-                                char mb[16] = {};
-                                WideCharToMultiByte(CP_ACP, 0, dot, -1, mb, (int)sizeof(mb), nullptr, nullptr);
-                                ext = mb;
-                                for (auto& c : ext) c = (char)::tolower((unsigned char)c);
-                            }
-                            if (ext == ".mp4" || ext == ".webm" || ext == ".mkv" || ext == ".avi" || ext == ".mov") {
-                                int sz = WideCharToMultiByte(CP_UTF8, 0, fp, -1, nullptr, 0, nullptr, nullptr);
-                                std::string utf8(sz > 0 ? sz - 1 : 0, 0);
-                                if (sz > 0) WideCharToMultiByte(CP_UTF8, 0, fp, -1, &utf8[0], sz, nullptr, nullptr);
-                                RequestApplyVideo(utf8, "wallpaper");
+                        wchar_t fp[1024] = {};
+                        if (DragQueryFileW(hDrop, i, fp, static_cast<UINT>(IM_ARRAYSIZE(fp)))) {
+                            fs::path droppedPath(fp);
+                            if (IsSupportedVideoExtension(droppedPath)) {
+                                ui::RequestApplyVideo(WideToUtf8(fp), "wallpaper");
                                 break;
                             }
                         }
@@ -3657,7 +454,7 @@ private:
     static bool HasHDrop(IDataObject* obj) {
         if (!obj) return false;
         FORMATETC f = {};
-        f.cfFormat = (CLIPFORMAT)CF_HDROP;
+        f.cfFormat = static_cast<CLIPFORMAT>(CF_HDROP);
         f.dwAspect = DVASPECT_CONTENT;
         f.lindex = -1;
         f.tymed = TYMED_HGLOBAL;
@@ -3665,19 +462,205 @@ private:
     }
 };
 
+LRESULT WINAPI SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_MOUSEMOVE:
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_CHAR:
+        case WM_ACTIVATE:
+            ui::MarkUiInteraction();
+            break;
+        default:
+            break;
+    }
+
+    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
+        return true;
+    }
+
+    switch (msg) {
+        case WM_NCCALCSIZE: {
+            if (wParam) {
+                if (IsZoomed(hWnd)) {
+                    auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+                    HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+                    MONITORINFO mi = { sizeof(mi) };
+                    if (GetMonitorInfoW(hMon, &mi)) {
+                        params->rgrc[0] = mi.rcWork;
+                    }
+                }
+                return 0;
+            }
+            return DefWindowProcW(hWnd, msg, wParam, lParam);
+        }
+
+        case WM_NCHITTEST: {
+            if (IsZoomed(hWnd)) return HTCLIENT;
+
+            POINT pt = { static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)) };
+            ScreenToClient(hWnd, &pt);
+            RECT cr;
+            GetClientRect(hWnd, &cr);
+            const int border = 8;
+            bool left = (pt.x < border);
+            bool right = (pt.x >= cr.right - border);
+            bool top = (pt.y < border);
+            bool bottom = (pt.y >= cr.bottom - border);
+
+            if (top && pt.x >= cr.right - 145) return HTCLIENT;
+
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bottom && left) return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (bottom) return HTBOTTOM;
+            if (top) return HTTOP;
+
+            return HTCLIENT;
+        }
+
+        case WM_SIZE:
+            ui::MarkUiInteraction();
+            if (wParam == SIZE_MINIMIZED) {
+                SettingsUI::Close();
+                return 0;
+            }
+            if (ui::g_ui.device != nullptr && g_pSwapChain != nullptr && wParam != SIZE_MINIMIZED) {
+                CleanupRenderTarget();
+                g_pSwapChain->ResizeBuffers(0, static_cast<UINT>(LOWORD(lParam)), static_cast<UINT>(HIWORD(lParam)), DXGI_FORMAT_UNKNOWN, 0);
+                CreateRenderTarget();
+            }
+            return 0;
+
+        case WM_DROPFILES: {
+            ui::MarkUiInteraction();
+            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+            UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < fileCount; i++) {
+                wchar_t filePath[1024] = {};
+                if (DragQueryFileW(hDrop, i, filePath, static_cast<UINT>(IM_ARRAYSIZE(filePath)))) {
+                    fs::path droppedPath(filePath);
+                    if (IsSupportedVideoExtension(droppedPath)) {
+                        ui::RequestApplyVideo(WideToUtf8(filePath), "wallpaper");
+                        break;
+                    }
+                }
+            }
+            DragFinish(hDrop);
+            return 0;
+        }
+
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            mmi->ptMinTrackSize.x = static_cast<LONG>(600 * ui::g_ui.dpiScale);
+            mmi->ptMinTrackSize.y = static_cast<LONG>(420 * ui::g_ui.dpiScale);
+            return 0;
+        }
+
+        case WM_SYSCOMMAND:
+            if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
+            break;
+
+        case WM_CLOSE:
+            SettingsUI::Close();
+            return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+void ReleaseUiStack() {
+    g_config.FlushIfDirty(true);
+
+    if (!ui::g_ui.hWnd && !ui::g_ui.device && !g_pSwapChain && !ImGui::GetCurrentContext()) {
+        return;
+    }
+
+    if (g_dropTarget) {
+        if (ui::g_ui.hWnd) RevokeDragDrop(ui::g_ui.hWnd);
+        g_dropTarget->Release();
+        g_dropTarget = nullptr;
+    }
+    if (g_dropComInit) {
+        OleUninitialize();
+        g_dropComInit = false;
+    }
+    ui::g_ui.dragOverlay = false;
+
+    g_isOpen = false;
+
+    ui::ShutdownCaptureModalWorker();
+    ThumbnailManager::Instance().ReleaseTextures();
+    ui::ReleaseAppLogoTexture();
+    ui::ClearGalleryCardCache();
+    ui::ResetUiAnimations();
+
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+    }
+    ui::g_ui.fontSemibold = nullptr;
+    std::vector<uint8_t>().swap(g_iconFontBytes);
+
+    CleanupDeviceD3D();
+
+    if (ui::g_ui.hWnd) {
+        DestroyWindow(ui::g_ui.hWnd);
+        UnregisterClassW(L"MiniWallpaper_SettingsClass", g_hInstance);
+        ui::g_ui.hWnd = nullptr;
+    }
+
+    mi_collect(true);
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+}
+
+struct UiFrameScope {
+    UiFrameScope() { g_inRenderFrame = true; }
+    ~UiFrameScope() {
+        g_inRenderFrame = false;
+        if (g_closeRequested) {
+            g_closeRequested = false;
+            ReleaseUiStack();
+        }
+    }
+};
+
+} // namespace
+
 bool SettingsUI::Open(HINSTANCE hInstance) {
-    if (g_hWnd) {
-        ShowWindow(g_hWnd, SW_RESTORE);
-        ShowWindow(g_hWnd, SW_SHOW);
-        SetForegroundWindow(g_hWnd);
+    if (ui::g_ui.hWnd) {
+        ShowWindow(ui::g_ui.hWnd, SW_RESTORE);
+        ShowWindow(ui::g_ui.hWnd, SW_SHOW);
+        SetForegroundWindow(ui::g_ui.hWnd);
         g_isOpen = true;
+        ui::MarkUiInteraction();
         return true;
     }
 
     g_hInstance = hInstance;
 
-    HICON hIconBig = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
-    HICON hIconSmall = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+    // LR_SHARED prevents GDI HICON leaks across repeated Open/Close cycles
+    HICON hIconBig = static_cast<HICON>(LoadImageW(
+        hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+        LR_DEFAULTCOLOR | LR_SHARED
+    ));
+    HICON hIconSmall = static_cast<HICON>(LoadImageW(
+        hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR | LR_SHARED
+    ));
     if (!hIconBig) hIconBig = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     if (!hIconSmall) hIconSmall = hIconBig;
 
@@ -3695,13 +678,12 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
     };
     RegisterClassExW(&wc);
 
-    // Skala ukuran window mengikuti DPI (tanpa ini Windows me-stretch bitmap → font pecah di 125%+).
     float dpiScale = 1.0f;
     {
         UINT dpi = 96;
         if (HDC hdc = GetDC(nullptr)) {
             int v = GetDeviceCaps(hdc, LOGPIXELSX);
-            if (v > 0) dpi = (UINT)v;
+            if (v > 0) dpi = static_cast<UINT>(v);
             ReleaseDC(nullptr, hdc);
         }
         if (HMODULE hU32 = GetModuleHandleW(L"user32.dll")) {
@@ -3714,16 +696,16 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         if (dpi < 96) dpi = 96;
         dpiScale = static_cast<float>(dpi) / 96.0f;
     }
-    g_dpiScale = dpiScale;
+    ui::g_ui.dpiScale = dpiScale;
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
-    int winW = (int)(1060 * dpiScale);
-    int winH = (int)(730 * dpiScale);
+    int winW = static_cast<int>(1060 * dpiScale);
+    int winH = static_cast<int>(730 * dpiScale);
     int winX = (sw > winW) ? (sw - winW) / 2 : 100;
     int winY = (sh > winH) ? (sh - winH) / 2 : 100;
 
-    g_hWnd = CreateWindowExW(
+    ui::g_ui.hWnd = CreateWindowExW(
         WS_EX_APPWINDOW,
         wc.lpszClassName,
         L"MiniWallpaper v2.0.0",
@@ -3732,37 +714,28 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         nullptr, nullptr, wc.hInstance, nullptr
     );
 
-    if (!g_hWnd || !CreateDeviceD3D(g_hWnd)) {
+    if (!ui::g_ui.hWnd || !CreateDeviceD3D(ui::g_ui.hWnd)) {
         CleanupDeviceD3D();
-        if (g_hWnd) DestroyWindow(g_hWnd);
+        if (ui::g_ui.hWnd) DestroyWindow(ui::g_ui.hWnd);
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        g_hWnd = nullptr;
+        ui::g_ui.hWnd = nullptr;
         return false;
     }
 
-    // Recalculate frame so WM_NCCALCSIZE strips native caption
-    SetWindowPos(g_hWnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    SetWindowPos(ui::g_ui.hWnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 
-    // DWM sheet-of-glass blur across entire window & rounded corners (Windows 11)
     MARGINS margins = { -1, -1, -1, -1 };
-    DwmExtendFrameIntoClientArea(g_hWnd, &margins);
+    DwmExtendFrameIntoClientArea(ui::g_ui.hWnd, &margins);
 
     int corner = 2; // DWMWCP_ROUND
-    DwmSetWindowAttribute(g_hWnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof(corner));
+    DwmSetWindowAttribute(ui::g_ui.hWnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof(corner));
 
-    // Windows 11 Acrylic blur backdrop
     int backdrop = 3; // DWMSBT_TRANSIENTWINDOW (Acrylic)
-    DwmSetWindowAttribute(g_hWnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
+    DwmSetWindowAttribute(ui::g_ui.hWnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
 
-    // Fallback Windows 10 Acrylic/Blur via SetWindowCompositionAttribute (50% alpha blur)
-    typedef enum {
-        ACCENT_DISABLED = 0,
-        ACCENT_ENABLE_GRADIENT = 1,
-        ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
-        ACCENT_ENABLE_BLURBEHIND = 3,
-        ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
-        ACCENT_ENABLE_HOSTBACKDROP = 5
-    } ACCENT_STATE;
+    enum ACCENT_STATE {
+        ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
+    };
     struct ACCENT_POLICY {
         ACCENT_STATE AccentState;
         int AccentFlags;
@@ -3774,71 +747,73 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         void* pData;
         ULONG ulDataSize;
     };
-    typedef BOOL(WINAPI* pfnSetWindowCompositionAttribute)(HWND, WINCOMPATTRDATA*);
+    using pfnSetWindowCompositionAttribute = BOOL(WINAPI*)(HWND, WINCOMPATTRDATA*);
     if (HMODULE hUser = GetModuleHandleW(L"user32.dll")) {
-        if (auto setAttr = (pfnSetWindowCompositionAttribute)GetProcAddress(hUser, "SetWindowCompositionAttribute")) {
+        if (auto setAttr = reinterpret_cast<pfnSetWindowCompositionAttribute>(GetProcAddress(hUser, "SetWindowCompositionAttribute"))) {
             ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, 0x80101826, 0 };
             WINCOMPATTRDATA data = { 19 /* WCA_ACCENT_POLICY */, &policy, sizeof(policy) };
-            setAttr(g_hWnd, &data);
+            setAttr(ui::g_ui.hWnd, &data);
         }
     }
 
-    SendMessageW(g_hWnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
-    SendMessageW(g_hWnd, WM_SETICON, ICON_SMALL, (LPARAM)wc.hIconSm);
+    SendMessageW(ui::g_ui.hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(wc.hIcon));
+    SendMessageW(ui::g_ui.hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(wc.hIconSm));
 
     BOOL darkMode = TRUE;
-    DwmSetWindowAttribute(g_hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+    DwmSetWindowAttribute(ui::g_ui.hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
     COLORREF captionColor = RGB(20, 20, 26);
-    DwmSetWindowAttribute(g_hWnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
+    DwmSetWindowAttribute(ui::g_ui.hWnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
 
-    DragAcceptFiles(g_hWnd, TRUE);
+    DragAcceptFiles(ui::g_ui.hWnd, TRUE);
 
-    // Liquid glass blur behind window (DWM fallback)
     {
         DWM_BLURBEHIND bb = {};
         bb.dwFlags = DWM_BB_ENABLE;
         bb.fEnable = TRUE;
-        DwmEnableBlurBehindWindow(g_hWnd, &bb);
+        DwmEnableBlurBehindWindow(ui::g_ui.hWnd, &bb);
     }
 
-    // OLE drag & drop utk overlay "drop video here" (fallback: WM_DROPFILES tetap aktif).
     if (SUCCEEDED(OleInitialize(nullptr))) g_dropComInit = true;
     if (GalleryDropTarget* dt = new GalleryDropTarget()) {
-        if (SUCCEEDED(RegisterDragDrop(g_hWnd, dt))) g_dropTarget = dt;
+        if (SUCCEEDED(RegisterDragDrop(ui::g_ui.hWnd, dt))) g_dropTarget = dt;
         else dt->Release();
     }
 
-    ShowWindow(g_hWnd, SW_SHOW);
-    UpdateWindow(g_hWnd);
+    ShowWindow(ui::g_ui.hWnd, SW_SHOW);
+    UpdateWindow(ui::g_ui.hWnd);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    (void)io;
-    SetupImGuiStyle();
+    // Disable imgui.ini & debug log files (no unwanted disk polling/artifacts next to .exe)
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+
+    ui::SetupImGuiStyle();
     if (dpiScale > 1.01f) ImGui::GetStyle().ScaleAllSizes(dpiScale);
 
     ImFontConfig main_cfg;
-    main_cfg.OversampleH = 2;
-    main_cfg.OversampleV = 2;
+    main_cfg.OversampleH = 1;
+    main_cfg.OversampleV = 1;
+    main_cfg.PixelSnapH = true;
     main_cfg.RasterizerMultiply = 1.12f;
+
     ImFont* mainFont = nullptr;
-    if (fs::exists("C:\\Windows\\Fonts\\segoeui.ttf")) {
+    std::error_code fontEc;
+    if (fs::exists(L"C:\\Windows\\Fonts\\segoeui.ttf", fontEc)) {
         mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f * dpiScale, &main_cfg);
     }
-    // Semibold utk judul (hierarki ala LuaTools); icon digabung ke tiap font yg memakainya.
+
     ImFontConfig bold_cfg = main_cfg;
-    bold_cfg.RasterizerMultiply = 1.0f; // semibold sudah tebal
-    if (fs::exists("C:\\Windows\\Fonts\\segoeuisb.ttf")) {
-        g_fontSemibold = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuisb.ttf", 17.0f * dpiScale, &bold_cfg);
+    bold_cfg.RasterizerMultiply = 1.0f;
+    if (fs::exists(L"C:\\Windows\\Fonts\\segoeuisb.ttf", fontEc)) {
+        ui::g_ui.fontSemibold = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuisb.ttf", 17.0f * dpiScale, &bold_cfg);
     }
     if (!mainFont) {
         io.Fonts->AddFontDefault();
     }
 
-    // Only the icon codepoints this app actually draws are registered. The full
-    // FontAwesome plane (0xE000..0xF8FF) is ~1,400 glyphs; a legacy font atlas
-    // would rasterize every one of them into CPU + GPU memory.
+    // Minimal FontAwesome subset actually drawn by MiniWallpaper UI
     static const ImWchar icons_ranges[] = {
         0xf002, 0xf008, 0xf00c, 0xf00d, 0xf013, 0xf019, 0xf021, 0xf023,
         0xf028, 0xf030, 0xf03e, 0xf04b, 0xf04c, 0xf04d, 0xf058, 0xf05a,
@@ -3847,287 +822,128 @@ bool SettingsUI::Open(HINSTANCE hInstance) {
         0xf242, 0xf2db, 0xf302, 0xf4c2, 0xf51f, 0xf5fe, 0xf625, 0xf6a9,
         0
     };
-    ImFontConfig icons_config;
-    icons_config.MergeMode = true;
-    icons_config.PixelSnapH = true;
-    icons_config.GlyphMinAdvanceX = 16.0f;
-    icons_config.OversampleH = 2;
-    icons_config.OversampleV = 2;
 
-    char exePath[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    fs::path fontPath = fs::path(exePath).parent_path() / "assets" / "fa-solid-900.ttf";
+    fs::path fontPath = GetExecutableDir() / L"assets" / L"fa-solid-900.ttf";
+    if (!fs::exists(fontPath, fontEc)) {
+        fontPath = fs::path(L"assets") / L"fa-solid-900.ttf";
+    }
 
-    if (fs::exists(fontPath)) {
-        io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), 15.0f * dpiScale, &icons_config, icons_ranges);
-        if (g_fontSemibold) {
-            ImFontConfig icons_config2 = icons_config;
-            io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), 15.0f * dpiScale, &icons_config2, icons_ranges);
+    g_iconFontBytes.clear();
+    if (fs::exists(fontPath, fontEc)) {
+        std::ifstream fin(fontPath, std::ios::binary | std::ios::ate);
+        if (fin.is_open()) {
+            auto sz = fin.tellg();
+            if (sz > 0) {
+                g_iconFontBytes.resize(static_cast<size_t>(sz));
+                fin.seekg(0, std::ios::beg);
+                fin.read(reinterpret_cast<char*>(g_iconFontBytes.data()), sz);
+            }
         }
     }
 
-    ImGui_ImplWin32_Init(g_hWnd);
-    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+    if (!g_iconFontBytes.empty()) {
+        ImFontConfig icons_config;
+        icons_config.MergeMode = true;
+        icons_config.PixelSnapH = true;
+        icons_config.GlyphMinAdvanceX = 16.0f;
+        icons_config.OversampleH = 1;
+        icons_config.OversampleV = 1;
+        icons_config.FontDataOwnedByAtlas = false; // Share single g_iconFontBytes buffer across both fonts!
 
-    g_config.Load();
+        io.Fonts->AddFontFromMemoryTTF(
+            g_iconFontBytes.data(),
+            static_cast<int>(g_iconFontBytes.size()),
+            15.0f * dpiScale,
+            &icons_config,
+            icons_ranges
+        );
+        if (ui::g_ui.fontSemibold) {
+            ImFontConfig icons_config2 = icons_config;
+            io.Fonts->AddFontFromMemoryTTF(
+                g_iconFontBytes.data(),
+                static_cast<int>(g_iconFontBytes.size()),
+                15.0f * dpiScale,
+                &icons_config2,
+                icons_ranges
+            );
+        }
+    }
+
+    ImGui_ImplWin32_Init(ui::g_ui.hWnd);
+    ImGui_ImplDX11_Init(ui::g_ui.device, ui::g_ui.deviceContext);
+
+    g_config.FlushIfDirty(true);
+    if (g_config.Get().config_path.empty()) {
+        g_config.Load();
+    }
+    ui::InvalidateGalleryCache();
+    ui::MarkUiInteraction();
     g_isOpen = true;
     return true;
 }
 
-static ComPtr<ID3D11ShaderResourceView> g_appLogoSRV;
-
-static void LoadAppLogoTexture() {
-    if (g_appLogoSRV || !g_pd3dDevice) return;
-
-    char exePath[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    fs::path baseDir = fs::path(exePath).parent_path();
-    fs::path iconPath;
-
-    std::vector<fs::path> candidates = {
-        baseDir / "assets" / "miniwallpaper-logo.png",
-        baseDir.parent_path() / "assets" / "miniwallpaper-logo.png",
-        "assets/miniwallpaper-logo.png",
-        baseDir / "assets" / "app_icon.png",
-        baseDir.parent_path() / "assets" / "app_icon.png",
-        "assets/app_icon.png"
-    };
-
-    for (const auto& p : candidates) {
-        if (fs::exists(p)) {
-            iconPath = p;
-            break;
-        }
-    }
-    if (iconPath.empty() || !fs::exists(iconPath)) return;
-
-    HRESULT hrCo = CoInitialize(nullptr);
-
-    ComPtr<IWICImagingFactory> factory;
-    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) {
-        ComPtr<IWICBitmapDecoder> decoder;
-        std::wstring wpath = iconPath.wstring();
-        if (SUCCEEDED(factory->CreateDecoderFromFilename(wpath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder))) {
-            ComPtr<IWICBitmapFrameDecode> frame;
-            if (SUCCEEDED(decoder->GetFrame(0, &frame))) {
-                ComPtr<IWICFormatConverter> converter;
-                if (SUCCEEDED(factory->CreateFormatConverter(&converter))) {
-                    if (SUCCEEDED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
-                        UINT width = 0, height = 0;
-                        converter->GetSize(&width, &height);
-                        if (width > 0 && height > 0) {
-                            std::vector<uint8_t> pixels(width * height * 4);
-                            UINT stride = width * 4;
-                            if (SUCCEEDED(converter->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()), pixels.data()))) {
-                                D3D11_TEXTURE2D_DESC desc = {};
-                                desc.Width = width;
-                                desc.Height = height;
-                                desc.MipLevels = 0; // generate full mip chain down to 1x1
-                                desc.ArraySize = 1;
-                                desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-                                desc.SampleDesc.Count = 1;
-                                desc.Usage = D3D11_USAGE_DEFAULT;
-                                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-                                desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
-
-                                ComPtr<ID3D11Texture2D> tex;
-                                if (SUCCEEDED(g_pd3dDevice->CreateTexture2D(&desc, nullptr, &tex))) {
-                                    g_pd3dDeviceContext->UpdateSubresource(tex.Get(), 0, nullptr, pixels.data(), stride, 0);
-
-                                    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                                    srvDesc.Format = desc.Format;
-                                    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-                                    srvDesc.Texture2D.MostDetailedMip = 0;
-                                    srvDesc.Texture2D.MipLevels = (UINT)-1;
-                                    if (SUCCEEDED(g_pd3dDevice->CreateShaderResourceView(tex.Get(), &srvDesc, &g_appLogoSRV))) {
-                                        g_pd3dDeviceContext->GenerateMips(g_appLogoSRV.Get());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+uint32_t SettingsUI::GetPreferredWaitMs() noexcept {
+    if (!g_isOpen || !ui::g_ui.hWnd || !IsWindowVisible(ui::g_ui.hWnd) || IsIconic(ui::g_ui.hWnd)) {
+        return 250;
     }
 
-    if (SUCCEEDED(hrCo)) CoUninitialize();
+    if (GetForegroundWindow() != ui::g_ui.hWnd) {
+        if (g_video_optimizer.IsRunning() || ThumbnailManager::Instance().HasPendingWork()) {
+            return 50;
+        }
+        return 100; // Unfocused window: ~10 FPS
+    }
+
+    uint64_t nowMs = GetTickCount64();
+    bool recentInput = (nowMs - ui::g_ui.lastInteractionTickMs) < 500;
+    bool activeWork = recentInput ||
+                      ui::g_ui.animActiveThisFrame ||
+                      ui::g_ui.dragOverlay ||
+                      ui::IsAnyModalActive() ||
+                      g_video_optimizer.IsRunning() ||
+                      ThumbnailManager::Instance().HasPendingWork();
+
+    if (!activeWork && ImGui::GetCurrentContext() && ImGui::IsAnyItemActive()) {
+        activeWork = true;
+    }
+
+    if (activeWork) {
+        return 16; // 60 FPS during any interaction, animation, modal, or background task
+    }
+
+    if (ui::g_ui.activePage == 3) {
+        return 33; // ~30 FPS on Performance tab when idle so Starlume shimmer stays smooth at half GPU cost
+    }
+
+    return 66; // ~15 FPS when sitting completely static & untouched
 }
-
-// Custom Glass Title Bar dengan Minimize, Maximize/Restore, dan Close
-static void RenderCustomTitleBar(float winWidth, float titleBarH) {
-    ImVec2 origin = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    // 1. Sleek glass header background strip
-    ImVec2 b0 = origin;
-    ImVec2 b1 = ImVec2(origin.x + winWidth, origin.y + titleBarH);
-    dl->AddRectFilled(b0, b1, IM_COL32(11, 15, 26, 128));
-    dl->AddLine(ImVec2(b0.x, b1.y - 0.5f), ImVec2(b1.x, b1.y - 0.5f), IM_COL32(56, 232, 255, 38), 1.0f);
-
-    // 2. Left brand: App Icon + Name + Version Badge
-    float leftPad = 14.0f;
-    float textY = origin.y + (titleBarH - ImGui::GetFontSize()) * 0.5f;
-    ImFont* semiboldFont = g_fontSemibold ? g_fontSemibold : ImGui::GetFont();
-
-    // App logo texture or fallback icon
-    LoadAppLogoTexture();
-    float iconW = 24.0f;
-    if (g_appLogoSRV) {
-        float iconSz = 24.0f;
-        float iconY = origin.y + (titleBarH - iconSz) * 0.5f;
-        dl->AddImageRounded((ImTextureID)g_appLogoSRV.Get(),
-            ImVec2(origin.x + leftPad, iconY),
-            ImVec2(origin.x + leftPad + iconSz, iconY + iconSz),
-            ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 5.0f);
-        iconW = iconSz + 10.0f;
-    } else {
-        dl->AddText(semiboldFont, ImGui::GetFontSize() * 1.10f, ImVec2(origin.x + leftPad, textY - 1.0f), IM_COL32(56, 232, 255, 255), ICON_FA_DESKTOP);
-        iconW = ImGui::CalcTextSize(ICON_FA_DESKTOP).x + 10.0f;
-    }
-
-    // App Name: MiniWallpaper
-    float titleX = origin.x + leftPad + iconW;
-    dl->AddText(semiboldFont, ImGui::GetFontSize() * 1.05f, ImVec2(titleX, textY - 1.0f), IM_COL32(245, 248, 252, 255), "MiniWallpaper");
-    float titleW = semiboldFont->CalcTextSizeA(ImGui::GetFontSize() * 1.05f, 1000.0f, 0.0f, "MiniWallpaper").x;
-
-    // Version Pill Badge
-    float badgeX = titleX + titleW + 10.0f;
-    const char* verStr = "v2.0.0";
-    ImVec2 verSz = ImGui::CalcTextSize(verStr);
-    ImVec2 vp0 = ImVec2(badgeX, textY - 1.0f);
-    ImVec2 vp1 = ImVec2(badgeX + verSz.x + 12.0f, vp0.y + verSz.y + 3.0f);
-    dl->AddRectFilled(vp0, vp1, IM_COL32(56, 232, 255, 28), 5.0f);
-    dl->AddRect(vp0, vp1, IM_COL32(56, 232, 255, 75), 5.0f, 0, 1.0f);
-    dl->AddText(ImVec2(vp0.x + 6.0f, vp0.y + 1.0f), IM_COL32(56, 232, 255, 240), verStr);
-
-    float leftTotalW = (vp1.x - origin.x) + 20.0f;
-
-    // 3. Right control buttons: Minimize, Maximize/Restore, Close
-    float btnW = 46.0f;
-    float totalBtnsW = btnW * 3.0f;
-    float btnsStartX = origin.x + winWidth - totalBtnsW;
-
-    // 4. Middle draggable region (between left branding and right buttons)
-    float dragW = btnsStartX - (origin.x + leftTotalW);
-    if (dragW > 20.0f) {
-        ImGui::SetCursorScreenPos(ImVec2(origin.x + leftTotalW, origin.y));
-        ImGui::InvisibleButton("##titlebar_drag", ImVec2(dragW, titleBarH));
-        if (ImGui::IsItemActive() && ImGui::IsMouseClicked(0)) {
-            ReleaseCapture();
-            SendMessageW(g_hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-        }
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-            if (IsZoomed(g_hWnd)) ShowWindow(g_hWnd, SW_RESTORE);
-            else ShowWindow(g_hWnd, SW_MAXIMIZE);
-        }
-    }
-
-    // 5. Render custom window buttons
-    bool isMax = IsZoomed(g_hWnd);
-    const char* btnIds[3] = { "##win_min", "##win_max", "##win_close" };
-
-    for (int i = 0; i < 3; ++i) {
-        ImVec2 bp0 = ImVec2(btnsStartX + i * btnW, origin.y);
-        ImVec2 bp1 = ImVec2(bp0.x + btnW, origin.y + titleBarH);
-        ImGui::SetCursorScreenPos(bp0);
-        ImGui::InvisibleButton(btnIds[i], ImVec2(btnW, titleBarH));
-        bool hov = ImGui::IsItemHovered();
-        bool act = ImGui::IsItemActive();
-        bool clk = ImGui::IsItemClicked();
-
-        bool isClose = (i == 2);
-        ImU32 bgFill = 0;
-        if (isClose) {
-            if (act) bgFill = IM_COL32(200, 28, 44, 255);
-            else if (hov) bgFill = IM_COL32(232, 28, 48, 225);
-        } else {
-            if (act) bgFill = IM_COL32(255, 255, 255, 36);
-            else if (hov) bgFill = IM_COL32(255, 255, 255, 18);
-        }
-        if (bgFill != 0) {
-            dl->AddRectFilled(bp0, bp1, bgFill);
-        }
-
-        ImU32 iconColor = (isClose && hov) ? IM_COL32_WHITE : (hov ? IM_COL32(255, 255, 255, 240) : IM_COL32(180, 192, 208, 210));
-        ImVec2 center = ImVec2(bp0.x + btnW * 0.5f, origin.y + titleBarH * 0.5f);
-
-        if (i == 0) {
-            // Minimize icon (horizontal bar)
-            dl->AddLine(ImVec2(center.x - 5.0f, center.y), ImVec2(center.x + 5.0f, center.y), iconColor, 1.3f);
-        } else if (i == 1) {
-            // Maximize / Restore icon
-            if (isMax) {
-                // Restore overlapping boxes
-                dl->AddRect(ImVec2(center.x - 3.0f, center.y - 5.0f), ImVec2(center.x + 5.0f, center.y + 3.0f), iconColor, 0.0f, 0, 1.1f);
-                dl->AddRectFilled(ImVec2(center.x - 5.0f, center.y - 3.0f), ImVec2(center.x + 3.0f, center.y + 5.0f), bgFill != 0 ? bgFill : IM_COL32(11, 15, 26, 255));
-                dl->AddRect(ImVec2(center.x - 5.0f, center.y - 3.0f), ImVec2(center.x + 3.0f, center.y + 5.0f), iconColor, 0.0f, 0, 1.1f);
-            } else {
-                // Single square
-                dl->AddRect(ImVec2(center.x - 5.0f, center.y - 5.0f), ImVec2(center.x + 5.0f, center.y + 5.0f), iconColor, 0.0f, 0, 1.3f);
-            }
-        } else if (i == 2) {
-            // Close icon (X)
-            dl->AddLine(ImVec2(center.x - 4.5f, center.y - 4.5f), ImVec2(center.x + 4.5f, center.y + 4.5f), iconColor, 1.4f);
-            dl->AddLine(ImVec2(center.x + 4.5f, center.y - 4.5f), ImVec2(center.x - 4.5f, center.y + 4.5f), iconColor, 1.4f);
-        }
-
-        if (clk) {
-            // Minimize must behave like close: release the whole UI stack so a
-            // hidden panel costs ~0 MB instead of keeping ImGui + swap chain +
-            // thumbnails resident (the tray icon / IPC can reopen it instantly).
-            if (i == 0) SettingsUI::Close();
-            else if (i == 1) {
-                if (isMax) ShowWindow(g_hWnd, SW_RESTORE);
-                else ShowWindow(g_hWnd, SW_MAXIMIZE);
-            } else if (i == 2) {
-                SettingsUI::Close();
-            }
-        }
-    }
-
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + titleBarH));
-}
-
-// Fully release every resource owned by the panel (defined after RenderFrame).
-static void ReleaseUiStack();
-
-namespace {
-// RAII guard: marks that a frame is being built (Close() must defer teardown
-// until the frame is done) and flushes a deferred close on exit.
-struct UiFrameScope {
-    UiFrameScope() { g_inRenderFrame = true; }
-    ~UiFrameScope() {
-        g_inRenderFrame = false;
-        if (g_closeRequested) {
-            g_closeRequested = false;
-            ReleaseUiStack();
-        }
-    }
-};
-} // namespace
 
 void SettingsUI::RenderFrame() {
-    if (!g_isOpen || !g_hWnd || !IsWindowVisible(g_hWnd) || IsIconic(g_hWnd) || !g_pd3dDeviceContext || !g_mainRenderTargetView) return;
+    if (!g_isOpen || !ui::g_ui.hWnd || !IsWindowVisible(ui::g_ui.hWnd) || IsIconic(ui::g_ui.hWnd) || !ui::g_ui.deviceContext || !g_mainRenderTargetView) {
+        return;
+    }
 
     UiFrameScope frameScope;
+    ui::g_ui.animActiveThisFrame = false;
 
+    EngineController::DrainMainThreadTasks();
+    g_config.FlushIfDirty(false);
     FetchDaemonStatus();
-    ThumbnailManager::Instance().Update(g_pd3dDevice);
+    ThumbnailManager::Instance().Update(ui::g_ui.device);
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     RECT rect;
-    GetClientRect(g_hWnd, &rect);
+    GetClientRect(ui::g_ui.hWnd, &rect);
     int winWidth = rect.right - rect.left;
     int winHeight = rect.bottom - rect.top;
 
     static bool s_firstLog = true;
     if (s_firstLog) {
         s_firstLog = false;
-        Logger::Info("RenderFrame: winWidth=", winWidth, " winHeight=", winHeight, " activePage=", g_activePage);
+        Logger::Info("RenderFrame: winWidth=", winWidth, " winHeight=", winHeight, " activePage=", ui::g_ui.activePage);
     }
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -4144,31 +960,27 @@ void SettingsUI::RenderFrame() {
     ImGui::Begin("MiniWallpaper Control Panel", nullptr, flags);
     ImGui::PopStyleVar(2);
 
-    // 1. Custom Title Bar at the very top (38px height)
-    RenderCustomTitleBar(static_cast<float>(winWidth), 38.0f);
+    ui::RenderCustomTitleBar(static_cast<float>(winWidth), 38.0f);
+    ui::RenderOptimizationProgress();
 
-    RenderOptimizationProgress();
-
-    // PageHost transparan & full-height; dock navigasi melayang overlay di atasnya.
     ImVec2 pageAvail = ImGui::GetContentRegionAvail();
     float pageH = pageAvail.y - 2.0f;
     if (pageH < 200.0f) pageH = pageAvail.y > 0 ? pageAvail.y : 200.0f;
-    ImGuiWindowFlags pageFlags = (g_activePage == 0) ? (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) : 0;
+    ImGuiWindowFlags pageFlags = (ui::g_ui.activePage == 0) ? (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) : 0;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 16.0f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("PageHost", ImVec2(0, pageH), false, pageFlags);
-    if (g_activePage == 0) RenderGalleryTab();
-    else if (g_activePage == 1) RenderLockscreenTab();
-    else if (g_activePage == 2) RenderGeneralSettingsTab();
-    else RenderPerformancePanel();
+    if (ui::g_ui.activePage == 0) ui::RenderGalleryTab();
+    else if (ui::g_ui.activePage == 1) ui::RenderLockscreenTab();
+    else if (ui::g_ui.activePage == 2) ui::RenderGeneralSettingsTab();
+    else ui::RenderPerformancePanel();
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
 
-    RenderFloatingDock();
+    ui::RenderFloatingDock();
 
-    // Overlay drop-file (paling atas): muncul saat file diseret ke atas window.
-    if (g_dragOverlay) {
+    if (ui::g_ui.dragOverlay) {
         ImVec2 wp = ImGui::GetWindowPos();
         ImVec2 ws = ImGui::GetWindowSize();
         ImDrawList* odl = ImGui::GetWindowDrawList();
@@ -4198,24 +1010,22 @@ void SettingsUI::RenderFrame() {
         ImGui::TextColored(ImVec4(0.580f, 0.639f, 0.722f, 1.0f), "%s", dropSub);
     }
 
-    // Outer glass border around the borderless window
     ImDrawList* wdl = ImGui::GetWindowDrawList();
     wdl->AddRect(ImVec2(0, 0), ImVec2(static_cast<float>(winWidth), static_cast<float>(winHeight)), IM_COL32(56, 232, 255, 45), 0.0f, 0, 1.0f);
 
-    RenderOptimizeModal();
-    RenderCaptureFrameModal();
+    ui::RenderOptimizeModal();
+    ui::RenderCaptureFrameModal();
 
     ImGui::End();
 
     ImGui::Render();
     const float clearColor[4] = { 0.032f, 0.045f, 0.078f, 0.50f };
-    g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
-    g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clearColor);
+    ui::g_ui.deviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
+    ui::g_ui.deviceContext->ClearRenderTargetView(g_mainRenderTargetView, clearColor);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
     g_pSwapChain->Present(1, 0);
 
-    // One-shot diagnostic: how big did the ImGui font atlas actually get?
     static bool s_atlasLogged = false;
     if (!s_atlasLogged) {
         s_atlasLogged = true;
@@ -4226,65 +1036,16 @@ void SettingsUI::RenderFrame() {
 }
 
 bool SettingsUI::IsOpen() {
-    return g_isOpen && g_hWnd && IsWindowVisible(g_hWnd);
-}
-
-// Fully release every resource owned by the panel: OLE drop target, ImGui
-// context + font atlas, thumbnail textures, swap chain (and the private D3D11
-// device when we own it) and the window itself. Both Close() (panel sent to
-// tray) and Shutdown() (app exit) go through here, so a closed panel costs the
-// daemon ~0 MB instead of keeping the whole UI stack resident.
-static void ReleaseUiStack() {
-    if (!g_hWnd && !g_pd3dDevice && !g_pSwapChain && !ImGui::GetCurrentContext()) {
-        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-        return;
-    }
-
-    if (g_dropTarget) {
-        if (g_hWnd) RevokeDragDrop(g_hWnd);
-        g_dropTarget->Release();
-        g_dropTarget = nullptr;
-    }
-    if (g_dropComInit) { OleUninitialize(); g_dropComInit = false; }
-    g_dragOverlay = false;
-
-    g_isOpen = false;
-
-    ThumbnailManager::Instance().ReleaseTextures();
-    g_appLogoSRV.Reset();
-    g_captureModalPreviewSRV.Reset();
-    g_captureModalPreviewPending.store(false);
-    // Only safe to release the preview pixel buffer when no extract worker owns it.
-    if (!g_captureModalPreviewWorkerActive.load()) {
-        std::vector<uint8_t>().swap(g_captureModalPreviewBgra);
-    }
-
-    if (ImGui::GetCurrentContext()) {
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-    }
-    g_fontSemibold = nullptr;
-
-    CleanupDeviceD3D();
-
-    if (g_hWnd) {
-        DestroyWindow(g_hWnd);
-        UnregisterClassW(L"MiniWallpaper_SettingsClass", g_hInstance);
-        g_hWnd = nullptr;
-    }
-
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    return g_isOpen && ui::g_ui.hWnd && IsWindowVisible(ui::g_ui.hWnd);
 }
 
 void SettingsUI::Close() {
-    if (!g_hWnd) {
+    if (!ui::g_ui.hWnd) {
         g_isOpen = false;
+        g_config.FlushIfDirty(true);
         return;
     }
     if (g_inRenderFrame) {
-        // Called from the custom title bar close button while a frame is being
-        // built: tear down at the end of RenderFrame(), never mid-frame.
         g_closeRequested = true;
         g_isOpen = false;
         return;
@@ -4297,17 +1058,26 @@ void SettingsUI::Shutdown() {
 }
 
 HWND SettingsUI::GetHwnd() {
-    return g_hWnd;
+    return ui::g_ui.hWnd;
 }
 
 void SettingsUI::SetActivePage(int page) {
     if (page >= 0 && page < 4) {
-        g_activePage = page;
+        ui::g_ui.activePage = page;
+        ui::MarkUiInteraction();
     }
 }
 
 int SettingsUI::GetActivePage() {
-    return g_activePage;
+    return ui::g_ui.activePage;
+}
+
+void SettingsUI::SetGalleryDetailVisible(bool visible, int selectIdx) {
+    ui::g_ui.detailVisible = visible;
+    if (visible && selectIdx >= 0) {
+        ui::g_ui.selectedGalleryIdx = selectIdx;
+    }
+    ui::MarkUiInteraction();
 }
 
 void SettingsUI::GetFontAtlasSize(int& width, int& height) {
@@ -4322,7 +1092,7 @@ void SettingsUI::GetFontAtlasSize(int& width, int& height) {
 }
 
 bool SettingsUI::SaveScreenshot(const std::string& path) {
-    if (!g_pd3dDevice || !g_pd3dDeviceContext || !g_pSwapChain) return false;
+    if (!ui::g_ui.device || !ui::g_ui.deviceContext || !g_pSwapChain) return false;
 
     ComPtr<ID3D11Texture2D> backBuffer;
     if (FAILED(g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) return false;
@@ -4336,28 +1106,20 @@ bool SettingsUI::SaveScreenshot(const std::string& path) {
     desc.MiscFlags = 0;
 
     ComPtr<ID3D11Texture2D> stagingTex;
-    if (FAILED(g_pd3dDevice->CreateTexture2D(&desc, nullptr, &stagingTex))) return false;
+    if (FAILED(ui::g_ui.device->CreateTexture2D(&desc, nullptr, &stagingTex))) return false;
 
-    g_pd3dDeviceContext->CopyResource(stagingTex.Get(), backBuffer.Get());
+    ui::g_ui.deviceContext->CopyResource(stagingTex.Get(), backBuffer.Get());
 
     D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(g_pd3dDeviceContext->Map(stagingTex.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
+    if (FAILED(ui::g_ui.deviceContext->Map(stagingTex.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
 
-    // Convert UTF-8 path to wide path without embedded null terminator
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::wstring wpath;
-    if (wlen > 1) {
-        wpath.resize(wlen - 1);
-        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &wpath[0], wlen);
-    }
+    std::wstring wpath = Utf8ToWide(path);
 
-    // Copy row-by-row converting DXGI BGRA staging texture to RGBA with solid alpha (255)
-    // so image viewers render glass elements clearly with accurate colors
-    std::vector<uint8_t> pixelData(desc.Width * desc.Height * 4);
+    std::vector<uint8_t> pixelData(static_cast<size_t>(desc.Width) * desc.Height * 4);
     const uint8_t* srcRow = static_cast<const uint8_t*>(mapped.pData);
     for (UINT y = 0; y < desc.Height; ++y) {
         const uint8_t* src = srcRow + y * mapped.RowPitch;
-        uint8_t* dst = pixelData.data() + y * desc.Width * 4;
+        uint8_t* dst = pixelData.data() + static_cast<size_t>(y) * desc.Width * 4;
         for (UINT x = 0; x < desc.Width; ++x) {
             dst[x * 4 + 0] = src[x * 4 + 2]; // Red
             dst[x * 4 + 1] = src[x * 4 + 1]; // Green
@@ -4366,47 +1128,36 @@ bool SettingsUI::SaveScreenshot(const std::string& path) {
         }
     }
 
-    HRESULT hrCo = CoInitialize(nullptr);
+    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     bool ok = false;
     ComPtr<IWICImagingFactory> factory;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-    if (SUCCEEDED(hr)) {
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) {
         ComPtr<IWICBitmapEncoder> encoder;
-        hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
-        if (SUCCEEDED(hr)) {
+        if (SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder))) {
             ComPtr<IWICStream> stream;
-            hr = factory->CreateStream(&stream);
-            if (SUCCEEDED(hr)) {
-                hr = stream->InitializeFromFilename(wpath.c_str(), GENERIC_WRITE);
-                if (SUCCEEDED(hr)) {
-                    hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
-                    if (SUCCEEDED(hr)) {
-                        ComPtr<IWICBitmapFrameEncode> frame;
-                        hr = encoder->CreateNewFrame(&frame, nullptr);
-                        if (SUCCEEDED(hr)) {
-                            hr = frame->Initialize(nullptr);
-                            if (SUCCEEDED(hr)) {
-                                frame->SetSize(desc.Width, desc.Height);
-                                WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppRGBA;
-                                frame->SetPixelFormat(&pixelFormat);
-                                UINT stride = desc.Width * 4;
-                                UINT totalBytes = stride * desc.Height;
-                                hr = frame->WritePixels(desc.Height, stride, totalBytes, pixelData.data());
-                                if (SUCCEEDED(hr)) {
-                                    if (SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit())) {
-                                        ok = true;
-                                    }
-                                }
-                            }
-                        }
+            if (SUCCEEDED(factory->CreateStream(&stream)) &&
+                SUCCEEDED(stream->InitializeFromFilename(wpath.c_str(), GENERIC_WRITE)) &&
+                SUCCEEDED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache))) {
+                ComPtr<IWICBitmapFrameEncode> frame;
+                if (SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) &&
+                    SUCCEEDED(frame->Initialize(nullptr))) {
+                    frame->SetSize(desc.Width, desc.Height);
+                    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppRGBA;
+                    frame->SetPixelFormat(&pixelFormat);
+                    UINT stride = desc.Width * 4;
+                    UINT totalBytes = stride * desc.Height;
+                    if (SUCCEEDED(frame->WritePixels(desc.Height, stride, totalBytes, pixelData.data())) &&
+                        SUCCEEDED(frame->Commit()) &&
+                        SUCCEEDED(encoder->Commit())) {
+                        ok = true;
                     }
                 }
             }
         }
     }
 
-    g_pd3dDeviceContext->Unmap(stagingTex.Get(), 0);
+    ui::g_ui.deviceContext->Unmap(stagingTex.Get(), 0);
     if (SUCCEEDED(hrCo)) CoUninitialize();
     return ok;
 }

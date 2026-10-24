@@ -51,6 +51,9 @@ public:
 
 private:
     HWND m_hwnd = nullptr;
+    HWINEVENTHOOK m_hook_sys = nullptr;
+    HWINEVENTHOOK m_hook_obj = nullptr;
+    bool m_last_check_maximized = true;
     bool m_is_locked = false;
     bool m_on_battery = false;
     

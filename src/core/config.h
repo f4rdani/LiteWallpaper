@@ -1,8 +1,10 @@
 #pragma once
+#include "win_utils.h"
+#include <algorithm>
+#include <cstdint>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <nlohmann/json.hpp>
 
 namespace miniwp {
 
@@ -16,39 +18,39 @@ struct MonitorWallpaper {
 struct AppConfig {
     std::vector<MonitorWallpaper> wallpapers;
     std::vector<std::string> gallery_history; // Persistent gallery of used video files
-    int scaling_mode = 0;        // 0 = Auto / Aspect Fill (Cover), 1 = Aspect Fit (Letterbox), 2 = Stretch
+    int scaling_mode = 0;        // 0 = Auto / Aspect Fill (Cover), 1 = Aspect Fit (Letterbox), 2 = Stretch, 3 = Center
     int target_fps = 30;         // Display cap. Video always plays at native speed;
-                                // if target < video fps, frames are skipped (not slowed).
+                                 // if target < video fps, frames are skipped (not slowed).
     int battery_fps = 15;        // Frame rate limit when running on battery power
     int gpu_device_index = 0;    // -1 = CPU (Software), 0 = GPU 1 (Primary), 1 = GPU 2, etc.
     std::vector<int> target_displays; // Target displays to show wallpaper on (empty = all displays)
     bool pause_on_fullscreen = true;
     bool pause_on_maximized = true; // Auto-pause when an app is maximized / covers the desktop (0% CPU/GPU)
-    bool pause_on_battery = false; // true = pause, false = reduce FPS
+    bool pause_on_battery = false;  // true = pause, false = reduce FPS
     bool pause_on_lock = true;
     bool pause_on_resource_heavy = true;   // Auto-sleep wallpaper when system RAM or VRAM exceeds threshold (Gaming/Heavy load)
     int resource_ram_threshold_pct = 80;   // RAM threshold percentage (default 80%)
     int resource_vram_threshold_pct = 80;  // VRAM threshold percentage (default 80%)
-    bool update_lockscreen = true; // Capture frame for lock screen
-    int lockscreen_source_mode = 0; // 0 = Auto-sync active video, 1 = Custom fixed video & frame
-    std::string lockscreen_video_path = ""; // Custom video path when mode == 1
-    double lockscreen_timestamp = 1.0; // Custom timestamp when mode == 1
-    bool update_desktop_wallpaper = true; // Auto-set native Windows desktop wallpaper from active video frame (0s boot visual)
-    int desktop_static_source_mode = 0; // 0 = Auto-sync active video, 1 = Custom fixed video & frame
-    std::string desktop_static_video_path = ""; // Custom video path when mode == 1
+    bool update_lockscreen = true;         // Capture frame for lock screen
+    int lockscreen_source_mode = 0;        // 0 = Auto-sync active video, 1 = Custom fixed video & frame
+    std::string lockscreen_video_path;     // Custom video path when mode == 1
+    double lockscreen_timestamp = 1.0;     // Custom timestamp when mode == 1
+    bool update_desktop_wallpaper = true;  // Auto-set native Windows desktop wallpaper from active video frame (0s boot visual)
+    int desktop_static_source_mode = 0;    // 0 = Auto-sync active video, 1 = Custom fixed video & frame
+    std::string desktop_static_video_path; // Custom video path when mode == 1
     double desktop_static_timestamp = 1.0; // Custom timestamp when mode == 1
-    bool auto_downscale_highres = true; // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
-    bool prompt_downscale = true;       // Prompt before optimizing when dropping high-res video
-    int optimizer_crop_mode = 0;        // 0 = Aspect Fit (Proportional), 1 = Aspect Fill (Center Crop to Full Screen)
+    bool auto_downscale_highres = true;    // Auto-downscale 4K+ videos to display resolution for 75% GPU/VRAM savings
+    bool prompt_downscale = true;          // Prompt before optimizing when dropping high-res video
+    int optimizer_crop_mode = 0;           // 0 = Aspect Fit (Proportional), 1 = Aspect Fill (Center Crop to Full Screen)
     bool run_on_startup = false;
-    int startup_priority = 1;           // 0 = Normal (Registry Only), 1 = High Priority (Dual Path: Registry + Startup Shortcut)
-    bool auto_smooth_loop = true;       // Seamless crossfade transition on video loop boundary
-    float smooth_loop_duration = 0.8f;  // Crossfade transition duration in seconds (0.2s - 2.5s)
-    int loop_preset = 0;                // 0=Cinematic Speed Ramp, 1=Smoothstep S-Curve, 2=Gentle Flow, 3=Instant Snap, 4=Custom
-    bool loop_speed_ramp = true;        // Dynamic time-warp deceleration during loop boundary
-    float loop_min_speed = 0.75f;       // Minimum playback speed at seam (0.5x - 0.95x)
-    int loop_easing_curve = 1;          // 0=Linear, 1=Smoothstep, 2=Sine, 3=Smootherstep
-    std::string config_path;     // Path to this config file
+    int startup_priority = 1;              // Preserved in config JSON for backward compatibility
+    bool auto_smooth_loop = true;          // Seamless crossfade transition on video loop boundary
+    float smooth_loop_duration = 0.8f;     // Crossfade transition duration in seconds (0.2s - 2.5s)
+    int loop_preset = 0;                   // 0=Cinematic Speed Ramp, 1=Smoothstep S-Curve, 2=Gentle Flow, 3=Instant Snap, 4=Custom
+    bool loop_speed_ramp = true;           // Dynamic time-warp deceleration during loop boundary
+    float loop_min_speed = 0.75f;          // Minimum playback speed at seam (0.5x - 0.95x)
+    int loop_easing_curve = 1;             // 0=Linear, 1=Smoothstep, 2=Sine, 3=Smootherstep
+    std::string config_path;               // Path to this config file
 
     bool IsDisplayEnabled(int idx) const {
         if (target_displays.empty()) return true;
@@ -65,17 +67,12 @@ struct AppConfig {
     }
 
     void AddToGallery(const std::string& path) {
-        if (path.empty()) return;
-        if (path.find("\\MiniWallpaper\\optimized\\") != std::string::npos ||
-            path.find("/MiniWallpaper/optimized/") != std::string::npos ||
-            path.find("\\optimized\\") != std::string::npos ||
-            path.find("/optimized/") != std::string::npos) {
-            return;
-        }
-        auto it = std::find(gallery_history.begin(), gallery_history.end(), path);
-        if (it != gallery_history.end()) {
-            gallery_history.erase(it);
-        }
+        if (path.empty() || IsOptimizedCachePath(path)) return;
+        std::string norm = NormalizePathKey(path);
+        auto it = std::remove_if(gallery_history.begin(), gallery_history.end(), [&](const std::string& item) {
+            return item == path || NormalizePathKey(item) == norm;
+        });
+        gallery_history.erase(it, gallery_history.end());
         gallery_history.insert(gallery_history.begin(), path);
         if (gallery_history.size() > 50) {
             gallery_history.resize(50);
@@ -84,14 +81,9 @@ struct AppConfig {
 
     void RemoveFromGallery(const std::string& path) {
         if (path.empty()) return;
-        auto normalize = [](std::string s) {
-            std::replace(s.begin(), s.end(), '/', '\\');
-            for (auto& c : s) c = (char)::tolower(c);
-            return s;
-        };
-        std::string target = normalize(path);
+        std::string target = NormalizePathKey(path);
         auto it = std::remove_if(gallery_history.begin(), gallery_history.end(), [&](const std::string& item) {
-            return normalize(item) == target || item == path;
+            return item == path || NormalizePathKey(item) == target;
         });
         gallery_history.erase(it, gallery_history.end());
     }
@@ -99,23 +91,30 @@ struct AppConfig {
 
 class Config {
 public:
-    // Load from %APPDATA%/MiniWallpaper/config.json
-    // If file doesn't exist, create with defaults
+    // Load from %APPDATA%/MiniWallpaper/config.json (creates defaults if missing)
     bool Load();
-    
-    // Save current config to file
+
+    // Save current config to disk immediately
     bool Save();
-    
-    // Get/Set config
-    AppConfig& Get();
-    const AppConfig& Get() const;
-    
-    // Get config file path
+
+    // Schedule a debounced save (prevents 60 Hz disk writes while dragging sliders)
+    void MarkDirty() noexcept;
+
+    // Flush pending debounced save if debounce window elapsed (or immediately if force == true)
+    bool FlushIfDirty(bool force = false, uint64_t debounce_ms = 400);
+
+    bool IsDirty() const noexcept { return m_dirty; }
+
+    AppConfig& Get() noexcept { return m_config; }
+    const AppConfig& Get() const noexcept { return m_config; }
+
     static std::string GetConfigDir();
     static std::string GetConfigFilePath();
 
 private:
     AppConfig m_config;
+    bool m_dirty = false;
+    uint64_t m_last_dirty_tick_ms = 0;
 };
 
 // JSON serialization

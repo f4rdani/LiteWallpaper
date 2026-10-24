@@ -1,15 +1,16 @@
 #pragma once
 #include <d3d11.h>
 #include <wrl/client.h>
-#include <string>
-#include <vector>
-#include <unordered_map>
-#include <mutex>
-#include <thread>
 #include <atomic>
+#include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <list>
-#include <condition_variable>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -29,8 +30,11 @@ public:
     // Call once per frame on UI render thread with active D3D11 device
     void Update(ID3D11Device* device);
 
+    // True while background extraction or GPU texture upload is in flight
+    bool HasPendingWork() const noexcept;
+
     // Get D3D11 Shader Resource View for video thumbnail (non-blocking)
-    // Returns nullptr if not loaded yet and queues background extraction
+    // Returns nullptr if not loaded yet and queues on-demand background extraction
     ID3D11ShaderResourceView* GetThumbnailSRV(ID3D11Device* device, const std::string& video_path);
 
     // Delete cached thumbnail for a specific video
@@ -56,35 +60,37 @@ public:
         int height
     );
 
-    // Release all in-memory textures
+    // Release all in-memory textures and stop any active worker thread
     void ReleaseTextures();
 
     ~ThumbnailManager();
 
 private:
-    ThumbnailManager();
+    ThumbnailManager() = default;
 
     struct PendingUpload {
         std::string video_path;
         std::vector<uint8_t> bgra_data; // 160 * 90 * 4
     };
 
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> m_srv_map;
-    std::list<std::string> m_srv_lru;   // most-recently-used first
+    std::list<std::string> m_srv_lru; // most-recently-used first
     std::unordered_map<std::string, bool> m_requested;
     std::deque<PendingUpload> m_pending_uploads;
-    
-    // Background worker thread
+
+    // On-demand background worker thread (0 threads when idle or UI closed)
     std::atomic<bool> m_stop_worker{false};
+    std::atomic<bool> m_worker_running{false};
+    std::atomic<size_t> m_pending_upload_count{0};
     std::deque<std::string> m_extract_queue;
     std::mutex m_queue_mutex;
-    std::condition_variable m_queue_cv;
     std::thread m_worker_thread;
 
+    void StopWorker();
     void WorkerLoop();
-    static std::string GetThumbnailPath(const std::string& video_path);
-    static std::string GetCacheDirectory();
+    static std::filesystem::path GetThumbnailPath(const std::string& video_path);
+    static std::filesystem::path GetCacheDirectory();
 };
 
 } // namespace miniwp

@@ -1,4 +1,5 @@
 #include "tray_icon.h"
+#include <utility>
 
 namespace miniwp {
 
@@ -9,28 +10,36 @@ TrayIcon::~TrayIcon() {
 }
 
 bool TrayIcon::Create(HWND hwnd, TrayCallback callback) {
-    m_callback = callback;
-    
+    if (m_menu) {
+        DestroyMenu(m_menu);
+        m_menu = nullptr;
+    }
+
+    m_callback = std::move(callback);
+
+    m_nid = {};
     m_nid.cbSize = sizeof(m_nid);
     m_nid.hWnd = hwnd;
     m_nid.uID = 1;
     m_nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     m_nid.uCallbackMessage = WM_APP_TRAYICON;
-    m_nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
-    if (!m_nid.hIcon) {
-        m_nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
-    }
-    if (!m_nid.hIcon) {
-        m_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
-    }
+
+    // LR_SHARED prevents GDI HICON handle leaks across repeated Explorer restarts
+    m_nid.hIcon = static_cast<HICON>(LoadImageW(
+        GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(1),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR | LR_SHARED
+    ));
     if (!m_nid.hIcon) {
         m_nid.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512)); // IDI_APPLICATION
     }
     wcscpy_s(m_nid.szTip, L"MiniWallpaper");
-    
+
     Shell_NotifyIconW(NIM_ADD, &m_nid);
-    
-    // Create Context Menu
+
     m_menu = CreatePopupMenu();
     AppendMenuW(m_menu, MF_STRING, 4, L"Control Panel");
     AppendMenuW(m_menu, MF_SEPARATOR, 0, nullptr);
@@ -39,12 +48,12 @@ bool TrayIcon::Create(HWND hwnd, TrayCallback callback) {
     AppendMenuW(m_menu, MF_STRING, 3, L"Change Wallpaper...");
     AppendMenuW(m_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m_menu, MF_STRING, 5, L"Exit");
-    
+
     return true;
 }
 
 void TrayIcon::SetTooltip(const wchar_t* text) {
-    if (text) {
+    if (text && m_nid.hWnd) {
         wcsncpy_s(m_nid.szTip, text, _countof(m_nid.szTip) - 1);
         Shell_NotifyIconW(NIM_MODIFY, &m_nid);
     }
@@ -70,7 +79,7 @@ void TrayIcon::ShowContextMenu(HWND hwnd) {
     }
     int cmd = TrackPopupMenu(m_menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     PostMessageW(hwnd, WM_NULL, 0, 0);
-    
+
     if (!m_callback) return;
 
     switch (cmd) {

@@ -1,7 +1,5 @@
 #include "desktop_injector.h"
-#include <iostream>
-
-#define WM_APP_ATTACH (WM_APP + 11)
+#include <cwchar>
 
 namespace miniwp {
 
@@ -17,24 +15,10 @@ DesktopInjector::~DesktopInjector() {
     }
 }
 
-bool DesktopInjector::IsWorkerWClass(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd)) return false;
-    wchar_t cls[64] = {};
-    if (GetClassNameW(hwnd, cls, 64) == 0) return false;
-    return (wcscmp(cls, L"WorkerW") == 0);
-}
-
-HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
-    if (out_is_fallback) *out_is_fallback = false;
-
-    // 1. Find Progman window with multi-stage lookup
+HWND DesktopInjector::FindDesktopWorkerW() {
     HWND progman = FindWindowW(L"Progman", L"Program Manager");
-    if (!progman) {
-        progman = FindWindowW(L"Progman", nullptr);
-    }
-    if (!progman) {
-        progman = GetShellWindow();
-    }
+    if (!progman) progman = FindWindowW(L"Progman", nullptr);
+    if (!progman) progman = GetShellWindow();
     if (!progman) {
         EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
             wchar_t cls[64] = {};
@@ -46,72 +30,63 @@ HWND DesktopInjector::FindDesktopWorkerW(bool* out_is_fallback) {
         }, reinterpret_cast<LPARAM>(&progman));
     }
 
-    if (progman) {
-        // 2. Send message 0x052C to Progman to spawn WorkerW behind desktop icons
-        DWORD_PTR result = 0;
-        SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &result);
-        SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &result);
+    if (!progman) return nullptr;
 
-        // 3. Strategy A (classic, Win10/11): top-level WorkerW that is the sibling following
-        //    the window containing SHELLDLL_DefView (behind desktop icons).
-        HWND workerw = nullptr;
-        EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
-            HWND defview = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
-            if (defview != nullptr) {
-                HWND nextWorker = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
-                if (nextWorker != nullptr) {
-                    *reinterpret_cast<HWND*>(lparam) = nextWorker;
-                    return FALSE;
-                }
+    // Spawn WorkerW behind desktop icons via undocumented shell message 0x052C
+    DWORD_PTR result = 0;
+    SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &result);
+    SendMessageTimeoutW(progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &result);
+
+    // Strategy A (Win10/11 classic): top-level WorkerW sibling after the window hosting SHELLDLL_DefView
+    HWND workerw = nullptr;
+    EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
+        HWND defview = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
+        if (defview != nullptr) {
+            HWND nextWorker = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
+            if (nextWorker != nullptr) {
+                *reinterpret_cast<HWND*>(lparam) = nextWorker;
+                return FALSE;
             }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&workerw));
-        if (workerw) return workerw;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&workerw));
+    if (workerw) return workerw;
 
-        // 4. Strategy C (Win11 24H2+): Child WorkerW under Progman
-        EnumChildWindows(progman, [](HWND hwnd, LPARAM lparam) -> BOOL {
-            wchar_t cls[64] = {};
-            if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"WorkerW") == 0) {
-                if (FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) == nullptr) {
-                    *reinterpret_cast<HWND*>(lparam) = hwnd;
-                    return FALSE;
-                }
+    // Strategy B (Win11 24H2+): Child WorkerW directly under Progman
+    EnumChildWindows(progman, [](HWND hwnd, LPARAM lparam) -> BOOL {
+        wchar_t cls[64] = {};
+        if (GetClassNameW(hwnd, cls, 64) > 0 && wcscmp(cls, L"WorkerW") == 0) {
+            if (FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr) == nullptr) {
+                *reinterpret_cast<HWND*>(lparam) = hwnd;
+                return FALSE;
             }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&workerw));
-        if (workerw) return workerw;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&workerw));
+    if (workerw) return workerw;
 
-        // 5. Fallback: attach directly to Progman (desktop icons hidden case or early boot)
-        if (out_is_fallback) *out_is_fallback = true;
-        return progman;
-    }
-
-    return nullptr;
+    // Fallback: attach directly to Progman
+    return progman;
 }
 
-bool DesktopInjector::Attach(HWND renderHwnd) {
+bool DesktopInjector::Attach(HWND renderHwnd, bool showImmediately) {
     if (!renderHwnd) return false;
 
-    bool is_fallback = false;
-    m_workerw = FindDesktopWorkerW(&is_fallback);
+    m_workerw = FindDesktopWorkerW();
     if (!m_workerw) {
         ShowWindow(renderHwnd, SW_HIDE);
         return false;
     }
 
-    m_is_fallback = is_fallback;
     m_render_hwnd = renderHwnd;
 
-    // Remove window decorations and make it a child window
     LONG_PTR style = GetWindowLongPtrW(renderHwnd, GWL_STYLE);
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_POPUP);
     style |= WS_CHILD;
     SetWindowLongPtrW(renderHwnd, GWL_STYLE, style);
 
-    // Set WorkerW as parent
     SetParent(renderHwnd, m_workerw);
 
-    // Resize child to cover the parent WorkerW client area
     RECT rc;
     int w = 0, h = 0;
     if (GetClientRect(m_workerw, &rc) && rc.right > 0 && rc.bottom > 0) {
@@ -122,15 +97,12 @@ bool DesktopInjector::Attach(HWND renderHwnd) {
         h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     }
 
-    SetWindowPos(
-        renderHwnd,
-        HWND_BOTTOM,
-        0, 0, w, h,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW
-    );
-
-    ShowWindow(renderHwnd, SW_SHOW);
-    UpdateWindow(renderHwnd);
+    UINT swpFlags = SWP_NOACTIVATE | (showImmediately ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
+    SetWindowPos(renderHwnd, HWND_BOTTOM, 0, 0, w, h, swpFlags);
+    if (showImmediately) {
+        ShowWindow(renderHwnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(renderHwnd);
+    }
     return true;
 }
 
@@ -145,59 +117,29 @@ void DesktopInjector::Detach() {
         m_render_hwnd = nullptr;
     }
     m_workerw = nullptr;
-    m_is_fallback = false;
 }
 
-bool DesktopInjector::Reattach(HWND renderHwnd) {
+bool DesktopInjector::Reattach(HWND renderHwnd, bool showImmediately) {
     Detach();
-    return Attach(renderHwnd);
+    return Attach(renderHwnd, showImmediately);
 }
 
-bool DesktopInjector::IsAttached() const {
+bool DesktopInjector::IsAttached() const noexcept {
     return m_workerw != nullptr && m_render_hwnd != nullptr;
 }
 
 bool DesktopInjector::IsAttachedValid() const {
     if (!IsAttached()) return false;
-    if (!IsWindow(m_workerw)) return false;
-    if (!IsWindow(m_render_hwnd)) return false;
-    HWND parent = GetParent(m_render_hwnd);
-    if (parent != m_workerw) return false;
-    return true;
-}
-
-bool DesktopInjector::IsTrueWorkerW() const {
-    return IsAttached() && !m_is_fallback && IsWorkerWClass(m_workerw);
-}
-
-HWND DesktopInjector::GetWorkerW() const {
-    return m_workerw;
-}
-
-std::vector<MonitorInfo> DesktopInjector::EnumerateMonitors() {
-    std::vector<MonitorInfo> monitors;
-    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hmon, HDC, LPRECT, LPARAM lparam) -> BOOL {
-        auto* list = reinterpret_cast<std::vector<MonitorInfo>*>(lparam);
-        MONITORINFOEXW mi = {};
-        mi.cbSize = sizeof(mi);
-        if (GetMonitorInfoW(hmon, &mi)) {
-            MonitorInfo info;
-            info.handle = hmon;
-            info.rect = mi.rcMonitor;
-            info.device_id = mi.szDevice;
-            info.is_primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
-            list->push_back(info);
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&monitors));
-    return monitors;
+    if (!IsWindow(m_workerw) || !IsWindow(m_render_hwnd)) return false;
+    return GetParent(m_render_hwnd) == m_workerw;
 }
 
 LRESULT CALLBACK DesktopInjector::MsgReceiverWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (g_taskbar_created_msg && msg == g_taskbar_created_msg) {
         HWND target = reinterpret_cast<HWND>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (target && IsWindow(target)) {
-            PostMessageW(target, WM_APP_ATTACH, 0, 0);
+            // Forward TaskbarCreated to the render child window so BOTH tray icon and WorkerW reattach!
+            PostMessageW(target, g_taskbar_created_msg, 0, 0);
         }
         return 0;
     }
@@ -216,26 +158,20 @@ void DesktopInjector::RegisterExplorerRestart(HWND targetHwnd) {
         wc.lpszClassName = L"MiniWallpaper_MsgReceiver";
         RegisterClassExW(&wc);
 
-        // Top-level hidden window placed far off-screen with layered transparent style (0 visual artifacts)
+        // Zero-DWM-surface hidden top-level window (receives shell broadcast messages)
         m_msg_receiver = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             L"MiniWallpaper_MsgReceiver",
             L"",
             WS_POPUP,
-            -32000, -32000, 0, 0,
+            0, 0, 0, 0,
             nullptr, nullptr, wc.hInstance, nullptr
         );
-
-        if (m_msg_receiver) {
-            SetLayeredWindowAttributes(m_msg_receiver, 0, 0, LWA_ALPHA);
-            ShowWindow(m_msg_receiver, SW_HIDE);
-            SetWindowLongPtrW(m_msg_receiver, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(targetHwnd));
-        }
     }
-}
 
-UINT DesktopInjector::GetTaskbarRestartMsg() const {
-    return m_taskbar_restart_msg;
+    if (m_msg_receiver) {
+        SetWindowLongPtrW(m_msg_receiver, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(targetHwnd));
+    }
 }
 
 } // namespace miniwp

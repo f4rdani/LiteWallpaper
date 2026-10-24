@@ -1,12 +1,8 @@
 #pragma once
-#include <d3d11.h>
-#include <string>
-#include <vector>
-#include <cstdint>
 #include <atomic>
-#include <queue>
+#include <deque>
 #include <mutex>
-#include <condition_variable>
+#include <string>
 #include <thread>
 
 namespace miniwp {
@@ -16,70 +12,24 @@ public:
     LockScreenManager();
     ~LockScreenManager();
 
-    // Capture current frame from D3D11 texture and set as lock screen image (synchronous)
-    bool CaptureAndSetLockScreen(
-        ID3D11Device* device,
-        ID3D11DeviceContext* ctx,
-        ID3D11Texture2D* currentFrame,
-        int arrayIndex
-    );
-    
-    // Pre-cache lock screen snapshot on background worker thread (asynchronous, non-blocking)
-    void PreCacheLockScreenAsync(
-        ID3D11Device* device,
-        ID3D11DeviceContext* ctx,
-        ID3D11Texture2D* currentFrame,
-        int arrayIndex,
-        bool syncNativeDesktop = false
-    );
-
-    // Synchronize visual state to both Lock Screen and native Windows Desktop Wallpaper directly from video file (100% glitch-free)
+    // Synchronize visual state to Lock Screen and/or native Windows Desktop Wallpaper asynchronously.
+    // Spawns an on-demand worker thread that exits immediately once queued tasks finish (0 idle threads).
     void SyncFromVideoAsync(
         const std::string& video_path,
         int target_w = 0,
         int target_h = 0,
         bool syncLockScreen = true,
         bool syncNativeDesktop = true,
-        double timestamp_sec = 1.0
+        double timestamp_sec = 1.0,
+        bool force = false
     );
 
-    // Synchronize visual state to both Lock Screen and native Windows Desktop Wallpaper asynchronously from pristine RGB buffer
-    void SyncVisualsRGBAsync(
-        std::vector<uint8_t> rgbData,
-        int width,
-        int height,
-        bool syncLockScreen = true,
-        bool syncNativeDesktop = true
-    );
-
-    // Synchronize current frame to both Lock Screen and native Windows Desktop Wallpaper asynchronously
-    void SyncVisualsAsync(
-        ID3D11Device* device,
-        ID3D11DeviceContext* ctx,
-        ID3D11Texture2D* currentFrame,
-        int arrayIndex,
-        bool syncLockScreen = true,
-        bool syncNativeDesktop = true
-    );
-
-    // Set native Windows desktop wallpaper from image file (IDesktopWallpaper COM + SystemParametersInfoW)
+    // Apply image file as native Windows desktop wallpaper (IDesktopWallpaper COM + SystemParametersInfoW)
     static bool SetNativeDesktopWallpaperFile(const std::wstring& imagePath);
 
-    // Capture current frame from D3D11 texture and set as native Windows desktop wallpaper for instant 0s boot visual
-    bool SetNativeDesktopWallpaper(
-        ID3D11Device* device,
-        ID3D11DeviceContext* ctx,
-        ID3D11Texture2D* currentFrame,
-        int arrayIndex
-    );
-
-    // Set image file as lock screen image (Windows 10/11)
+    // Apply image file as Windows 10/11 Lock Screen wallpaper
     bool SetLockScreenImage(const std::wstring& imagePath);
-    
-    // Windows 7 fallback lock screen configuration (requires true JPEG < 256KB)
-    bool SetLockScreenImageWin7(const std::wstring& imagePath);
 
-    std::wstring GetTempImagePathBmp() const;
     std::wstring GetTempImagePathJpg(int slot = -1) const;
     std::wstring GetDesktopPlaceholderImagePathJpg(int slot = -1) const;
 
@@ -97,42 +47,20 @@ private:
         bool syncLockScreen = false;
         bool syncNativeDesktop = false;
         double timestamp_sec = 1.0;
+        std::string sync_key;
     };
 
-    std::atomic<int>  m_desktop_slot{0};
-    std::atomic<int>  m_lock_slot{0};
-    std::mutex m_queue_mutex;
-    std::condition_variable m_queue_cv;
-    std::queue<VideoSyncTask> m_queue;
-    std::atomic<bool> m_worker_running{false};
-    std::thread m_worker_thread;
+    std::atomic<int>            m_desktop_slot{0};
+    std::atomic<int>            m_lock_slot{0};
+    std::mutex                  m_queue_mutex;
+    std::deque<VideoSyncTask>   m_queue;
+    bool                        m_worker_active = false;
+    std::atomic<bool>           m_shutting_down{false};
+    std::thread                 m_worker_thread;
 
     void WorkerLoop();
     void ProcessSyncTask(const VideoSyncTask& task);
-
-    static bool SaveRgbAsBmp(
-        const std::vector<uint8_t>& rgb,
-        int width,
-        int height,
-        const std::wstring& outputPath
-    );
-
-    bool SaveTextureAsBmp(
-        ID3D11Device* device,
-        ID3D11DeviceContext* ctx,
-        ID3D11Texture2D* texture,
-        int arrayIndex,
-        const std::wstring& outputPath
-    );
-
-    bool SaveTextureAsJpg(
-        ID3D11Device* device,
-        ID3D11DeviceContext* ctx,
-        ID3D11Texture2D* texture,
-        int arrayIndex,
-        const std::wstring& outputPath,
-        int quality = 80
-    );
+    bool SetLockScreenImageWin7(const std::wstring& imagePath);
 };
 
 } // namespace miniwp

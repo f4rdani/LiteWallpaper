@@ -1,4 +1,4 @@
-﻿name: Build and Release
+name: Build and Release
 
 on:
   push:
@@ -51,7 +51,9 @@ jobs:
           # Copy only the FFmpeg runtime DLLs the app links against
           # (skip avfilter/avdevice: +38 MB of dead weight in the release zip)
           Get-ChildItem "third_party/ffmpeg/bin/*.dll" | Where-Object { $_.BaseName -notmatch '^av(filter|device)' } | Copy-Item -Destination "dist/MiniWallpaper-Portable/" -Force
-          Copy-Item "assets/*" "dist/MiniWallpaper-Portable/assets/" -Recurse -Force
+          # Copy only runtime-required assets (skip README screenshots & raw .ico already embedded in .exe)
+          Copy-Item "assets/fa-solid-900.ttf" "dist/MiniWallpaper-Portable/assets/" -Force
+          Copy-Item "assets/miniwallpaper-logo.png" "dist/MiniWallpaper-Portable/assets/" -Force
           Copy-Item "README.md" "dist/MiniWallpaper-Portable/" -Force
           Copy-Item "LICENSE" "dist/MiniWallpaper-Portable/" -Force
           # Bundle the VC++ runtime app-locally so the portable build also runs on

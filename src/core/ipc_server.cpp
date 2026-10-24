@@ -21,15 +21,15 @@ void IpcServer::Stop() {
     if (!m_running.load()) return;
     m_running.store(false);
 
-    // Unblock ConnectNamedPipe by opening a client connection
+    // Unblock ConnectNamedPipe by opening a short dummy client connection
     HANDLE hPipe = CreateFileW(
         PIPE_NAME,
         GENERIC_READ | GENERIC_WRITE,
         0,
-        NULL,
+        nullptr,
         OPEN_EXISTING,
         0,
-        NULL
+        nullptr
     );
     if (hPipe != INVALID_HANDLE_VALUE) {
         CloseHandle(hPipe);
@@ -45,16 +45,18 @@ bool IpcServer::IsRunning() const {
 }
 
 void IpcServer::ServerLoop() {
+    std::vector<char> buffer(8192, 0);
+
     while (m_running.load()) {
         HANDLE hPipe = CreateNamedPipeW(
             PIPE_NAME,
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-            1,              // Max 1 instance
-            8192,           // Output buffer size
-            8192,           // Input buffer size
-            0,              // Default timeout
-            NULL            // Security attributes
+            1,
+            8192,
+            8192,
+            0,
+            nullptr
         );
 
         if (hPipe == INVALID_HANDLE_VALUE) {
@@ -62,36 +64,30 @@ void IpcServer::ServerLoop() {
             continue;
         }
 
-        m_pipe_handle = hPipe;
-
-        BOOL connected = ConnectNamedPipe(hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+        BOOL connected = ConnectNamedPipe(hPipe, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
         if (connected && m_running.load()) {
-            std::vector<char> buffer(8192, 0);
             DWORD bytesRead = 0;
-            BOOL readSuccess = ReadFile(hPipe, buffer.data(), (DWORD)buffer.size() - 1, &bytesRead, NULL);
-            
+            BOOL readSuccess = ReadFile(hPipe, buffer.data(), static_cast<DWORD>(buffer.size() - 1), &bytesRead, nullptr);
+
             if (readSuccess && bytesRead > 0) {
                 buffer[bytesRead] = '\0';
                 std::string request(buffer.data(), bytesRead);
-                
+
                 std::string response = "{\"ok\":false,\"error\":\"no callback\"}";
                 if (m_callback) {
                     response = m_callback(request);
                 }
 
                 DWORD bytesWritten = 0;
-                WriteFile(hPipe, response.c_str(), (DWORD)response.size(), &bytesWritten, NULL);
+                WriteFile(hPipe, response.c_str(), static_cast<DWORD>(response.size()), &bytesWritten, nullptr);
                 FlushFileBuffers(hPipe);
             }
         }
 
         DisconnectNamedPipe(hPipe);
         CloseHandle(hPipe);
-        m_pipe_handle = nullptr;
     }
 }
-
-// === Client Implementation ===
 
 IpcClient::IpcClient() = default;
 
@@ -104,7 +100,6 @@ bool IpcClient::Connect() {
         return true;
     }
 
-    // Check if pipe exists, wait up to 1 second
     if (!WaitNamedPipeW(PIPE_NAME, 1000)) {
         return false;
     }
@@ -113,10 +108,10 @@ bool IpcClient::Connect() {
         PIPE_NAME,
         GENERIC_READ | GENERIC_WRITE,
         0,
-        NULL,
+        nullptr,
         OPEN_EXISTING,
         0,
-        NULL
+        nullptr
     );
 
     if (hPipe == INVALID_HANDLE_VALUE) {
@@ -124,7 +119,7 @@ bool IpcClient::Connect() {
     }
 
     DWORD mode = PIPE_READMODE_MESSAGE;
-    SetNamedPipeHandleState(hPipe, &mode, NULL, NULL);
+    SetNamedPipeHandleState(hPipe, &mode, nullptr, nullptr);
 
     m_pipe_handle = hPipe;
     return true;
@@ -132,7 +127,7 @@ bool IpcClient::Connect() {
 
 void IpcClient::Disconnect() {
     if (m_pipe_handle && m_pipe_handle != INVALID_HANDLE_VALUE) {
-        CloseHandle((HANDLE)m_pipe_handle);
+        CloseHandle(static_cast<HANDLE>(m_pipe_handle));
         m_pipe_handle = nullptr;
     }
 }
@@ -143,28 +138,26 @@ bool IpcClient::IsConnected() const {
 
 std::string IpcClient::SendRequest(const std::string& request_json) {
     if (!Connect()) {
-        return "{\"ok\":false,\"error\":\"failed to connect to daemon\"}";
+        return "";
     }
 
-    HANDLE hPipe = (HANDLE)m_pipe_handle;
+    HANDLE hPipe = static_cast<HANDLE>(m_pipe_handle);
     DWORD bytesWritten = 0;
-    BOOL writeSuccess = WriteFile(hPipe, request_json.c_str(), (DWORD)request_json.size(), &bytesWritten, NULL);
+    BOOL writeSuccess = WriteFile(hPipe, request_json.c_str(), static_cast<DWORD>(request_json.size()), &bytesWritten, nullptr);
     if (!writeSuccess) {
         Disconnect();
-        return "{\"ok\":false,\"error\":\"failed to write to pipe\"}";
+        return "";
     }
 
-    std::vector<char> buffer(8192, 0);
+    char buffer[8192] = {};
     DWORD bytesRead = 0;
-    BOOL readSuccess = ReadFile(hPipe, buffer.data(), (DWORD)buffer.size() - 1, &bytesRead, NULL);
+    BOOL readSuccess = ReadFile(hPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr);
+    Disconnect();
     if (!readSuccess || bytesRead == 0) {
-        Disconnect();
-        return "{\"ok\":false,\"error\":\"failed to read from pipe\"}";
+        return "";
     }
 
-    buffer[bytesRead] = '\0';
-    Disconnect(); // Close connection per request
-    return std::string(buffer.data(), bytesRead);
+    return std::string(buffer, bytesRead);
 }
 
 } // namespace miniwp

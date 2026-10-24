@@ -2,12 +2,10 @@
 #define NOMINMAX
 #endif
 #include "video_optimizer.h"
+#include "win_utils.h"
 #include <windows.h>
-#include <shlobj.h>
-#include <filesystem>
 #include <algorithm>
-#include <sstream>
-#include <iomanip>
+#include <filesystem>
 #include <mutex>
 #include <unordered_map>
 
@@ -31,11 +29,6 @@ VideoOptimizer::~VideoOptimizer() {
     Cancel();
 }
 
-// Probe results are cached by (file size, last write time). The gallery UI calls
-// Probe() for every card on every rendered frame, and avformat_open_input +
-// avformat_find_stream_info is far too expensive to repeat per frame: under
-// disk/CPU load it blocked the main render loop, making the wallpaper video
-// stutter (slow motion) and UI hover effects lag.
 namespace {
 struct ProbeCacheEntry {
     uintmax_t file_size = 0;
@@ -45,17 +38,22 @@ struct ProbeCacheEntry {
 
 std::mutex g_probe_cache_mutex;
 std::unordered_map<std::string, ProbeCacheEntry> g_probe_cache;
+
+const std::string& GetCacheDirectory() {
+    static const std::string s_dir = GetAppDataSubDirUtf8(L"optimized");
+    return s_dir;
+}
 } // namespace
 
 VideoProbeResult VideoOptimizer::Probe(const std::string& input_path) {
     VideoProbeResult res;
     if (input_path.empty()) return res;
 
-    // Cache key: file size + last write time (cheap stats vs. full demux).
+    fs::path fspath = PathFromUtf8(input_path);
     std::error_code fs_ec;
-    uintmax_t file_size = fs::file_size(input_path, fs_ec);
-    if (fs_ec) return res; // missing/unreadable
-    fs::file_time_type mtime = fs::last_write_time(input_path, fs_ec);
+    uintmax_t file_size = fs::file_size(fspath, fs_ec);
+    if (fs_ec) return res;
+    fs::file_time_type mtime = fs::last_write_time(fspath, fs_ec);
     if (fs_ec) return res;
 
     {
@@ -69,6 +67,9 @@ VideoProbeResult VideoOptimizer::Probe(const std::string& input_path) {
 
     AVFormatContext* fmt_ctx = nullptr;
     if (avformat_open_input(&fmt_ctx, input_path.c_str(), nullptr, nullptr) >= 0) {
+        fmt_ctx->flags |= AVFMT_FLAG_NOBUFFER;
+        fmt_ctx->probesize = 64 * 1024;
+        fmt_ctx->max_analyze_duration = 500000;
         if (avformat_find_stream_info(fmt_ctx, nullptr) >= 0) {
             for (unsigned int i = 0; i < fmt_ctx->nb_streams; ++i) {
                 AVStream* st = fmt_ctx->streams[i];
@@ -79,7 +80,7 @@ VideoProbeResult VideoOptimizer::Probe(const std::string& input_path) {
                         res.fps = av_q2d(st->avg_frame_rate);
                     }
                     const AVCodec* c = avcodec_find_decoder(st->codecpar->codec_id);
-                    res.codec_name = c ? c->name : "unknown";
+                    res.codec_name = (c && c->name) ? c->name : "unknown";
                     res.valid = (res.width > 0 && res.height > 0);
                 } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
                     res.has_audio = true;
@@ -100,34 +101,6 @@ VideoProbeResult VideoOptimizer::Probe(const std::string& input_path) {
     return res;
 }
 
-static std::string GetCacheDirectory() {
-    // Session-stable, so cache it: the gallery calls this (via GetOptimizedPath /
-    // HasOptimizedCache) for every card on every frame and SHGetFolderPath +
-    // create_directories are pointless per-frame syscalls.
-    static std::mutex mtx;
-    static std::string cached;
-    std::lock_guard<std::mutex> lock(mtx);
-    if (!cached.empty()) return cached;
-
-    char path[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, path))) {
-        std::string dir = std::string(path) + "\\MiniWallpaper\\optimized";
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        cached = dir;
-    }
-    return cached;
-}
-
-static uint64_t HashString(const std::string& str) {
-    uint64_t hash = 14695981039346656037ULL;
-    for (char c : str) {
-        hash ^= static_cast<uint8_t>(c);
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
-
 std::pair<int, int> VideoOptimizer::CalculateTargetDimensions(int src_w, int src_h, int max_w, int max_h, int crop_mode) {
     if (src_w <= 0 || src_h <= 0) return { (max_w > 0 ? (max_w / 2) * 2 : 1920), (max_h > 0 ? (max_h / 2) * 2 : 1080) };
     if (max_w <= 0) max_w = 1920;
@@ -137,11 +110,9 @@ std::pair<int, int> VideoOptimizer::CalculateTargetDimensions(int src_w, int src
     max_h = (max_h / 2) * 2;
 
     if (crop_mode == 1) {
-        // Mode 1: Aspect Fill (Center Crop to exact full screen resolution e.g. 1920x1080)
         return { max_w, max_h };
     }
 
-    // Mode 0: Aspect Fit (Proportional scaling, keeps entire video frame intact)
     double scale = (std::min)(static_cast<double>(max_w) / src_w, static_cast<double>(max_h) / src_h);
     if (scale > 1.0) scale = 1.0;
 
@@ -153,43 +124,37 @@ std::pair<int, int> VideoOptimizer::CalculateTargetDimensions(int src_w, int src
 }
 
 std::string VideoOptimizer::GetOptimizedPath(const std::string& input_path, int target_w, int target_h) {
-    std::string cache_dir = GetCacheDirectory();
+    const std::string& cache_dir = GetCacheDirectory();
     if (cache_dir.empty()) return "";
 
-    std::string filename = fs::path(input_path).stem().string();
-    uint64_t hash = HashString(input_path);
+    std::string filename = PathToUtf8(PathFromUtf8(input_path).stem());
+    std::string hash_hex = Fnv1a64Hex(input_path);
 
     target_w = (target_w / 2) * 2;
     target_h = (target_h / 2) * 2;
 
-    std::ostringstream ss;
-    ss << cache_dir << "\\" << filename << "_" << target_w << "x" << target_h << "_" 
-       << std::hex << std::setw(16) << std::setfill('0') << hash << ".mp4";
-    return ss.str();
+    return cache_dir + "\\" + filename + "_" + std::to_string(target_w) + "x" +
+           std::to_string(target_h) + "_" + hash_hex + ".mp4";
 }
 
 bool VideoOptimizer::HasOptimizedCache(const std::string& input_path, int target_w, int target_h) {
     std::string out_path = GetOptimizedPath(input_path, target_w, target_h);
     if (out_path.empty()) return false;
+    fs::path fspath = PathFromUtf8(out_path);
     std::error_code ec;
-    return fs::exists(out_path, ec) && fs::file_size(out_path, ec) > 1024;
+    return fs::exists(fspath, ec) && !ec && fs::file_size(fspath, ec) > 1024 && !ec;
 }
 
 void VideoOptimizer::DeleteOptimizedCache(const std::string& input_path) {
     if (input_path.empty()) return;
-    std::string cache_dir = GetCacheDirectory();
+    const std::string& cache_dir = GetCacheDirectory();
     if (cache_dir.empty()) return;
 
-    uint64_t hash = HashString(input_path);
-    std::ostringstream ss;
-    ss << std::hex << std::setw(16) << std::setfill('0') << hash;
-    std::string hash_str = ss.str();
-
+    std::string hash_str = Fnv1a64Hex(input_path);
     std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(cache_dir, ec)) {
-        if (entry.is_regular_file()) {
-            std::string name = entry.path().filename().string();
-            // Strict match: only delete cache files containing the unique hash of this specific video
+    for (const auto& entry : fs::directory_iterator(PathFromUtf8(cache_dir), ec)) {
+        if (entry.is_regular_file(ec)) {
+            std::string name = PathToUtf8(entry.path().filename());
             if (name.find(hash_str) != std::string::npos) {
                 fs::remove(entry.path(), ec);
             }
@@ -198,28 +163,36 @@ void VideoOptimizer::DeleteOptimizedCache(const std::string& input_path) {
 }
 
 void VideoOptimizer::CleanOrphanCaches(const std::vector<std::string>& active_videos) {
-    std::string cache_dir = GetCacheDirectory();
+    const std::string& cache_dir = GetCacheDirectory();
     if (cache_dir.empty()) return;
 
     std::vector<std::string> active_hashes;
+    active_hashes.reserve(active_videos.size());
     for (const auto& v : active_videos) {
         if (!v.empty()) {
-            uint64_t hash = HashString(v);
-            std::ostringstream ss;
-            ss << std::hex << std::setw(16) << std::setfill('0') << hash;
-            active_hashes.push_back(ss.str());
+            active_hashes.push_back(Fnv1a64Hex(v));
         }
     }
 
     std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(cache_dir, ec)) {
-        if (entry.is_regular_file()) {
-            std::string name = entry.path().filename().string();
+    for (const auto& entry : fs::directory_iterator(PathFromUtf8(cache_dir), ec)) {
+        if (entry.is_regular_file(ec)) {
+            std::string name = PathToUtf8(entry.path().filename());
             bool is_active = false;
             for (const auto& h : active_hashes) {
-                if (name.find(h) != std::string::npos) {
+                if (name.find(h) != std::string::npos || PathsEqualNormalized(PathToUtf8(entry.path()), name)) {
                     is_active = true;
                     break;
+                }
+            }
+            // Also preserve if the cached .mp4 path itself is directly in active_videos
+            if (!is_active) {
+                std::string full_utf8 = PathToUtf8(entry.path());
+                for (const auto& v : active_videos) {
+                    if (PathsEqualNormalized(full_utf8, v)) {
+                        is_active = true;
+                        break;
+                    }
                 }
             }
             if (!is_active) {
@@ -241,13 +214,11 @@ bool VideoOptimizer::StartOptimizeAsync(
         return false;
     }
 
-    // Align target dimensions to even numbers
     target_w = (target_w / 2) * 2;
     target_h = (target_h / 2) * 2;
     if (target_w < 128) target_w = 128;
     if (target_h < 128) target_h = 128;
 
-    // If cached already exists, immediately complete
     std::string cached = GetOptimizedPath(input_path, target_w, target_h);
     if (HasOptimizedCache(input_path, target_w, target_h)) {
         if (on_progress) on_progress(1.0f, "Using cached optimized video");
@@ -275,8 +246,8 @@ bool VideoOptimizer::StartOptimizeAsync(
         target_w,
         target_h,
         crop_mode,
-        on_progress,
-        on_complete
+        std::move(on_progress),
+        std::move(on_complete)
     );
 
     return true;
@@ -314,7 +285,7 @@ void VideoOptimizer::TranscodeWorker(
     std::string output_path = GetOptimizedPath(input_path, target_w, target_h);
     std::string temp_output_path = output_path + ".tmp.mp4";
 
-    auto report = [this, on_progress](float p, const std::string& msg) {
+    auto report = [this, &on_progress](float p, const std::string& msg) {
         m_progress.store(p);
         {
             std::lock_guard<std::mutex> lock(m_status_mutex);
@@ -323,10 +294,10 @@ void VideoOptimizer::TranscodeWorker(
         if (on_progress) on_progress(p, msg);
     };
 
-    auto finish = [this, on_complete, &temp_output_path](bool success, const std::string& path) {
+    auto finish = [this, &on_complete, &temp_output_path](bool success, const std::string& path) {
         std::error_code ec;
         if (!success) {
-            fs::remove(temp_output_path, ec);
+            fs::remove(PathFromUtf8(temp_output_path), ec);
         }
         m_running.store(false);
         if (on_complete) on_complete(success, path);
@@ -376,7 +347,8 @@ void VideoOptimizer::TranscodeWorker(
 
     AVCodecContext* dec_ctx = avcodec_alloc_context3(vdec);
     avcodec_parameters_to_context(dec_ctx, in_vstream->codecpar);
-    dec_ctx->thread_count = 0; // Use all available CPU cores for fast transcode
+    int hw_threads = static_cast<int>(std::thread::hardware_concurrency());
+    dec_ctx->thread_count = std::clamp(hw_threads / 2, 2, 6);
     if (avcodec_open2(dec_ctx, vdec, nullptr) < 0) {
         avcodec_free_context(&dec_ctx);
         avformat_close_input(&in_fmt);
@@ -385,7 +357,6 @@ void VideoOptimizer::TranscodeWorker(
         return;
     }
 
-    // Setup Output Format
     AVFormatContext* out_fmt = nullptr;
     if (avformat_alloc_output_context2(&out_fmt, nullptr, nullptr, temp_output_path.c_str()) < 0 || !out_fmt) {
         avcodec_free_context(&dec_ctx);
@@ -399,7 +370,6 @@ void VideoOptimizer::TranscodeWorker(
     int src_h = in_vstream->codecpar->height;
     auto [out_w, out_h] = CalculateTargetDimensions(src_w, src_h, target_w, target_h, crop_mode);
 
-    // Calculate crop rectangle if crop_mode == 1 (Aspect Fill / Center Crop)
     int crop_w = src_w;
     int crop_h = src_h;
     int crop_x = 0;
@@ -421,13 +391,12 @@ void VideoOptimizer::TranscodeWorker(
     int out_fps_int = static_cast<int>(out_fps + 0.5);
     if (out_fps_int < 1) out_fps_int = 30;
 
-    // Multi-tier Hardware and Software Encoder Candidates
     struct EncoderCandidate {
-        std::string name;
-        std::string display_name;
+        const char* name;
+        const char* display_name;
     };
 
-    std::vector<EncoderCandidate> candidates = {
+    static constexpr EncoderCandidate kCandidates[] = {
         { "h264_nvenc", "NVIDIA NVENC (GPU)" },
         { "h264_qsv",   "Intel QuickSync (GPU)" },
         { "h264_amf",   "AMD AMF (GPU)" },
@@ -439,8 +408,8 @@ void VideoOptimizer::TranscodeWorker(
     AVCodecContext* enc_ctx = nullptr;
     std::string active_encoder_display = "High-Fidelity Engine";
 
-    for (const auto& cand : candidates) {
-        const AVCodec* candidate_codec = avcodec_find_encoder_by_name(cand.name.c_str());
+    for (const auto& cand : kCandidates) {
+        const AVCodec* candidate_codec = avcodec_find_encoder_by_name(cand.name);
         if (!candidate_codec) continue;
 
         AVCodecContext* test_ctx = avcodec_alloc_context3(candidate_codec);
@@ -452,35 +421,34 @@ void VideoOptimizer::TranscodeWorker(
         test_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
         test_ctx->time_base = AVRational{1, out_fps_int};
         test_ctx->framerate = AVRational{out_fps_int, 1};
-        test_ctx->gop_size = static_cast<int>(out_fps_int * 2);
+        test_ctx->gop_size = out_fps_int * 2;
         test_ctx->max_b_frames = 2;
-        test_ctx->thread_count = 0;
+        test_ctx->thread_count = (std::strcmp(cand.name, "libx264") == 0) ? std::clamp(hw_threads, 2, 8) : 1;
 
         if (out_fmt->oformat->flags & AVFMT_GLOBALHEADER) {
             test_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         }
 
-        // Apply high-quality rate control & tuning specific to candidate encoder
-        if (cand.name == "h264_nvenc") {
-            av_opt_set(test_ctx->priv_data, "preset", "p6", 0); // High Quality
+        if (std::strcmp(cand.name, "h264_nvenc") == 0) {
+            av_opt_set(test_ctx->priv_data, "preset", "p6", 0);
             av_opt_set(test_ctx->priv_data, "tune", "hq", 0);
             av_opt_set(test_ctx->priv_data, "rc", "vbr", 0);
-            av_opt_set_int(test_ctx->priv_data, "cq", 19, 0); // CQ 19 (Visually Lossless)
+            av_opt_set_int(test_ctx->priv_data, "cq", 19, 0);
             av_opt_set(test_ctx->priv_data, "profile", "high", 0);
-        } else if (cand.name == "h264_qsv") {
+        } else if (std::strcmp(cand.name, "h264_qsv") == 0) {
             av_opt_set(test_ctx->priv_data, "preset", "veryfast", 0);
             test_ctx->global_quality = 20 * FF_QP2LAMBDA;
-        } else if (cand.name == "h264_amf") {
+        } else if (std::strcmp(cand.name, "h264_amf") == 0) {
             av_opt_set(test_ctx->priv_data, "quality", "quality", 0);
             av_opt_set(test_ctx->priv_data, "rc", "cqp", 0);
             av_opt_set_int(test_ctx->priv_data, "qp_i", 19, 0);
             av_opt_set_int(test_ctx->priv_data, "qp_p", 20, 0);
-        } else if (cand.name == "h264_mf") {
+        } else if (std::strcmp(cand.name, "h264_mf") == 0) {
             test_ctx->bit_rate = static_cast<int64_t>(out_w) * out_h * 4;
             if (test_ctx->bit_rate < 4000000) test_ctx->bit_rate = 4000000;
-        } else if (cand.name == "libx264") {
+        } else if (std::strcmp(cand.name, "libx264") == 0) {
             av_opt_set(test_ctx->priv_data, "preset", "fast", 0);
-            av_opt_set(test_ctx->priv_data, "crf", "19", 0); // Visually Lossless CRF 19
+            av_opt_set(test_ctx->priv_data, "crf", "19", 0);
             av_opt_set(test_ctx->priv_data, "tune", "film", 0);
         }
 
@@ -489,9 +457,8 @@ void VideoOptimizer::TranscodeWorker(
             enc_ctx = test_ctx;
             active_encoder_display = cand.display_name;
             break;
-        } else {
-            avcodec_free_context(&test_ctx);
         }
+        avcodec_free_context(&test_ctx);
     }
 
     if (!enc_ctx || !venc) {
@@ -509,7 +476,6 @@ void VideoOptimizer::TranscodeWorker(
     out_vstream->r_frame_rate = enc_ctx->framerate;
     out_vstream->avg_frame_rate = enc_ctx->framerate;
 
-    // Copy Audio Stream if available
     AVStream* out_astream = nullptr;
     if (in_audio_idx >= 0) {
         out_astream = avformat_new_stream(out_fmt, nullptr);
@@ -518,7 +484,6 @@ void VideoOptimizer::TranscodeWorker(
         out_astream->time_base = in_fmt->streams[in_audio_idx]->time_base;
     }
 
-    // Open Output File
     if (!(out_fmt->oformat->flags & AVFMT_NOFILE)) {
         if (avio_open(&out_fmt->pb, temp_output_path.c_str(), AVIO_FLAG_WRITE) < 0) {
             avcodec_free_context(&enc_ctx);
@@ -542,7 +507,6 @@ void VideoOptimizer::TranscodeWorker(
         return;
     }
 
-    // Allocate conversion frames & scaler
     AVFrame* in_frame = av_frame_alloc();
     AVFrame* out_frame = av_frame_alloc();
     out_frame->format = enc_ctx->pix_fmt;
@@ -613,8 +577,7 @@ void VideoOptimizer::TranscodeWorker(
                             out_frame->data, out_frame->linesize
                         );
 
-                        out_frame->pts = out_frame_idx;
-                        out_frame_idx++;
+                        out_frame->pts = out_frame_idx++;
                         next_frame_time += out_frame_interval;
                         current_pts = in_frame->pts;
 
@@ -648,7 +611,6 @@ void VideoOptimizer::TranscodeWorker(
     if (m_cancel.load()) {
         success = false;
     } else {
-        // Flush Encoder
         avcodec_send_frame(enc_ctx, nullptr);
         while (avcodec_receive_packet(enc_ctx, out_pkt) >= 0) {
             av_packet_rescale_ts(out_pkt, enc_ctx->time_base, out_vstream->time_base);
@@ -659,7 +621,6 @@ void VideoOptimizer::TranscodeWorker(
         av_write_trailer(out_fmt);
     }
 
-    // Cleanup resources
     if (sws_ctx) sws_freeContext(sws_ctx);
     av_frame_free(&in_frame);
     av_frame_free(&out_frame);
@@ -674,7 +635,11 @@ void VideoOptimizer::TranscodeWorker(
 
     if (success) {
         std::error_code ec;
-        fs::rename(temp_output_path, output_path, ec);
+        fs::path src_tmp = PathFromUtf8(temp_output_path);
+        fs::path dst_final = PathFromUtf8(output_path);
+        fs::remove(dst_final, ec);
+        ec.clear();
+        fs::rename(src_tmp, dst_final, ec);
         if (!ec) {
             report(1.0f, "Optimization complete!");
             finish(true, output_path);
