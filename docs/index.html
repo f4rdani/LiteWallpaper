@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="id" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiniWallpaper v2.0.0 — Ultra-Lightweight Animated Video Wallpaper Engine for Windows</title>
+  <meta name="description" content="Engine wallpaper video teringan di Windows berbasis native C++20 dan Direct3D 11. Hanya ~0.36 MB RAM di Task Manager, 0.00% CPU idle, tanpa Chromium/Electron.">
+  <link rel="icon" type="image/png" href="assets/logo.png">
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              main: '#090c15',
+              surface: '#0d121f',
+              card: '#111726',
+              cyan: '#38e8ff',
+              gold: '#ffd166',
+              dim: '#94a3b8'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- FontAwesome 6 Icons (No Unicode Emojis) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+  <!-- Custom Startorch Theme Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-brand-main text-slate-100 antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+
+  <!-- Navigation Bar (Startorch Floating Dock) -->
+  <header class="fixed top-0 left-0 right-0 z-50 px-4 py-4 sm:px-8">
+    <div class="max-w-6xl mx-auto flex items-center justify-between floating-dock px-5 py-3">
+      <!-- Brand Logo -->
+      <a href="#" class="flex items-center gap-3 group">
+        <img src="assets/logo.png" alt="MiniWallpaper Logo" class="w-8 h-8 rounded-lg shadow-sm border border-cyan-500/30 group-hover:border-cyan-400 transition-colors">
+        <div class="flex flex-col">
+          <span class="font-bold tracking-tight text-slate-100 text-sm sm:text-base leading-tight">MiniWallpaper</span>
+          <span class="text-[10px] text-cyan-400 font-mono tracking-wider">v2.0.0 RELEASE</span>
+        </div>
+      </a>
+
+      <!-- Desktop Nav Links -->
+      <nav class="hidden md:flex items-center gap-1">
+        <a href="#features" class="dock-pill-btn" data-i18n="nav_features">Fitur</a>
+        <a href="#benchmarks" class="dock-pill-btn" data-i18n="nav_benchmarks">Benchmark</a>
+        <a href="#installation" class="dock-pill-btn" data-i18n="nav_install">Cara Pasang</a>
+        <a href="#troubleshooting" class="dock-pill-btn" data-i18n="nav_troubleshoot">Troubleshooting</a>
+      </nav>
+
+      <!-- Right Controls: Language & GitHub -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Language Switcher -->
+        <div class="flex items-center bg-slate-900/80 border border-slate-700/60 rounded-full p-0.5 text-xs">
+          <button class="lang-switch-btn px-2.5 py-1 rounded-full font-medium transition-all text-cyan-400 bg-cyan-950/60" data-lang="id">ID</button>
+          <button class="lang-switch-btn px-2.5 py-1 rounded-full font-medium transition-all text-slate-400 hover:text-slate-200" data-lang="en">EN</button>
+        </div>
+
+        <!-- GitHub Release Link -->
+        <a href="https://github.com/f4rdani/LiteWallpaper" target="_blank" rel="noopener noreferrer" class="hidden sm:inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 hover:border-cyan-500/40 hover:text-cyan-400 transition-all text-slate-300">
+          <i class="fa-brands fa-github text-sm"></i>
+          <span>GitHub</span>
+        </a>
+
+        <!-- Mobile Menu Toggle Button -->
+        <button id="mobile-menu-toggle" class="md:hidden text-slate-300 hover:text-cyan-400 p-2 text-lg focus:outline-none" aria-label="Toggle Menu">
+          <i class="fa-solid fa-bars"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Mobile Drawer Menu -->
+    <div id="mobile-menu" class="hidden md:hidden max-w-6xl mx-auto mt-2 glass-card p-4 flex flex-col gap-2 border border-cyan-500/20 bg-slate-950/95">
+      <a href="#features" class="px-3 py-2 rounded-lg text-slate-300 hover:text-cyan-400 hover:bg-slate-800/50" data-i18n="nav_features">Fitur</a>
+      <a href="#benchmarks" class="px-3 py-2 rounded-lg text-slate-300 hover:text-cyan-400 hover:bg-slate-800/50" data-i18n="nav_benchmarks">Benchmark</a>
+      <a href="#installation" class="px-3 py-2 rounded-lg text-slate-300 hover:text-cyan-400 hover:bg-slate-800/50" data-i18n="nav_install">Cara Pasang</a>
+      <a href="#troubleshooting" class="px-3 py-2 rounded-lg text-slate-300 hover:text-cyan-400 hover:bg-slate-800/50" data-i18n="nav_troubleshoot">Troubleshooting</a>
+      <a href="https://github.com/f4rdani/LiteWallpaper" target="_blank" rel="noopener noreferrer" class="px-3 py-2 rounded-lg text-cyan-400 hover:bg-slate-800/50 flex items-center gap-2">
+        <i class="fa-brands fa-github"></i> GitHub Repository
+      </a>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="pt-32 pb-20 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto text-center">
+    <!-- Top Pill Badge -->
+    <div class="inline-flex items-center gap-2 mb-6">
+      <span class="badge-cyan">
+        <i class="fa-solid fa-microchip text-xs"></i>
+        <span data-i18n="hero_badge">Native C++20 & Direct3D 11 Engine</span>
+      </span>
+      <span class="badge-gold">
+        <i class="fa-solid fa-circle-check text-xs"></i>
+        <span>Windows 10 / 11 64-bit</span>
+      </span>
+    </div>
+
+    <!-- Main Headline -->
+    <h1 class="text-3xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-white mb-6 leading-tight max-w-4xl mx-auto" data-i18n="hero_title">
+      Wallpaper Video Hidup Tanpa Beban Resource
+    </h1>
+
+    <!-- Subtitle -->
+    <p class="text-slate-400 text-base sm:text-lg max-w-3xl mx-auto mb-10 leading-relaxed" data-i18n="hero_desc">
+      Engine wallpaper video teringan di Windows. Memanfaatkan decoding GPU ASIC murni (D3D11VA), manajemen memori mimalloc zero-purge, dan penundaan DLL startup. Bebas Chromium, hemat baterai, dan nol kompromi untuk performa gaming.
+    </p>
+
+    <!-- Call to Actions -->
+    <div class="flex flex-wrap items-center justify-center gap-4 mb-14">
+      <a href="https://github.com/f4rdani/LiteWallpaper/releases/latest" target="_blank" rel="noopener noreferrer" class="btn-primary-cyan">
+        <i class="fa-solid fa-download"></i>
+        <span data-i18n="btn_download">Unduh MiniWallpaper v2.0.0</span>
+      </a>
+      <a href="#installation" class="btn-secondary-dark">
+        <i class="fa-solid fa-book-open"></i>
+        <span data-i18n="btn_guide">Panduan Penggunaan</span>
+      </a>
+      <a href="https://github.com/f4rdani/LiteWallpaper" target="_blank" rel="noopener noreferrer" class="btn-secondary-dark">
+        <i class="fa-brands fa-github"></i>
+        <span data-i18n="btn_github">Lihat di GitHub</span>
+      </a>
+    </div>
+
+    <!-- Telemetry HUD Counters -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-4xl mx-auto mb-16">
+      <div class="hud-stat-box">
+        <div class="hud-stat-val">0.36 MB</div>
+        <div class="hud-stat-label" data-i18n="metric_ram">RAM Task Manager</div>
+      </div>
+      <div class="hud-stat-box">
+        <div class="hud-stat-val">0.00%</div>
+        <div class="hud-stat-label" data-i18n="metric_cpu">CPU Idle</div>
+      </div>
+      <div class="hud-stat-box">
+        <div class="hud-stat-val">0 MB</div>
+        <div class="hud-stat-label">VRAM saat Pause</div>
+      </div>
+      <div class="hud-stat-box">
+        <div class="hud-stat-val text-emerald-400">0.00 MB</div>
+        <div class="hud-stat-label">Disk I/O Boot</div>
+      </div>
+    </div>
+
+    <!-- App Preview Frame -->
+    <div class="screenshot-frame max-w-5xl mx-auto">
+      <div class="bg-slate-900/90 px-4 py-2.5 border-b border-cyan-500/20 flex items-center justify-between text-xs text-slate-400 font-mono">
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-red-500/80 inline-block"></span>
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-500/80 inline-block"></span>
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/80 inline-block"></span>
+          <span class="ml-2 text-slate-300">MiniWallpaper Control Panel — Startorch UI Kit</span>
+        </div>
+        <span class="badge-cyan py-0.5 text-[10px]">D3D11VA ACTIVE</span>
+      </div>
+      <img src="assets/ui_gallery_detail.png" alt="MiniWallpaper Desktop Control Panel UI" class="w-full h-auto object-cover">
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="py-20 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto">
+    <div class="text-center max-w-3xl mx-auto mb-16">
+      <span class="badge-cyan mb-3" data-i18n="sec_features_badge">Arsitektur & Inovasi</span>
+      <h2 class="text-2xl sm:text-4xl font-bold tracking-tight text-white mb-4" data-i18n="sec_features_title">
+        Fitur Unggulan MiniWallpaper
+      </h2>
+      <p class="text-slate-400 text-sm sm:text-base" data-i18n="sec_features_subtitle">
+        Didesain dari baris pertama untuk efisiensi ekstrim tanpa membebani sistem saat bekerja maupun bermain game.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <!-- Feature Card 1 -->
+      <div class="glass-card p-6 flex flex-col justify-between">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl mb-5">
+            <i class="fa-solid fa-microchip"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2" data-i18n="feat_hw_title">Zero-Copy D3D11VA Decode</h3>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="feat_hw_desc">
+            Stream video didekode langsung di chip hardware GPU (NVDEC / Intel QSV / AMD VCN) via D3D11 Texture2DArray SRV tanpa penyalinan CPU-ke-GPU.
+          </p>
+        </div>
+        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-cyan-400 font-mono flex items-center gap-1.5">
+          <i class="fa-solid fa-check text-[10px]"></i> True Hardware Acceleration
+        </div>
+      </div>
+
+      <!-- Feature Card 2 -->
+      <div class="glass-card p-6 flex flex-col justify-between">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl mb-5">
+            <i class="fa-solid fa-bolt"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2" data-i18n="feat_gpu_title">Smart Dual-GPU Routing</h3>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="feat_gpu_desc">
+            Secara otomatis memprioritaskan Integrated GPU (iGPU) hemat daya untuk rendering, membiarkan discrete GPU (NVIDIA/AMD) tetap berada pada status deep sleep 0%.
+          </p>
+        </div>
+        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-cyan-400 font-mono flex items-center gap-1.5">
+          <i class="fa-solid fa-check text-[10px]"></i> Battery & Thermal Friendly
+        </div>
+      </div>
+
+      <!-- Feature Card 3 -->
+      <div class="glass-card p-6 flex flex-col justify-between">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl mb-5">
+            <i class="fa-solid fa-gamepad"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2" data-i18n="feat_gov_title">Gaming Auto-Sleep & Governor</h3>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="feat_gov_desc">
+            Otomatis pause instan saat game fullscreen aktif. Mengaktifkan Deep Sleep (0% CPU, 0 MB VRAM) saat RAM atau VRAM sistem mencapai ambang batas (>= 80%).
+          </p>
+        </div>
+        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-cyan-400 font-mono flex items-center gap-1.5">
+          <i class="fa-solid fa-check text-[10px]"></i> 100% FPS Game Preserved
+        </div>
+      </div>
+
+      <!-- Feature Card 4 -->
+      <div class="glass-card p-6 flex flex-col justify-between">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl mb-5">
+            <i class="fa-solid fa-gauge-high"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2" data-i18n="feat_boot_title">Adaptive Boot Readiness Gate</h3>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="feat_boot_desc">
+            Startup Windows tetap cepat berkat 9 DLL berat (FFmpeg & D3D11) yang berstatus delay-load. Wallpaper statis tampil detik ke-0, engine aktif saat CPU tenang.
+          </p>
+        </div>
+        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-cyan-400 font-mono flex items-center gap-1.5">
+          <i class="fa-solid fa-check text-[10px]"></i> 31 ms CPU Boot Window
+        </div>
+      </div>
+
+      <!-- Feature Card 5 -->
+      <div class="glass-card p-6 flex flex-col justify-between">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl mb-5">
+            <i class="fa-solid fa-lock"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2" data-i18n="feat_lock_title">Sinkronisasi Layar Kunci</h3>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="feat_lock_desc">
+            Ekstrak snapshot frame video secara presisi dan sinkronkan ke Lock Screen Windows serta companion screensaver native MiniWallpaper.scr.
+          </p>
+        </div>
+        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-cyan-400 font-mono flex items-center gap-1.5">
+          <i class="fa-solid fa-check text-[10px]"></i> Stamp Cache Anti-Redundant
+        </div>
+      </div>
+
+      <!-- Feature Card 6 -->
+      <div class="glass-card p-6 flex flex-col justify-between">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl mb-5">
+            <i class="fa-solid fa-sliders"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-2" data-i18n="feat_opt_title">1080p Video Auto-Optimizer</h3>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="feat_opt_desc">
+            Pre-scaler bawaan yang mengonversi video 4K/bitrate tinggi menjadi format hardware 1080p NV12 yang menghemat daya hingga 75%.
+          </p>
+        </div>
+        <div class="mt-6 pt-4 border-t border-slate-800 text-xs text-cyan-400 font-mono flex items-center gap-1.5">
+          <i class="fa-solid fa-check text-[10px]"></i> 1-Click Hardware Downscale
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Benchmarks Section -->
+  <section id="benchmarks" class="py-20 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto">
+    <div class="text-center max-w-3xl mx-auto mb-16">
+      <span class="badge-gold mb-3" data-i18n="sec_bench_badge">Pengujian Nyata</span>
+      <h2 class="text-2xl sm:text-4xl font-bold tracking-tight text-white mb-4" data-i18n="sec_bench_title">
+        Benchmark Windows Task Manager
+      </h2>
+      <p class="text-slate-400 text-sm sm:text-base" data-i18n="sec_bench_subtitle">
+        Data pengujian resmi langsung dari Task Manager (Working Set - Private) pada video 1080p 60 FPS di Windows 11.
+      </p>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="benchmark-table">
+        <thead>
+          <tr>
+            <th data-i18n="tb_metric">Metrik Operasional</th>
+            <th class="text-cyan-400" data-i18n="tb_miniwp">MiniWallpaper v2.0.0</th>
+            <th data-i18n="tb_lively">Lively Wallpaper (WPF/WinUI)</th>
+            <th data-i18n="tb_wpengine">Wallpaper Engine</th>
+            <th data-i18n="tb_status">Status Pengujian</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="font-medium text-slate-200" data-i18n="tb_ram_bg">RAM (Background Daemon)</td>
+            <td class="col-highlight font-mono" data-i18n="tb_ram_bg_mini">0.36 MB</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_ram_bg_other1">65.0 - 120.0 MB</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_ram_bg_other2">50.0 - 95.0 MB</td>
+            <td><span class="badge-green" data-i18n="tb_ram_bg_stat">Hemat hingga 99% memori</span></td>
+          </tr>
+          <tr>
+            <td class="font-medium text-slate-200" data-i18n="tb_ram_boot">RAM saat Windows Logon</td>
+            <td class="col-highlight font-mono" data-i18n="tb_ram_boot_mini">0.21 MB (38 modul)</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_ram_boot_other1">80.0 - 150.0 MB</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_ram_boot_other2">60.0 - 110.0 MB</td>
+            <td><span class="badge-green" data-i18n="tb_ram_boot_stat">0.00 MB Disk I/O saat boot</span></td>
+          </tr>
+          <tr>
+            <td class="font-medium text-slate-200" data-i18n="tb_cpu">Beban CPU Rata-Rata</td>
+            <td class="col-highlight font-mono" data-i18n="tb_cpu_mini">0.00% - 0.20%</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_cpu_other1">1.20% - 4.50%</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_cpu_other2">0.80% - 2.50%</td>
+            <td><span class="badge-cyan" data-i18n="tb_cpu_stat">SetWinEventHook tanpa polling</span></td>
+          </tr>
+          <tr>
+            <td class="font-medium text-slate-200" data-i18n="tb_threads">Jumlah Thread Aktif</td>
+            <td class="col-highlight font-mono" data-i18n="tb_threads_mini">23 threads</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_threads_other1">48 - 72 threads</td>
+            <td class="text-slate-400 font-mono" data-i18n="tb_threads_other2">35 - 55 threads</td>
+            <td><span class="badge-cyan" data-i18n="tb_threads_stat">Arsitektur multi-thread efisien</span></td>
+          </tr>
+          <tr>
+            <td class="font-medium text-slate-200" data-i18n="tb_stack">Teknologi Runtime</td>
+            <td class="col-highlight" data-i18n="tb_stack_mini">Native C++20 / Direct3D 11</td>
+            <td class="text-slate-400" data-i18n="tb_stack_other1">.NET 8 / WPF / Chromium</td>
+            <td class="text-slate-400" data-i18n="tb_stack_other2">Custom Engine / CEF Web</td>
+            <td><span class="badge-gold" data-i18n="tb_stack_stat">Zero runtime dependencies</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- UI Gallery Screenshots Row -->
+    <div class="mt-12 grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="glass-card p-4">
+        <h4 class="text-sm font-semibold text-slate-300 mb-3 flex items-center gap-2">
+          <i class="fa-solid fa-layer-group text-cyan-400"></i> Wallpaper Gallery (Dedicated Left Pill Rail)
+        </h4>
+        <img src="assets/ui_gallery.png" alt="Wallpaper Gallery" class="rounded-lg w-full border border-slate-800">
+      </div>
+      <div class="glass-card p-4">
+        <h4 class="text-sm font-semibold text-slate-300 mb-3 flex items-center gap-2">
+          <i class="fa-solid fa-chart-line text-cyan-400"></i> Performance & Advanced Telemetry
+        </h4>
+        <img src="assets/ui_performance.png" alt="Performance Telemetry" class="rounded-lg w-full border border-slate-800">
+      </div>
+    </div>
+  </section>
+
+  <!-- Installation & Setup Section -->
+  <section id="installation" class="py-20 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto">
+    <div class="text-center max-w-3xl mx-auto mb-14">
+      <span class="badge-cyan mb-3" data-i18n="sec_install_badge">Instalasi Cepat</span>
+      <h2 class="text-2xl sm:text-4xl font-bold tracking-tight text-white mb-4" data-i18n="sec_install_title">
+        Cara Pasang & Konfigurasi
+      </h2>
+      <p class="text-slate-400 text-sm sm:text-base" data-i18n="sec_install_subtitle">
+        Tidak membutuhkan instalasi rumit. Sepenuhnya portabel dan siap dijalankan dalam hitungan detik.
+      </p>
+    </div>
+
+    <!-- Installation Tabs -->
+    <div class="flex items-center justify-center gap-2 mb-8 border-b border-slate-800 pb-4">
+      <button class="tab-btn active" data-tab="tab-portable" data-i18n="tab_portable">1. Portable Quickstart</button>
+      <button class="tab-btn" data-tab="tab-autostart" data-i18n="tab_autostart">2. Menjalankan Otomatis</button>
+      <button class="tab-btn" data-tab="tab-screensaver" data-i18n="tab_screensaver">3. Mode Screensaver</button>
+    </div>
+
+    <!-- Tab 1: Portable Quickstart -->
+    <div id="tab-portable" class="tab-content-panel space-y-6">
+      <div class="glass-card p-6 flex flex-col md:flex-row gap-6 items-start">
+        <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center font-bold text-cyan-400 shrink-0">1</div>
+        <div class="flex-1">
+          <h4 class="text-lg font-semibold text-white mb-2" data-i18n="inst_step1_title">Unduh & Ekstrak Berkas</h4>
+          <p class="text-slate-400 text-sm leading-relaxed mb-4" data-i18n="inst_step1_desc">
+            Unduh arsip portable terbaru (MiniWallpaper-Portable-...-win64.zip) dari halaman GitHub Releases. Ekstrak seluruh isi file ZIP ke folder permanen pilihan Anda (contoh: D:\MiniWallpaper\).
+          </p>
+          <div class="p-3 bg-amber-950/20 border border-amber-500/30 rounded-lg text-xs text-amber-300/90 leading-relaxed" data-i18n="inst_step1_note">
+            Penting: Jangan memindahkan file MiniWallpaper.exe sendirian keluar dari foldernya tanpa file DLL pendamping.
+          </div>
+        </div>
+      </div>
+
+      <div class="glass-card p-6 flex flex-col md:flex-row gap-6 items-start">
+        <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center font-bold text-cyan-400 shrink-0">2</div>
+        <div class="flex-1">
+          <h4 class="text-lg font-semibold text-white mb-2" data-i18n="inst_step2_title">Jalankan MiniWallpaper.exe</h4>
+          <p class="text-slate-400 text-sm leading-relaxed mb-4" data-i18n="inst_step2_desc">
+            Klik dua kali MiniWallpaper.exe. Ikon aplikasi akan langsung aktif di System Tray taskbar (samping jam).
+          </p>
+          <div class="p-3 bg-slate-900/80 border border-slate-700/60 rounded-lg text-xs text-slate-300 leading-relaxed" data-i18n="inst_step2_note">
+            Bila muncul dialog Windows SmartScreen (Windows protected your PC), klik 'More info' lalu pilih 'Run anyway' karena binary open-source belum menggunakan sertifikat berbayar.
+          </div>
+        </div>
+      </div>
+
+      <div class="glass-card p-6 flex flex-col md:flex-row gap-6 items-start">
+        <div class="w-10 h-10 rounded-full bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center font-bold text-cyan-400 shrink-0">3</div>
+        <div class="flex-1">
+          <h4 class="text-lg font-semibold text-white mb-2" data-i18n="inst_step3_title">Tambahkan Video Favorit Anda</h4>
+          <p class="text-slate-400 text-sm leading-relaxed" data-i18n="inst_step3_desc">
+            Klik kanan ikon tray -> Control Panel, atau buka jendela aplikasi. Anda cukup drag & drop berkas video (MP4, WebM, MKV, MOV) ke galeri untuk langsung menjadikannya wallpaper hidup.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Windows Autostart -->
+    <div id="tab-autostart" class="tab-content-panel hidden space-y-6">
+      <div class="glass-card p-8">
+        <h4 class="text-xl font-semibold text-white mb-4 flex items-center gap-3">
+          <i class="fa-solid fa-play text-cyan-400"></i>
+          <span data-i18n="inst_auto_title">Konfigurasi Jalankan saat Windows Menyala</span>
+        </h4>
+        <p class="text-slate-400 text-sm sm:text-base leading-relaxed mb-6" data-i18n="inst_auto_desc">
+          Buka Control Panel -> Tab General (Pengaturan Umum), lalu aktifkan switch 'Jalankan Otomatis saat Startup'. MiniWallpaper secara otomatis mendaftarkan autostart native Explorer tanpa menulis override registri yang mengganggu kestabilan sistem.
+        </p>
+        <div class="p-4 bg-slate-950 border border-cyan-500/20 rounded-xl space-y-2 text-xs text-slate-300 font-mono">
+          <div><span class="text-cyan-400 font-bold">Logon Flag:</span> MiniWallpaper.exe --startup</div>
+          <div><span class="text-cyan-400 font-bold">Boot Overhead:</span> ~31 ms CPU time (Delay-loaded FFmpeg & D3D11)</div>
+          <div><span class="text-cyan-400 font-bold">Native Handoff:</span> Menampilkan wallpaper statis langsung sejak detik ke-0</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 3: Screensaver Mode -->
+    <div id="tab-screensaver" class="tab-content-panel hidden space-y-6">
+      <div class="glass-card p-8">
+        <h4 class="text-xl font-semibold text-white mb-4 flex items-center gap-3">
+          <i class="fa-solid fa-moon text-cyan-400"></i>
+          <span data-i18n="inst_scr_title">Pasang Screensaver Bawaan (MiniWallpaper.scr)</span>
+        </h4>
+        <p class="text-slate-400 text-sm sm:text-base leading-relaxed mb-6" data-i18n="inst_scr_desc">
+          Di dalam folder aplikasi terdapat file bernama MiniWallpaper.scr. Klik kanan berkas tersebut lalu pilih 'Install'. Dialog pengaturan Screensaver Windows akan terbuka dan otomatis memilih MiniWallpaper sebagai screensaver utama.
+        </p>
+        <div class="code-box">
+          <code>rundll32.exe desk.cpl,InstallScreenSaver MiniWallpaper.scr</code>
+          <button class="copy-btn" data-copy="rundll32.exe desk.cpl,InstallScreenSaver MiniWallpaper.scr">Copy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Troubleshooting & FAQ Section -->
+  <section id="troubleshooting" class="py-20 px-4 sm:px-6 lg:px-8 max-w-4xl mx-auto">
+    <div class="text-center max-w-3xl mx-auto mb-16">
+      <span class="badge-cyan mb-3" data-i18n="sec_trouble_badge">Bantuan Teknis</span>
+      <h2 class="text-2xl sm:text-4xl font-bold tracking-tight text-white mb-4" data-i18n="sec_trouble_title">
+        Troubleshooting & Masalah Umum
+      </h2>
+      <p class="text-slate-400 text-sm sm:text-base" data-i18n="sec_trouble_subtitle">
+        Solusi cepat untuk kendala umum yang sering ditemui pengguna.
+      </p>
+    </div>
+
+    <div class="space-y-4">
+      <!-- FAQ Item 1 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-display text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q1">Layar hitam atau video wallpaper tidak muncul di desktop?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a1">
+          Pastikan opsi 'Show desktop icons' dalam keadaan aktif (klik kanan desktop -> View -> centang 'Show desktop icons'). Windows WorkerW membutuhkan ikon desktop aktif untuk menempatkan jendela wallpaper di belakangnya. Pastikan juga file video tidak rusak dan menggunakan format standar (H.264/HEVC/AV1/VP9).
+        </div>
+      </div>
+
+      <!-- FAQ Item 2 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-shield-halved text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q2">Peringatan 'Windows Protected Your PC' (SmartScreen) muncul saat dijalankan?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a2">
+          Hal ini lumrah terjadi pada software open-source baru yang didistribusikan gratis tanpa sertifikat EV berbayar Microsoft. Klik 'More info' lalu klik 'Run anyway'. Seluruh kode sumber MiniWallpaper 100% terbuka dan dapat diaudit secara publik di GitHub.
+        </div>
+      </div>
+
+      <!-- FAQ Item 3 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-video text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q3">Video terasa berat, patah-patah, atau membebani kartu grafis?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a3">
+          Gunakan fitur bawaan 'Optimize Video (4K -> 1080p)' pada tab Wallpaper Gallery. Video 4K mendekode piksel 4x lipat lebih banyak dibandingkan 1080p. Dengan optimasi hardware NV12 bawaan, beban GPU akan turun drastis hingga 75%.
+        </div>
+      </div>
+
+      <!-- FAQ Item 4 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-gamepad text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q4">Wallpaper otomatis berhenti saat bermain game atau menjalankan aplikasi berat?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a4">
+          Ini adalah fitur proteksi sistem bernama 'Auto-Pause on Fullscreen' dan 'Gaming Auto-Sleep'. MiniWallpaper secara cerdas menghentikan dekoder dan membebaskan VRAM ke 0 MB saat game aktif agar FPS game Anda tetap 100% maksimal. Begitu game ditutup, wallpaper akan otomatis resume kembali.
+        </div>
+      </div>
+
+      <!-- FAQ Item 5 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-volume-xmark text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q5">Suara video wallpaper tidak terdengar sama sekali?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a5">
+          Secara default wallpaper dimulai dalam kondisi bisu (muted) demi kenyamanan. Buka Control Panel -> Tab General, aktifkan tombol Audio dan sesuaikan volume sesuai keinginan Anda.
+        </div>
+      </div>
+
+      <!-- FAQ Item 6 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-tv text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q6">Wallpaper hilang atau tidak menyesuaikan saat menyambung monitor eksternal?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a6">
+          MiniWallpaper memantau event sistem WM_DISPLAYCHANGE secara real-time. Jika Anda baru saja mencolok monitor baru atau mengubah orientasi, klik tombol Refresh di rail menu galeri atau pilih monitor target pada banner multi-monitor di galeri.
+        </div>
+      </div>
+
+      <!-- FAQ Item 7 -->
+      <div class="faq-item">
+        <div class="faq-header">
+          <h4>
+            <i class="fa-solid fa-rotate text-cyan-400 text-sm"></i>
+            <span data-i18n="faq_q7">Bagaimana cara mereset seluruh konfigurasi ke kondisi awal?</span>
+          </h4>
+          <i class="fa-solid fa-chevron-down faq-icon-toggle"></i>
+        </div>
+        <div class="faq-body" data-i18n="faq_a7">
+          Buka Windows Run (Win + R), ketik %APPDATA%\MiniWallpaper lalu tekan Enter. Hapus berkas config.json kemudian jalankan ulang MiniWallpaper.exe. Aplikasi akan membuat konfigurasi default baru yang bersih.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Technical Specs Summary Section -->
+  <section class="py-16 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto border-t border-slate-800/80">
+    <div class="glass-card p-8 flex flex-col md:flex-row items-center justify-between gap-6">
+      <div>
+        <h3 class="text-xl font-bold text-white mb-2">MiniWallpaper v2.0.0 Architecture</h3>
+        <p class="text-slate-400 text-sm max-w-2xl">
+          Engineered using pure ISO C++20, Direct3D 11, HLSL FXC precompiled shaders, and mimalloc memory allocator. Zero webview, zero node.js runtime, zero telemetry.
+        </p>
+      </div>
+      <div class="flex items-center gap-3 shrink-0">
+        <a href="https://github.com/f4rdani/LiteWallpaper" target="_blank" rel="noopener noreferrer" class="btn-primary-cyan text-sm py-2.5 px-5">
+          <i class="fa-brands fa-github"></i> Star on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-10 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto text-center border-t border-slate-900 text-xs text-slate-500">
+    <div class="flex items-center justify-center gap-4 mb-4">
+      <a href="https://github.com/f4rdani/LiteWallpaper" class="hover:text-cyan-400 text-slate-400">GitHub</a>
+      <span>•</span>
+      <a href="https://github.com/f4rdani/LiteWallpaper/releases" class="hover:text-cyan-400 text-slate-400">Releases</a>
+      <span>•</span>
+      <a href="https://github.com/f4rdani/LiteWallpaper/blob/main/LICENSE" class="hover:text-cyan-400 text-slate-400">License (GPL-3.0)</a>
+    </div>
+    <p data-i18n="footer_text">
+      MiniWallpaper v2.0.0 — Dikembangkan secara independen berlisensi GPLv3. Sepenuhnya bebas iklan, pelacak, dan telemetri tersembunyi.
+    </p>
+  </footer>
+
+  <!-- App Script -->
+  <script src="app.js"></script>
+</body>
+</html>
